@@ -457,12 +457,12 @@ pi list
 
 `server doctor` 使用与受管服务相同的 `ov.conf`、代理和 Codex OAuth 路径执行 OpenViking 完整诊断，包括 Embedding、VLM、认证、运行环境和磁盘。
 
-Pi 页脚状态：
+Pi 页脚只显示最近一次健康检查结果：
 
-- `OV ✓`：最近一次健康检查确认 OpenViking 可达；
-- `OV ✗`：当前无法连接 OpenViking；
-- `ctx K`：已经由归档概览覆盖的用户轮数；
-- `~N/T`：当前同步 token 估算与接管阈值。
+- `OV ✓`：OpenViking 可达；
+- `OV ✗`：OpenViking 当前不可达。
+
+最近捕获数量、运行模式、会话 ID、上下文归档边界、待确认 token、完整自动归档条件及 archive 状态统一由 `/viking` 使用中文多行展示，避免在常驻页脚暴露含义不清的内部计数。
 
 启用且未被 bypass 的会话约每 5 秒自动刷新连接状态，并在执行 `/viking` 或每次用户提示开始处理前立即检查。
 

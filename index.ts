@@ -142,16 +142,7 @@ export default async function (pi: ExtensionAPI) {
 
   const renderStatus = (ctx: any): void => {
     if (bypassed) return;
-    const threshold = config.takeoverEnabled
-      ? config.takeoverTokenThreshold
-      : config.commitTokenThreshold;
-    setVikingFooter(ctx, {
-      connected,
-      added: lastAdded,
-      sessionId: sync.sessionId,
-      threshold,
-      takeover: config.takeoverEnabled ? takeover.state : null,
-    });
+    setVikingFooter(ctx, { connected });
   };
 
   const healthRefresh = createStatusRefresh({
@@ -322,11 +313,11 @@ export default async function (pi: ExtensionAPI) {
   // ================================================================
 
   pi.registerCommand("viking", {
-    description: "OpenViking status and manual operations. Use 'commit' to force a sync.",
+    description: "查看 OpenViking 状态；使用 commit 手动提交当前会话。",
     getArgumentCompletions: (prefix) => {
       const value = "commit";
       return value.startsWith(prefix.trim())
-        ? [{ value, label: value, description: "Commit the current OpenViking session" }]
+        ? [{ value, label: value, description: "提交当前 OpenViking 会话" }]
         : null;
     },
     handler: async (args, ctx) => {
@@ -335,7 +326,7 @@ export default async function (pi: ExtensionAPI) {
 
       if (args?.trim() === "commit") {
         if (!currentConnected) {
-          ctx.ui.notify("OpenViking: not connected", "warning");
+          ctx.ui.notify("OpenViking：未连接，无法提交", "warning");
           return;
         }
 
@@ -347,17 +338,19 @@ export default async function (pi: ExtensionAPI) {
         await refreshConnection(ctx);
         if (ok) {
           ctx.ui.notify(
-            "OpenViking: committed successfully" +
+            "OpenViking：提交成功" +
               (commitResult?.trace_id ? ` (trace_id=${commitResult.trace_id})` : ""),
             "info",
           );
         } else if (config.takeoverEnabled && takeover.state.pendingArchive) {
           ctx.ui.notify(
-            `OpenViking: ${takeover.state.pendingArchive.archiveId || takeover.state.pendingArchive.taskId} accepted; overview still processing`,
+            `OpenViking：已接受提交，等待归档摘要确认（${takeover.state.pendingArchive.archiveId || takeover.state.pendingArchive.taskId}）`,
             "info",
           );
+        } else if (config.takeoverEnabled && takeover.state.awaitingCommitDrain) {
+          ctx.ui.notify("OpenViking：提交结果未知，已暂停重复提交并等待核验任务状态", "warning");
         } else {
-          ctx.ui.notify("OpenViking: commit failed", "error");
+          ctx.ui.notify("OpenViking：提交失败", "error");
         }
         return;
       }
@@ -366,6 +359,11 @@ export default async function (pi: ExtensionAPI) {
         formatVikingCommand({
           connected: currentConnected,
           sessionId: sync.sessionId,
+          added: lastAdded,
+          threshold: config.takeoverEnabled
+            ? config.takeoverTokenThreshold
+            : config.commitTokenThreshold,
+          keepRecentTurns: config.takeoverKeepRecentTurns,
           takeover: config.takeoverEnabled ? takeover.state : null,
         }),
         currentConnected ? "info" : "warning",
