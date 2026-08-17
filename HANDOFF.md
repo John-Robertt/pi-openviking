@@ -278,84 +278,165 @@ recorded -> archived -> VLM-enriched -> active-for-takeover
 
 ## 实施状态
 
-当前执行 Phase 0；阶段出口是聚焦测试覆盖并通过完整事件投影、稳定 event identity、Pi JSONL
-幂等重放和最小 `SyncAck`。
+当前执行 Phase 0A；阶段出口是完整事件投影、稳定 event identity 和可重复 100k+ token 长轨迹
+通过聚焦测试。
 
 ## 实施顺序
 
+各阶段复用同一条可重复的 100k+ token 长轨迹。Phase 0 建立确定性回放基线，Phase 1–2 验证
+对应持久状态，Phase 3 在真实 provider 和 VLM 环境中完成最终端到端校准。每个状态在所属阶段
+同时提供确定性读取、运行诊断和独立验收；下一阶段消费已经通过验收的状态。
+
+每个实施步骤按对应验收项先运行聚焦测试；步骤完成时运行完整 `npm test` 和 `git diff --check`。
+
 ### Phase 0：完整记录与最小可靠同步
 
+#### Phase 0A：事件投影与身份
+
 - 实现“目标配置”定义的唯一配置 schema 和未知字段校验；
+- 完整捕获不透明或大型 payload，并保留 tool result 的真实完成和错误状态；
+- 固定 user、assistant、tool call/result 和未知 part 的 `RecordedEvent` 投影及 step 边界；
 - 用 session ID、Pi entry ID、part 类型和索引生成稳定 event identity；
+- 建立覆盖长工具循环、分支替换和进程重启的可重复 100k+ token 轨迹，逐事件校验投影和身份。
+
+**验收**：
+
+- 配置模板与“目标配置”schema 一致，未知字段返回包含字段路径的校验错误；
+- 长轨迹逐事件保留 payload、part 类型与索引、step 边界以及 tool result 的真实完成和错误状态；
+- 同一源事件重复投影得到相同 event ID，相同内容的不同事件得到不同 event ID。
+
+#### Phase 0B：确认前沿与重放
+
 - 以持久 Pi JSONL 提供待同步事件，并在服务端确认后推进 ACK frontier；
 - 根据 `id/parentId` 树恢复当前分支和共同祖先；
 - 使用稳定 event ID 幂等重放，ACK 丢失后仍完整确认每个事件；
-- 完整捕获不透明或大型 payload，并保留 tool result 错误状态；
-- 以最小 `SyncAck` 增量更新同步状态。
+- 以最小 `SyncAck` 增量更新同步状态；
+- `/viking` 提供连接、待重放和同步失败状态，使 ACK 推进和 fail-open 可直接观察。
 
-### Phase 1：原子 Archive
+**验收**：
+
+- 持久 Pi JSONL 中的每个源事件在服务端确认后推进 ACK frontier；
+- ACK 丢失、等长分支替换、较短分支、从已同步祖先创建分支和进程重启后，每个事件均得到确认；
+- 相同 event ID 的重试保持幂等，ACK 丢失不会产生重复事件；
+- 持久同步状态仅包含最小 `SyncAck`，非持久化 Pi session 提供进程内 best-effort 同步；
+- OpenViking 不可用时，未确认事件保持待重放，Pi 主任务保持可用。
+
+### Phase 1：原子 Archive 与可行性预检
 
 - 由 OpenViking 归档操作将 Archive 事件和 manifest 原子绑定；
 - manifest 记录 event/step 边界、数量和内容 hash；
+- 提供按 `archiveId` 的确定性读取和 expand，对回读事件重算 manifest 与 hash；
 - 根据单个用户轮次内的 token/step 压力生成有效 Archive；
-- 跨重启恢复已接受的 Archive task，并复用相同 `archiveId` 完成处理。
+- 跨重启恢复已接受的 Archive task，并复用相同 `archiveId` 完成处理；
+- 用 Phase 0 长轨迹验证 Archive 边界、单个超长用户轮次、step 原子性和重启恢复；
+- 用真实 Archive 样本测量候选 VLM 吞吐以及 checkpoint、raw tail 与任务模型容量的 fit；
+- `/viking` 展示 Archive 身份、处理状态和边界诊断。
+
+**验收**：
+
+- Archive manifest 的身份、event/step 边界、数量和内容 hash 与原子存储的事件一致；
+- 按 `archiveId` 回读和 expand 得到确定且完整的源事件序列；
+- tool call/result 在 Archive 边界保持原子，单个用户轮次内的 token/step 压力能够生成有效
+  Archive；
+- 已接受的 Archive task 在进程重启后复用相同 `archiveId` 完成处理；
+- 真实 Archive 样本证明至少一个候选 VLM 满足吞吐要求，且候选 checkpoint 与 raw tail 能装入
+  任务模型；
+- VLM 预检失败时，事件记录和 raw Archive 保持可用。
 
 ### Phase 2：单一 checkpoint 与上下文接管
 
+#### Phase 2A：checkpoint 生产
+
 - 每个 Archive 异步生成一个统一的结构化 checkpoint；
 - checkpoint 保存模型版本、prompt 版本、输入 Archive 身份和 hash；
-- 以 checkpoint 事件表示 VLM 完成，并从未消费 Archive 派生处理中、落后和恢复状态；
-- 选择已确认 checkpoint 和原子的 raw-tail 边界，形成最小 `ActiveContext`；
-- 通过 `context` hook 切换 provider 可见上下文，并冻结到下一次接管；
-- 跨重启恢复 `ActiveContext`，分支变化时复用来源边界仍在当前祖先链上的上下文；
-- Pi 原生 compaction 提供运行时 fail-open。
+- 以 request、checkpoint 和失败事件表达 VLM 运行事实；
+- 从未消费 Archive 派生处理中、落后、恢复和积压 token，并实现对应通知；
+- `/viking` 展示 VLM 积压、失败、checkpoint ID 和来源 Archive；
+- 校验 checkpoint 身份、hash、重试和跨重启恢复，并将有效 checkpoint 作为 Phase 2B 输入。
 
-### Phase 3：端到端预算验证与模型选型
+**验收**：
 
-- 在 Phase 0–2 完成后，使用同一条真实 100k+ token 长轨迹验证候选预算、容量边界和 VLM；
+- 持久化且来源 Archive 身份和 hash 匹配的 checkpoint 表示该 Archive 消费完成；
+- 同一 Archive 的重试和进程重启恢复至多产生一个有效 checkpoint；
+- 一个未消费 Archive 显示处理中，第二个产生时通知消费落后，恢复到至多一个在途 Archive 时
+  通知一次；
+- Archive、request、checkpoint 和失败事件能够完整派生 VLM 状态、失败原因及积压 token；
+- VLM 失败不改变已经持久化的事件和 raw Archive。
+
+#### Phase 2B：活动上下文构造
+
+- 选择已确认 checkpoint 和原子的 raw-tail 边界，形成并持久化最小 `ActiveContext`；
+- 跨重启恢复 `ActiveContext`，分支变化时只复用来源边界仍在当前祖先链上的上下文；
+- dry-run 捕获目标 provider payload，对照原始事件验证 checkpoint、原始用户指令 anchor、raw
+  tail 和 tool call/result step 完整性；
+- dry-run 期间 provider 使用完整 Pi 上下文；
+- 使用 Pi 报告的任务模型容量计算 takeover eligibility；容量不匹配时保持 inactive，并由
+  `/viking` 显示 capacity mismatch、checkpoint ID 和 raw-tail 边界。
+
+**验收**：
+
+- `ActiveContext` 固定来源 checkpoint、原始用户指令 anchor 和原子的 raw-tail 起点，并能跨重启
+  恢复；
+- 分支变化时，仅复用来源 Archive 边界仍在当前祖先链上的 `ActiveContext`；
+- dry-run payload 完整包含 system、checkpoint、原始用户指令 anchor、raw tail 和全部未归档事件；
+- tool call/result 在 raw-tail 边界保持原子；
+- 高水位公式结果为正时，任务模型能够在安全余量内完整装载 dry-run payload；
+- 高水位公式结果非正时 takeover eligibility 为 inactive，`/viking` 给出 capacity mismatch 和
+  fallback 诊断。
+
+#### Phase 2C：上下文切换与 fail-open
+
+- 通过 `context` hook 原子切换 provider 可见上下文，并冻结到下一次接管；
+- 每次高水位只替换一次 `ActiveContext`，后续事件追加在稳定前缀之后；
+- 无有效 `ActiveContext`、OpenViking/VLM 降级或容量不匹配时继续使用完整 Pi 上下文；
+- Pi 原生 compaction 提供运行时 fail-open，扩展只提供生命周期钩子结果；
+- 用同一长轨迹验证接管、分支变化、进程重启和 Pi compaction 后的 provider payload。
+
+**验收**：
+
+- 每次上下文高水位原子替换一次 `ActiveContext`，并保持到下一次上下文高水位；
+- provider 实际 payload 与 Phase 2B 验证的构造一致，后续事件追加在稳定前缀之后；
+- 无有效 `ActiveContext`、OpenViking/VLM 降级或容量不匹配时，provider 使用完整 Pi 上下文；
+- 单个用户指令后的长工具循环能够安全归档和接管；
+- Pi 是 compaction 的唯一触发方；`ActiveContext` 不可用时执行原生 split-turn compaction，扩展
+  仅返回生命周期钩子结果并保持运行中的 agent 可用。
+
+### Phase 3：端到端预算校准与模型定型
+
+- 在 Phase 0–2 的逐阶段验证通过后，在真实 provider 和 VLM 环境中回放同一条 100k+ token
+  长轨迹；
 - 对照原始事件检查 Archive 边界、raw tail、checkpoint 和接管上下文；
 - 使用 Pi 报告的任务模型容量验证高水位公式两侧的 fit 与 capacity mismatch 行为；
 - 根据 step 原子性、raw-tail 完整性和上下文容量调整候选预算并重跑；
-- 选择能在下一个 Archive 产生前完成前一个 checkpoint 的 VLM；
+- 确认所选 VLM 能在下一个 Archive 产生前完成前一个 checkpoint；
 - 预算和 VLM 通过端到端验证后确认为出厂默认值，容量边界确认为 takeover eligibility 规则。
 
-### Phase 4：检索和可操作状态
+**验收**：
+
+- 真实 100k+ token 轨迹中的 Archive、raw tail、checkpoint 和 provider payload 与源事件逐项对应，
+  没有遗漏、重复或破坏 step 原子性；
+- 候选 Archive、checkpoint 和 raw-tail 预算满足完整性及任务模型安全余量；
+- 所选 VLM 能在下一个 Archive 产生前完成前一个 checkpoint；
+- 任务模型容量在 eligibility 边界两侧分别得到 active 和 capacity mismatch 结果；
+- 通过上述验收的预算、VLM 和 eligibility 规则写入出厂配置。
+
+### Phase 4：检索与诊断体验
 
 - 语义搜索 raw events 与 checkpoint，并显示来源类型；
-- Archive manifest 支持按 session、branch、Archive 和 event ID 过滤、browse 和 expand；
-- `/viking` 默认显示连接、Archive/VLM 积压、takeover 状态及 capacity mismatch/fallback；
-- 详细诊断输出 checkpoint ID、raw-tail 边界和内部状态字段。
-## 验收要求
+- 支持按 session、branch、Archive 和 event ID 的组合过滤、browse 和 expand；
+- 每个检索结果都能展开到原始事件，并显示 checkpoint 的模型、prompt 版本和来源 Archive；
+- 按 event → Archive → checkpoint → `ActiveContext` 来源链提供组合诊断，呈现对象身份、边界和
+  派生关系。
 
-验证覆盖目标职责和公开边界：
+**验收**：
 
-- 配置模板与“目标配置”schema 一致，未知字段返回包含字段路径的校验错误；
-- 真实 100k+ token 轨迹证明候选预算满足 step 原子性、raw-tail 完整性和上下文容量；
-- 高水位公式结果为正时，当前任务模型能够在安全余量内完整装载目标上下文；
-- 高水位公式结果非正时保持 takeover inactive，并由 `/viking` 给出可操作诊断；
-- 同一轨迹证明所选 VLM 能在下一个 Archive 产生前完成前一个 checkpoint；
-- 单个用户指令后的长工具循环能够安全归档和接管；
-- 持久 Pi JSONL 中的每个源事件在服务端确认后推进 ACK frontier；
-- ACK 丢失、等长分支替换、较短分支和进程重启后，每个事件均得到确认；
-- 持久同步状态为最小 `SyncAck`，非持久化 Pi session 提供进程内 best-effort 同步；
-- 相同 event ID 重试保持幂等，相同内容的不同事件分别记录；
-- Archive manifest 的身份和 hash 与原子存储的事件一致；
-- tool call/result 在 Archive 和 raw-tail 边界保持原子；
-- VLM 降级时事件记录和 raw Archive 保持可用；
-- 持久化且来源 Archive 身份和 hash 匹配的 checkpoint 表示消费完成；
-- 一个未消费 Archive 显示处理中，第二个产生时通知消费落后，恢复到至多一个在途 Archive
-  时通知一次；
-- Archive、request、checkpoint 和失败事件能够完整派生 VLM 状态及积压 token；
-- 每次接管原子替换一次 `ActiveContext`，并保持到下一次上下文高水位；
-- raw events 与 checkpoint 可语义检索，Archive manifest 可确定性 browse/expand；
-- OpenViking 降级时 Pi 执行保持可用；
-- Pi 自身触发 compaction 且 `ActiveContext` 不可用时执行原生 split-turn compaction；
-- Pi 是 compaction 的唯一触发方并管理运行中的 agent，扩展只提供生命周期钩子结果。
-
-先运行相关的聚焦测试，再运行完整 `npm test` 和 `git diff --check`。
+- raw events 与 checkpoint 可语义检索，结果明确显示来源类型；
+- Archive manifest 可按 session、branch、Archive 和 event ID 确定性过滤、browse 和 expand；
+- 每个检索结果都能展开到原始事件，event → Archive → checkpoint → `ActiveContext` 来源链的
+  身份、hash、边界和版本信息一致；
+- 组合诊断能够定位当前 checkpoint、raw-tail 边界及对应的内部状态。
 
 ## 下一实施入口
 
-Phase 0 从 `sync.ts`、`lib/capture-adapter.mjs` 和 `shared/capture-utils.mjs` 开始，交付稳定
-event identity、完整事件投影、Pi JSONL 幂等重放和最小 `SyncAck`。Phase 0 验证通过后进入
-原子 Archive、checkpoint 和 takeover 实现；配置候选值在 Phase 3 做端到端验证。
+Phase 0A 的下一实施入口是 `lib/capture-adapter.mjs` 和 `shared/capture-utils.mjs`：固定完整事件
+投影、part/step 边界和稳定 event identity，并以可重复长轨迹逐事件验证。
