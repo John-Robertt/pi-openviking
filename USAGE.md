@@ -372,9 +372,10 @@ GLM 编程订阅：
 | `commitTokenThreshold` | `20000` | 客户端提交阈值 |
 | `commitKeepRecentCount` | `10` | 提交时保留的最近消息数 |
 | `takeover.enabled` | `true` | 启用上下文接管 |
-| `takeover.tokenThreshold` | `20000` | 接管提交和边界推进阈值 |
-| `takeover.keepRecentTurns` | `3` | 本地保留的最近用户轮数 |
-| `takeover.overviewBudget` | `16000` | 归档概览请求预算 |
+| `takeover.tokenThreshold` | `20000` | 新同步内容触发归档的累计阈值 |
+| `takeover.retainedTokenBudget` | `30000` | OpenViking 原始消息保留预算及超大单轮阈值 |
+| `takeover.keepRecentTurns` | `3` | 优先保留的最近逻辑用户轮数 |
+| `takeover.overviewBudget` | `16000` | 注入模型上下文的 archive overview 最大预算 |
 | `takeover.overviewPollMs` | `2000` | 概览轮询间隔 |
 | `takeover.overviewPollMax` | `15` | 单次边界推进的最大轮询次数 |
 | `captureMode` | `semantic` | `semantic` 或 `keyword` |
@@ -423,6 +424,7 @@ JSONC 无法解析或代理字段无效时，`setup` 的 doctor、`server start`
   "takeover": {
     "enabled": true,
     "tokenThreshold": 20000,
+    "retainedTokenBudget": 30000,
     "keepRecentTurns": 3,
     "overviewBudget": 16000,
     "overviewPollMs": 2000,
@@ -431,9 +433,9 @@ JSONC 无法解析或代理字段无效时，`setup` 的 doctor、`server start`
 }
 ```
 
-达到阈值后，扩展提交当前 OpenViking 会话并轮询归档概览。取得概览后，`context` 事件用一条 `[OpenViking Session Context]` 消息替换已覆盖的较早历史，同时保留最近用户轮次。
+达到阈值后，扩展以 `turn_budget` 提交，并立即持久化 commit 返回的 `task_id` 与 `archive_uri`。只有该任务完成且精确 archive API 返回非空 overview 后，`context` 事件才会用 `[OpenViking Session Context]` 替换已确认覆盖的较早历史。
 
-在概览尚未生成、请求失败或预算不足时，本轮保持原上下文，不推进覆盖边界。
+处理中、空摘要、失败或身份不匹配均不会推进边界；等待状态跨 Pi 重启恢复，期间不会重复 commit。单个用户轮超过 `retainedTokenBudget` 时由 Pi 原生 compaction 按安全工具边界切分。
 
 ### 6.4 捕获和召回
 
@@ -484,7 +486,7 @@ pi
 | 页脚显示 `OV ✗` | `server status`、`/health`、`OPENVIKING_URL` 和凭证 |
 | 本地 curl 可用但扩展无法连接 | 升级到 0.3.2 或更高版本；loopback 请求会绕过 Pi HTTP 代理 |
 | 提交后没有归档概览 | 检查 `server doctor` 的 VLM 结果和 `server.log` |
-| 日志反复出现 `overview not ready` | 检查 VLM 和 `takeover.overviewBudget` |
+| archive 长期处于 processing | 用 `/viking` 查看等待身份，并检查 `/api/v1/tasks/{task_id}`、`server.log` 与 VLM |
 | recall 一直没有结果 | 检查服务端版本组合、embedding、xxhash 和当前会话命名空间 |
 | 扩展没有加载 | 使用 `pi list` 检查安装状态，检查用户配置中的 `enabled` |
 | 扩展配置未生效 | 确认修改的是 `~/.pi/pi-openviking.jsonc`，然后重启 Pi |

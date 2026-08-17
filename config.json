@@ -13,6 +13,7 @@
   "takeover": {
     "enabled": true,
     "tokenThreshold": 20000,
+    "retainedTokenBudget": 30000,
     "keepRecentTurns": 3,
     "overviewBudget": 16000,
     "overviewPollMs": 2000,

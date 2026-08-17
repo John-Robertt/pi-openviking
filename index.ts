@@ -60,6 +60,7 @@ export default async function (pi: ExtensionAPI) {
   let statusContext: any = null;
   let lastAdded = 0;
   let startupWarningShown = false;
+  let takeoverCompactionInFlight = false;
 
   // ================================================================
   // Event Handlers
@@ -253,6 +254,17 @@ export default async function (pi: ExtensionAPI) {
     const result = await sync.syncBranch(branch);
     debugLog(`turn_end: synced ${result.added} entries, ~${result.tokens} tokens`);
     await takeover.onTurnSynced(result.tokens);
+    if (config.takeoverEnabled && takeover.state.compactionRequested && !takeoverCompactionInFlight) {
+      takeoverCompactionInFlight = true;
+      debugLog(`turn_end: current user turn exceeded ${config.takeoverRetainedTokenBudget} tokens; requesting pi compaction`);
+      ctx.compact({
+        onComplete: () => { takeoverCompactionInFlight = false; },
+        onError: (error: Error) => {
+          takeoverCompactionInFlight = false;
+          debugLog(`takeover compaction failed: ${error.message}`);
+        },
+      });
+    }
     lastAdded = result.added;
     renderStatus(ctx);
   });
@@ -279,6 +291,12 @@ export default async function (pi: ExtensionAPI) {
       );
     }
     // Return nothing → pi proceeds with default compaction
+  });
+
+  pi.on("session_compact", async (_event, _ctx) => {
+    compacted = true;
+    takeoverCompactionInFlight = false;
+    if (config.takeoverEnabled) takeover.onPiCompacted();
   });
 
   // --- session_shutdown ---
@@ -331,6 +349,11 @@ export default async function (pi: ExtensionAPI) {
           ctx.ui.notify(
             "OpenViking: committed successfully" +
               (commitResult?.trace_id ? ` (trace_id=${commitResult.trace_id})` : ""),
+            "info",
+          );
+        } else if (config.takeoverEnabled && takeover.state.pendingArchive) {
+          ctx.ui.notify(
+            `OpenViking: ${takeover.state.pendingArchive.archiveId || takeover.state.pendingArchive.taskId} accepted; overview still processing`,
             "info",
           );
         } else {

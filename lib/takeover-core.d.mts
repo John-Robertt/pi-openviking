@@ -8,18 +8,39 @@ export interface TakeoverMessage {
   [key: string]: any;
 }
 
+export interface TakeoverArchiveIdentity {
+  archiveUri: string;
+  archiveId: string;
+  taskId: string;
+}
+
+export interface TakeoverPendingArchive extends TakeoverArchiveIdentity {
+  purpose: "advance" | "compact" | "archiveOnly";
+  acceptedTokens: number;
+  targetCoveredUserTurns: number;
+  boundaryFingerprint: string | null;
+  syncedEntryCount: number;
+}
+
 export interface TakeoverPersistedState {
+  schemaVersion: 2;
   coveredUserTurns: number;
   overview: string;
   fingerprint?: string | null;
   pendingTokens: number;
   lastSeenUserTurns?: number;
   syncedEntryCount?: number;
+  pendingArchive: TakeoverPendingArchive | null;
+  confirmedArchive: TakeoverArchiveIdentity | null;
+  awaitingCommitDrain: boolean;
+  currentTurnTokens: number;
+  currentTurnUserTurns: number;
 }
 
 export interface TakeoverConfig {
   takeoverEnabled?: boolean;
   takeoverTokenThreshold?: number;
+  takeoverRetainedTokenBudget?: number;
   takeoverKeepRecentTurns?: number;
   takeoverOverviewBudget?: number;
   takeoverOverviewPollMs?: number;
@@ -28,8 +49,21 @@ export interface TakeoverConfig {
 
 export interface TakeoverIo {
   flush?: () => Promise<boolean> | boolean;
-  commit?: (opts?: { queueOnFailure?: boolean; keepRecentCount?: number }) => Promise<unknown> | unknown;
-  fetchOverview?: (tokenBudget?: number) => Promise<string | { latest_archive_overview?: string | null } | null> | string | { latest_archive_overview?: string | null } | null;
+  commit?: (opts?: {
+    queueOnFailure?: boolean;
+    keepRecentCount?: number;
+    retentionMode?: "turn_budget";
+    keepRecentTurnCount?: number;
+    retainedMessageTokenBudget?: number;
+    minRawTailSteps?: number;
+  }) => Promise<unknown> | unknown;
+  checkArchive?: (pending: TakeoverPendingArchive) => Promise<{
+    status: "pending" | "ready" | "failed";
+    archiveUri?: string;
+    archiveId?: string;
+    overview?: string;
+  }>;
+  hasActiveCommit?: () => Promise<boolean> | boolean;
   persistEntry?: (customType: string, data: TakeoverPersistedState) => void;
   getWatermark?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -54,11 +88,13 @@ export class TakeoverCore {
     fingerprint: string | null;
     lastSeenUserTurns: number;
     syncedEntryCount: number;
+    compactionRequested: boolean;
     committing: boolean;
   };
   restore(entries: any[]): this["state"];
   transformContext(messages: TakeoverMessage[]): TakeoverMessage[];
   onTurnSynced(estTokens: number): Promise<boolean>;
+  resumePending(): Promise<boolean>;
   commitAndAdvance(): Promise<boolean>;
   handleBeforeCompact(preparation?: { firstKeptEntryId?: string; tokensBefore?: number }): Promise<
     | {
@@ -66,15 +102,16 @@ export class TakeoverCore {
           summary: string;
           firstKeptEntryId: string;
           tokensBefore: number;
-          details: { source: string };
+          details: { source: string; archiveUri?: string };
         };
       }
     | undefined
   >;
+  onPiCompacted(): void;
   shutdown(): Promise<void>;
   resetBoundary(reason?: string): void;
   truncatedOverview(): string;
   persistedState(): TakeoverPersistedState;
   persist(): void;
-  pollOverview(): Promise<string>;
+  pollPendingArchive(): Promise<{ status: string; overview?: string; purpose?: string }>;
 }

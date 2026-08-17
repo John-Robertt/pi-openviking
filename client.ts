@@ -68,9 +68,40 @@ export interface OVSessionContext {
 }
 
 export interface OVCommitResult {
-  task_id?: string;
-  archive_uri?: string;
+  session_id?: string;
+  status?: string;
+  task_id?: string | null;
+  archive_uri?: string | null;
+  archived?: boolean;
+  reason?: string;
+  estimated_active_tokens?: number;
+  budget_exceeded?: boolean;
   trace_id?: string;
+}
+
+export interface OVCommitOptions {
+  keepRecentCount?: number;
+  retentionMode?: "turn_budget";
+  keepRecentTurnCount?: number;
+  retainedMessageTokenBudget?: number;
+  minRawTailSteps?: number;
+}
+
+export interface OVTask {
+  task_id: string;
+  task_type: string;
+  status: string;
+  resource_id?: string;
+  stage?: string | null;
+  result?: Record<string, any> | null;
+  error?: string | null;
+}
+
+export interface OVSessionArchive {
+  archive_id: string;
+  abstract: string;
+  overview: string;
+  messages: any[];
 }
 
 export interface OVCommitResponse {
@@ -230,6 +261,35 @@ export class OVClient {
     return res.ok ? res.result : null;
   }
 
+  /** GET one completed archive by the identity returned from commit. */
+  async getSessionArchive(sessionId: string, archiveId: string): Promise<OVSessionArchive | null> {
+    const res = await this.fetchJSON<OVSessionArchive>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/archives/${encodeURIComponent(archiveId)}`,
+      undefined, 10000,
+    );
+    return res.ok ? res.result : null;
+  }
+
+  /** GET /api/v1/tasks/{task_id} — background commit status. */
+  async getTask(taskId: string): Promise<OVTask | null> {
+    const res = await this.fetchJSON<OVTask>(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}`,
+      undefined, 10000,
+    );
+    return res.ok ? res.result : null;
+  }
+
+  /** List commit tasks for migration safety; no task content is exposed to the model. */
+  async listSessionCommitTasks(sessionId: string, limit = 50): Promise<OVTask[] | null> {
+    const query = new URLSearchParams({
+      task_type: "session_commit",
+      resource_id: sessionId,
+      limit: String(limit),
+    });
+    const res = await this.fetchJSON<OVTask[]>(`/api/v1/tasks?${query}`, undefined, 10000);
+    return res.ok && Array.isArray(res.result) ? res.result : null;
+  }
+
   /** POST /api/v1/sessions/{id}/messages — add a message (simple text mode) */
   async addMessage(sessionId: string, role: string, content: string): Promise<boolean> {
     const res = await this.fetchJSON<any>(
@@ -262,11 +322,21 @@ export class OVClient {
   /** POST /api/v1/sessions/{id}/commit — commit session for archiving + extraction */
   async commitSessionResponse(
     sessionId: string,
-    keepRecentCount = this.cfg.commitKeepRecentCount,
+    options: OVCommitOptions = {},
   ): Promise<OVCommitResponse> {
+    const body: Record<string, unknown> = {
+      keep_recent_count: options.keepRecentCount ?? this.cfg.commitKeepRecentCount,
+    };
+    if (options.retentionMode) body.retention_mode = options.retentionMode;
+    if (options.keepRecentTurnCount !== undefined) body.keep_recent_turn_count = options.keepRecentTurnCount;
+    if (options.retainedMessageTokenBudget !== undefined) {
+      body.retained_message_token_budget = options.retainedMessageTokenBudget;
+    }
+    if (options.minRawTailSteps !== undefined) body.min_raw_tail_steps = options.minRawTailSteps;
+
     const res = await this.fetchJSON<OVCommitResult>(
       `/api/v1/sessions/${encodeURIComponent(sessionId)}/commit`,
-      { method: "POST", body: JSON.stringify({ keep_recent_count: keepRecentCount }) },
+      { method: "POST", body: JSON.stringify(body) },
       30000,
     );
     if (res.ok && res.result && !res.result.trace_id && res.traceId) {
@@ -282,9 +352,9 @@ export class OVClient {
 
   async commitSession(
     sessionId: string,
-    keepRecentCount = this.cfg.commitKeepRecentCount,
+    options: OVCommitOptions = {},
   ): Promise<OVCommitResult | null> {
-    return (await this.commitSessionResponse(sessionId, keepRecentCount)).result;
+    return (await this.commitSessionResponse(sessionId, options)).result;
   }
 
   /** DELETE /api/v1/sessions/{id} */

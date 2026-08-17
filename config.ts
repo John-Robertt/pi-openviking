@@ -35,6 +35,7 @@ export interface OVConfig {
   commitKeepRecentCount: number;
   takeoverEnabled: boolean;
   takeoverTokenThreshold: number;
+  takeoverRetainedTokenBudget: number;
   takeoverKeepRecentTurns: number;
   takeoverOverviewBudget: number;
   takeoverOverviewPollMs: number;
@@ -84,9 +85,10 @@ const DEFAULT_CONFIG: OVConfig = {
   commitTokenThreshold: 20000,
   commitKeepRecentCount: 10,
   takeoverEnabled: true,
-  takeoverTokenThreshold: 30000,
+  takeoverTokenThreshold: 20000,
+  takeoverRetainedTokenBudget: 30000,
   takeoverKeepRecentTurns: 3,
-  takeoverOverviewBudget: 3000,
+  takeoverOverviewBudget: 16000,
   takeoverOverviewPollMs: 2000,
   takeoverOverviewPollMax: 15,
   captureToolResults: false,
@@ -130,9 +132,10 @@ const USER_CONFIG_TEMPLATE = `// ===============================================
   // 会话历史累计超过 tokenThreshold 后提交归档，本地只保留最近 keepRecentTurns 轮。
   // "takeover": {
   //   "enabled": true,
-  //   "tokenThreshold": 20000,       // 触发压缩的累计 token 阈值；工具密集负载建议保持 20000
-  //   "keepRecentTurns": 3,          // 本地保留的最近轮数；不要调到 1（会丢工具输出里的精确值）
-  //   "overviewBudget": 16000,       // 拉取归档概览的 token 预算；必须够大，否则概览返回空、边界永不推进
+  //   "tokenThreshold": 20000,       // 新同步内容累计到该值时触发归档
+  //   "retainedTokenBudget": 30000,  // OpenViking 保留的原始消息预算；超大单轮转交 Pi compaction
+  //   "keepRecentTurns": 3,          // 正常归档优先保留的最近用户轮数
+  //   "overviewBudget": 16000,       // 注入模型上下文的 archive overview 最大 token 数
   //   "overviewPollMs": 2000,        // 概览未就绪时的轮询间隔（毫秒）
   //   "overviewPollMax": 15          // 概览轮询最大次数，超过则本轮 fail-open
   // },
@@ -287,6 +290,7 @@ export function loadConfig(extensionDir: string): OVConfig {
     profileTokenBudget: file.profileTokenBudget ?? file.profileBudget ?? DEFAULT_CONFIG.profileTokenBudget,
     takeoverEnabled: takeover.enabled ?? file.takeoverEnabled ?? DEFAULT_CONFIG.takeoverEnabled,
     takeoverTokenThreshold: takeover.tokenThreshold ?? file.takeoverTokenThreshold ?? DEFAULT_CONFIG.takeoverTokenThreshold,
+    takeoverRetainedTokenBudget: takeover.retainedTokenBudget ?? file.takeoverRetainedTokenBudget ?? DEFAULT_CONFIG.takeoverRetainedTokenBudget,
     takeoverKeepRecentTurns: takeover.keepRecentTurns ?? file.takeoverKeepRecentTurns ?? DEFAULT_CONFIG.takeoverKeepRecentTurns,
     takeoverOverviewBudget: takeover.overviewBudget ?? file.takeoverOverviewBudget ?? DEFAULT_CONFIG.takeoverOverviewBudget,
     takeoverOverviewPollMs: takeover.overviewPollMs ?? file.takeoverOverviewPollMs ?? DEFAULT_CONFIG.takeoverOverviewPollMs,
@@ -324,7 +328,8 @@ export function loadConfig(extensionDir: string): OVConfig {
   config.commitKeepRecentCount = clampInt(config.commitKeepRecentCount, 0, 1000, DEFAULT_CONFIG.commitKeepRecentCount);
   config.takeoverEnabled = config.takeoverEnabled !== false;
   config.takeoverTokenThreshold = clampInt(config.takeoverTokenThreshold, 1, 1000000, DEFAULT_CONFIG.takeoverTokenThreshold);
-  config.takeoverKeepRecentTurns = clampInt(config.takeoverKeepRecentTurns, 0, 100, DEFAULT_CONFIG.takeoverKeepRecentTurns);
+  config.takeoverRetainedTokenBudget = clampInt(config.takeoverRetainedTokenBudget, 1000, 1000000, DEFAULT_CONFIG.takeoverRetainedTokenBudget);
+  config.takeoverKeepRecentTurns = clampInt(config.takeoverKeepRecentTurns, 1, 100, DEFAULT_CONFIG.takeoverKeepRecentTurns);
   config.takeoverOverviewBudget = clampInt(config.takeoverOverviewBudget, 100, 50000, DEFAULT_CONFIG.takeoverOverviewBudget);
   config.takeoverOverviewPollMs = clampInt(config.takeoverOverviewPollMs, 0, 60000, DEFAULT_CONFIG.takeoverOverviewPollMs);
   config.takeoverOverviewPollMax = clampInt(config.takeoverOverviewPollMax, 1, 120, DEFAULT_CONFIG.takeoverOverviewPollMax);

@@ -1,4 +1,4 @@
-import type { OVClient } from "./client.js";
+import type { OVClient, OVCommitOptions } from "./client.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { OVConfig } from "./config.js";
@@ -18,6 +18,10 @@ export interface SyncBranchResult {
   added: number;
   tokens: number;
   allDelivered: boolean;
+}
+
+export interface SyncCommitOptions extends OVCommitOptions {
+  queueOnFailure?: boolean;
 }
 
 function debugLog(message: string): void {
@@ -115,11 +119,11 @@ export class SyncManager {
     }
   }
 
-  async commit(opts: { queueOnFailure?: boolean; keepRecentCount?: number } = {}): Promise<any | null> {
+  async commit(opts: SyncCommitOptions = {}): Promise<any | null> {
     if (!this.ovSessionId) return null;
     const response = await this.client.commitSessionResponse(
       this.ovSessionId,
-      opts.keepRecentCount,
+      opts,
     );
     const result = response.result;
     if (!result) {
@@ -128,6 +132,10 @@ export class SyncManager {
           `trace_id=${response.traceId || "none"} ` +
           `error=${response.error?.message || response.error?.code || "unknown"}`,
       );
+      const status = Number(response.status || 0);
+      if (opts.queueOnFailure === false && (status === 0 || status === 408 || status >= 500)) {
+        return { status: "transport_unknown" };
+      }
       if (opts.queueOnFailure !== false) {
         await enqueue("commitSession", this.ovSessionId, {
           keep_recent_count: opts.keepRecentCount ?? this.config.commitKeepRecentCount,

@@ -35,8 +35,10 @@ export function clearVikingFooter(ctx) {
 
 /** Format the on-demand `/viking` snapshot. */
 export function formatVikingCommand({ connected, sessionId, takeover }) {
+  const waitingId = takeover?.pendingArchive?.archiveId || takeover?.pendingArchive?.taskId;
+  const waiting = waitingId ? `, waiting ${waitingId}` : "";
   const takeoverInfo = takeover
-    ? ` | takeover: ${takeover.coveredUserTurns ?? 0}/${takeover.lastSeenUserTurns ?? 0} turns archived, ~${takeover.pendingTokens ?? 0} tokens pending`
+    ? ` | takeover: ${takeover.coveredUserTurns ?? 0}/${takeover.lastSeenUserTurns ?? 0} turns archived, ~${takeover.pendingTokens ?? 0} tokens pending${waiting}`
     : "";
   const sid = sessionId ? `${sessionId.slice(0, 12)}...` : "none";
   return `OpenViking: ${connected ? "connected" : "disconnected"} | session: ${sid}${takeoverInfo}`;
