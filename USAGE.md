@@ -139,7 +139,7 @@ export OPENVIKING_URL=http://127.0.0.1:1933
 | `storage.workspace` | 服务端数据目录（长期记忆、向量索引），默认 `~/.pi/openviking/data` |
 | `server.host` / `server.port` | 监听地址，默认 `127.0.0.1:1933`（仅本机、dev 模式无认证） |
 | `server.root_api_key` | 绑定 `0.0.0.0`（Docker/局域网）时必填，设置后自动切换为 API key 认证；本机模式不要设 |
-| `embedding.dense` | 向量嵌入：`provider` / `model` / `api_key` / `api_base` / `dimension`。默认预填零依赖本地模型（`provider: "local"`，约 24MB，首次启动自动下载）。**改 `dimension` 会使已有向量索引失效，需重建数据** |
+| `embedding.dense` | 向量嵌入：`provider` / `model` / `api_key` / `api_base` / `dimension`。默认预填零依赖本地模型（`provider: "local"`，约 24MB，首次启动自动下载；完全不配置 `embedding` 段时上游也自动落到这个本地模型，**不会复用 vlm**）。**改 `dimension` 会使已有向量索引失效，需重建数据** |
 | `vlm` | 记忆模型（**必填**）：`provider` / `model` / `api_key` / `api_base` / `temperature` / `max_retries` / `timeout`。不配置则记忆抽取与上下文接管不生效（§2.3） |
 
 **`vlm.provider` 完整取值**（对应服务端 `openviking/models/vlm/backends/` 的实现）：
