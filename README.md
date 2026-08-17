@@ -1,276 +1,149 @@
-# OpenViking Memory Extension for Pi Coding Agent
+# Pi OpenViking 记忆扩展
 
-Long-term semantic memory and context takeover for [pi](https://github.com/earendil-works/pi) sessions, powered by [OpenViking](https://github.com/volcengine/OpenViking). Recall happens automatically before every prompt, capture happens after every turn, and OpenViking can own long-term context by replacing committed history with an archive overview in pi's `context` hook.
+这是一个面向 [Pi Coding Agent](https://github.com/earendil-works/pi) 的 [OpenViking](https://github.com/volcengine/OpenViking) 客户端扩展。它在当前 Pi 会话中自动同步对话、召回相关长期记忆，并在上下文增长后用 OpenViking 归档概览替代较早的完整历史。
 
-> Design informed by lessons from all three OpenViking agent plugins: synchronous recall from OpenClaw, production-hardened capture/ranking from Claude Code, and anti-patterns dodged from Hermes's stale prefetch approach. See [DESIGN.md](./DESIGN.md) for the base design and [TAKEOVER.md](./TAKEOVER.md) for the context-takeover layer.
+默认开启 `sessionScopedMemory`：抽取后的长期记忆按 Pi 会话隔离。继续同一个会话（例如 `pi -c` 或 `pi -p`）会沿用原命名空间；新会话和 fork 使用新的命名空间，不会自动召回旧会话的长期记忆。将该配置设为 `false` 才会恢复同一 OpenViking 用户下的跨会话共享。
 
-## Quick Start
+## 前置条件
 
-### Prerequisites
+- Pi Coding Agent
+- Node.js 20.18.1 或更高版本
+- 可访问的 OpenViking HTTP 服务
+- Python 3.10 或更高版本（仅本地安装 OpenViking 服务时需要）
 
-- **pi coding agent** installed (`npm i -g @earendil-works/pi-coding-agent`)
-- **Node.js 18+** (for the extension's TypeScript runtime)
-- **Python 3.10+** (only for running a local OpenViking server)
+## 快速开始
 
-### One-command setup
+### 一键安装
 
 ```bash
 npx pi-openviking@latest setup
 ```
 
-Installs the pinned OpenViking server into `~/.pi/openviking/venv`, optionally installs Ollama for the local-model route, generates a documented `ov.conf` template for you to edit, verifies with `doctor`, starts the server in the background, and installs this extension into pi. See [USAGE.md](./USAGE.md) for tuning, verification, and troubleshooting.
+该命令会在 `~/.pi/openviking/` 下安装并配置本地 OpenViking 服务，运行 doctor 检查，启动服务，然后通过 `pi install npm:pi-openviking` 安装扩展。
 
-Server lifecycle:
+本地服务管理：
 
 ```bash
-npx pi-openviking@latest server start|stop|restart|status
-npx pi-openviking@latest uninstall   # stop the server and remove everything under ~/.pi/openviking
+npx pi-openviking@latest server start
+npx pi-openviking@latest server stop
+npx pi-openviking@latest server restart
+npx pi-openviking@latest server status
 ```
 
-### Install the extension only
+卸载：
+
+```bash
+npx pi-openviking@latest uninstall
+```
+
+卸载会删除 `~/.pi/openviking/`、`~/.pi/pi-openviking.jsonc` 以及其中由本工具管理的长期记忆数据，并从 Pi 中移除该扩展。
+
+### 仅安装扩展
+
+已有 OpenViking 服务时可以只安装扩展：
 
 ```bash
 pi install npm:pi-openviking
 ```
 
-### Configure (optional)
+从当前仓库临时加载：
 
-Credentials are resolved from `OPENVIKING_*` environment variables, `~/.pi/openviking/ovcli.conf`, then `~/.pi/openviking/ov.conf`. Run the credentials wizard when you need to configure a remote server:
+```bash
+pi -e /path/to/pi-openviking/index.ts
+```
+
+## 配置
+
+首次加载扩展时会生成用户配置：
+
+```text
+~/.pi/pi-openviking.jsonc
+```
+
+包内 `config.json` 是扩展出厂默认值，不应作为用户配置文件修改。扩展配置会在包内默认值之上合并，修改后重启 Pi 生效；`managedServer.proxy` 只控制本包启动的 OpenViking 服务进程，修改后执行 `npx pi-openviking@latest server restart`。
+
+OpenViking 地址与凭证按以下顺序解析：
+
+1. `OPENVIKING_*` 环境变量
+2. `~/.pi/openviking/ovcli.conf`
+3. `~/.pi/openviking/ov.conf`
+
+配置远端服务或 API key：
 
 ```bash
 npx pi-openviking@latest credentials
 ```
 
-Behavior knobs live in `~/.pi/pi-openviking.jsonc`; a fully commented template is generated on first run.
+关键出厂默认值：
 
-Credential environment variables:
+| 配置 | 默认值 | 作用 |
+|---|---:|---|
+| `sessionScopedMemory` | `true` | 抽取后的长期记忆按 Pi 会话隔离 |
+| `syncTurns` | `true` | 自动同步会话内容 |
+| `recallTokenBudget` | `2000` | 每轮召回上下文的 token 预算 |
+| `takeover.enabled` | `true` | 启用 OpenViking 上下文接管 |
+| `takeover.tokenThreshold` | `20000` | 触发归档与边界推进的同步 token 阈值 |
+| `takeover.keepRecentTurns` | `3` | 接管后保留的最近用户轮数 |
+| `takeover.overviewBudget` | `16000` | 获取归档概览时使用的 token 预算 |
+| `logLevel` | `"error"` | 扩展日志级别 |
 
-| Env Var | Meaning |
-|---------|---------|
-| `OPENVIKING_URL` | OpenViking server URL |
-| `OPENVIKING_API_KEY` / `OPENVIKING_BEARER_TOKEN` | Bearer token |
-| `OPENVIKING_ACCOUNT` | Trusted-mode account |
-| `OPENVIKING_USER` | Trusted-mode user |
-| `OPENVIKING_PEER_ID` | Actor peer id |
-| `OPENVIKING_WORKSPACE_PEER` | Derive an actor peer from the current workspace by default; set `0` to disable |
-| `OPENVIKING_RECALL_PEER_SCOPE` | `all` recalls other project memories with a score penalty; `actor` only sees global plus the current project |
+完整配置、服务端模型配置和故障排查见 [`USAGE.md`](./USAGE.md)。
 
-Recall asks the server to assemble the context block in one request
-(`POST /api/v1/search/search` with `mode="context"`), so token budgeting, detail
-tiers and cross-turn dedup are shared with every other harness. Deployments
-without that endpoint fall back to `/api/v1/search/recall`, and that outcome is
-cached so only the first turn pays for the probe.
+## 当前运行机制
 
-API keys are sent as `Authorization: Bearer ...`. By default the extension derives a peer from the process workspace path using Claude's project-directory naming rule: every non-letter-or-digit character becomes `-`, with no path normalization. For example, `/Users/x/Dev/OpenViking` becomes `-Users-x-Dev-OpenViking`. The effective peer is sent as `X-OpenViking-Actor-Peer` and stored as `peer_id` on captured session messages. `OPENVIKING_PEER_ID` overrides the workspace-derived value.
+扩展入口是 `index.ts`，通过 Pi 生命周期事件驱动：
 
-Recall defaults to the broad mode: global memory, the current workspace, and other workspace memories can all be recalled, with other workspaces penalized and rendered later. Set `OPENVIKING_RECALL_PEER_SCOPE=actor` for the isolation mode, which only sees global memory plus the current workspace. In deployments where one bot serves multiple real people, such as zouk, vikingbot, or AstrBot, use the isolation mode with an explicit actor peer so one person's memories are not recalled into another person's session.
+| Pi 事件 | 当前行为 |
+|---|---|
+| `session_start` | 检查服务、绑定会话记忆命名空间、创建或恢复 OpenViking 会话 |
+| `before_agent_start` | 为继续会话补做幂等初始化，并记录当前提示词 |
+| `context` | 使用当前提示词召回记忆，注入召回内容和归档概览 |
+| `turn_end` | 捕获分支内容并同步到 OpenViking，必要时提交和推进接管边界 |
+| `session_before_compact` | 在接管模式下返回 OpenViking 归档概览；否则提交待处理内容 |
+| `session_shutdown` | 保存接管状态或执行非接管模式的最终提交 |
 
-### 4. Start Pi
+当前提示词的召回发生在同一模型轮次的 `context` 事件中，不使用上一轮提示词的预取结果。写入前会清除已注入的 `<openviking-context>` 等上下文块，避免召回内容再次进入长期记忆。
 
-```bash
-pi
+Pi 页脚中的 `OV ✓` 表示服务可达，`OV ✗` 表示当前无法连接 OpenViking。
+
+## 工具与命令
+
+扩展注册以下 7 个工具：
+
+| 工具 | 作用 |
+|---|---|
+| `viking_search` | 在当前允许的 OpenViking 范围内进行语义搜索 |
+| `viking_read` | 按 abstract、overview 或 full 层级读取 `viking://` 内容 |
+| `viking_browse` | 浏览或查看 `viking://` 路径元数据 |
+| `viking_remember` | 向当前 OpenViking 会话写入待抽取的事实或记忆 |
+| `viking_forget` | 删除指定记忆或搜索后删除高置信匹配 |
+| `viking_add_resource` | 导入 HTTP URL 资源 |
+| `viking_archive_expand` | 按 OpenViking session ID 读取已归档会话内容 |
+
+在 Pi 中输入 `/viking` 可查看连接状态和当前会话信息；`/viking commit` 可手动提交当前 OpenViking 会话。
+
+## 项目结构
+
+```text
+index.ts                     Pi 扩展入口与事件处理
+config.ts / config.json      配置加载、用户模板与包内默认值
+client.ts                    OpenViking HTTP 客户端
+sync.ts                      会话同步、待处理队列与提交
+recall.ts                    当前提示词召回
+takeover.ts                  Pi 与接管状态机的适配层
+tools.ts                     Viking 工具与 /viking 命令
+lib/                         接管、捕获和 URI 防护适配器
+shared/                      凭证、捕获、队列、召回等共享实现
+scripts/cli.mjs              安装与服务管理 CLI
+scripts/e2e-probe.ts         端到端探针
 ```
 
-The extension shows an `[OpenViking]` status line on startup. Tools (`viking_search`, `viking_remember`, etc.) are registered automatically. Memories persist across sessions — no additional setup.
+## 文档
 
-## Configuration Reference
+- [`USAGE.md`](./USAGE.md)：安装、服务端配置、扩展配置和故障排查
+- [`DESIGN.md`](./DESIGN.md)：捕获、召回与同步设计
+- [`TAKEOVER.md`](./TAKEOVER.md)：上下文接管状态机与失败处理
 
-### Tuning fields
+## 许可证
 
-All fields below live in `config.json`. Defaults are shown.
-
-| Field                    | Default    | Description                                                              |
-|--------------------------|------------|--------------------------------------------------------------------------|
-| `enabled`                | `true`     | Set `false` to disable the extension entirely                            |
-| `syncTurns`              | `true`     | Enable auto-capture of conversation turns                                |
-
-### Recall tuning
-
-| Field                    | Default    | Description                                                              |
-|--------------------------|------------|--------------------------------------------------------------------------|
-| `recallTokenBudget`      | `2000`     | Token budget for inline recall content                                   |
-| `recallMaxContentChars`  | `500`      | Per-item content cap for search results                                  |
-| `recallPreferAbstract`   | `true`     | Prefer L0 abstract over L2 full body when available                      |
-| `recallLimit`            | `10`       | Legacy quota-scaling input converted to six coding quotas, not a final cap |
-| `scoreThreshold`         | `0.35`     | Min relevance score (0–1)                                                |
-| `minQueryLength`         | `3`        | Skip recall for queries shorter than N characters                        |
-
-Explicit `recallLimit` values from 1 through 5 produce an effective total
-quota of 6 because each coding category keeps one retrieval slot. Direct API
-integrations should configure category `quotas` when they need exact ceilings.
-
-### Capture tuning
-
-| Field                    | Default    | Description                                                              |
-|--------------------------|------------|--------------------------------------------------------------------------|
-| `captureMode`            | `"semantic"` | `"semantic"` (always capture) or `"keyword"` (trigger-based)           |
-| `captureMaxLength`       | `24000`    | Max sanitized text length for the capture decision                       |
-| `captureAssistantTurns`  | `true`     | Include assistant turns (text + tool USE inputs)                         |
-| `captureToolResults`     | `false`    | Include tool result output (noisy — off by default)                      |
-| `captureToolMaxChars`    | `1000000`  | Guard cap on one tool part's `tool_output`; the server externalizes oversized output |
-| `commitTokenThreshold`   | `20000`    | Pending-token threshold for client-driven commit                         |
-| `commitKeepRecentCount`  | `10`       | Live tail kept after commit                                              |
-
-### Context takeover
-
-Takeover is enabled by default. OpenViking commits archived history, polls the
-session overview, then the `context` hook replaces covered conversation turns
-with a synthetic `[OpenViking Session Context]` user message while keeping the
-recent live tail.
-
-| Field                    | Default    | Description                                                              |
-|--------------------------|------------|--------------------------------------------------------------------------|
-| `takeover.enabled`       | `true`     | Let OpenViking own long-term context through the `context` hook           |
-| `takeover.tokenThreshold`| `30000`    | Synced-token pressure that triggers commit and boundary advance           |
-| `takeover.keepRecentTurns`| `3`       | Recent user turns retained in full fidelity                              |
-| `takeover.overviewBudget`| `3000`    | Token budget for the injected archive overview                           |
-| `takeover.overviewPollMs`| `2000`    | Delay between overview polling attempts after commit                     |
-| `takeover.overviewPollMax`| `15`     | Max overview polling attempts before fail-open                           |
-
-### Injection tuning
-
-| Field                    | Default    | Description                                                              |
-|--------------------------|------------|--------------------------------------------------------------------------|
-| `profileTokenBudget`     | `10000`    | Token budget for user profile block                                      |
-| `resumeContextBudget`    | `32000`    | Token budget for archive overview on session resume                      |
-
-### Misc
-
-| Field                    | Default    | Description                                                              |
-|--------------------------|------------|--------------------------------------------------------------------------|
-| `bypassPatterns`         | `[]`       | Glob patterns to skip extension processing                               |
-| `logLevel`               | `"error"`  | `"silent"`, `"error"`, or `"info"`                                      |
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────┐
-│                    Pi Coding Agent                    │
-│                                                      │
-│  session_start  before_agent_start  context  turn_end│
-│  session_before_compact  session_shutdown            │
-└────────┬──────────────────┬───────────┬──────────────┘
-         │                  │           │
-         │  ┌───────────────▼───────────▼────────┐
-         │  │   extension modules (.ts)           │
-         │  │   client / sync / recall / tools    │──────►  OpenViking
-         │  └─────────────────────────────────────┘        Server
-         │                                                (HTTP API)
-         │  ┌──────────────────────────────────────┐
-         └──►  7 registered LLM tools              │
-            │  viking_search / viking_read / …     │
-            └──────────────────────────────────────┘
-```
-
-The extension is a single directory of TypeScript files loaded by pi's `jiti` transpiler — no build step, no npm dependencies, no MCP server. All communication goes over HTTP to the OpenViking REST API.
-
-### Event Flow
-
-| Pi Event               | Extension Action                                                                 |
-|------------------------|----------------------------------------------------------------------------------|
-| `session_start`        | Health check → derive OV session → build profile context → restore takeover state |
-| `before_agent_start`   | Idempotent startup for `pi -c` + queue the current prompt for recall              |
-| `context`              | Run current-prompt recall after UI rendering, then inject takeover and recall context |
-| `turn_end`             | Extract branch entries → write or pending-queue OV messages → maybe advance boundary |
-| `session_before_compact`| Takeover mode returns OV overview as pi compaction summary; otherwise commits pending messages |
-| `session_shutdown`     | Persist takeover state or final non-takeover commit                              |
-
-### Recall: Synchronous, Not Stale
-
-Unlike Hermes's stale prefetch (recall from previous turn's query, injected one turn late), this extension searches OpenViking with the **current** user prompt via pi's `context` event. Pi renders the submitted user message before this hook, so recall latency does not hold the message off-screen. Results are still injected into the same model turn as `<openviking-context>` blocks. This means:
-
-- **First turn** of a session gets relevant context immediately
-- **Topic switches** within a session get correct recall
-- No waiting for the next turn to see relevant memories
-
-### Memory Pollution Prevention
-
-Before pushing turns to OpenViking, shared capture sanitization strips injected context blocks such as `<openviking-context>` to prevent a self-referential pollution loop where recall context is captured back as user messages.
-
-In takeover mode the adapter uses faithful capture: acknowledgments and short
-turns are retained because they may later be represented only through the OV
-archive overview. Empty text, slash commands, and OpenViking status messages
-remain filtered.
-
-### Tool Use Preservation
-
-Tool capture preserves structured tool parts with bounded inputs and outputs. The memory extractor sees what the agent did without indexing unbounded raw output.
-
-## LLM Tools
-
-The extension registers 7 tools that pi's model can invoke on demand:
-
-| Tool                     | Description                                                |
-|--------------------------|------------------------------------------------------------|
-| `viking_search`          | Semantic search across memories, resources, and skills     |
-| `viking_read`            | Read a `viking://` URI at abstract / overview / full level |
-| `viking_browse`          | List directory contents or stat a `viking://` URI          |
-| `viking_remember`        | Store a fact or preference into long-term memory           |
-| `viking_forget`          | Delete a memory by URI or search query                     |
-| `viking_add_resource`    | Ingest a URL into OpenViking for indexed retrieval         |
-| `viking_archive_expand`  | Expand an archived session back into raw conversation      |
-
-The canonical `/viking` command (type `/viking` in pi's chat) displays connection status, session info, and accepts `commit` for manual synchronous commit.
-
-## Compared to Pi's Built-in Memory
-
-Pi has a built-in `MEMORY.md` file system. This extension **complements** it:
-
-| Feature      | Built-in `MEMORY.md`              | OpenViking extension                              |
-|--------------|-----------------------------------|---------------------------------------------------|
-| Storage      | Flat markdown                     | Vector DB + structured extraction                 |
-| Search       | Loaded into context wholesale     | Semantic similarity + ranking + token budget      |
-| Scope        | Per-project                       | Cross-project, cross-session, cross-agent         |
-| Capacity     | Context-limited                    | Unlimited (server-side storage)                   |
-| Extraction   | Manual rules                      | LLM-powered entity / preference / event extraction|
-| Subagents    | Same as parent                    | Isolated session + typed agent namespace          |
-
-## Compared to Claude Code Plugin
-
-Both plugins share the same core design (informed by each other):
-
-| Feature             | Claude Code Plugin                     | Pi Extension                           |
-|---------------------|----------------------------------------|----------------------------------------|
-| Architecture        | Hook scripts (.mjs) + MCP delegation   | Native TypeScript extension            |
-| Recall timing       | Synchronous (UserPromptSubmit hook)     | Synchronous (context event)            |
-| Tool delivery       | OV server's MCP endpoint (16 tools)     | pi.registerTool() (7 tools)            |
-| Write path          | Detached worker (async)                 | Async promise (pi's event loop)        |
-| Installation        | `claude plugin install` + setup script  | Copy directory → auto-discovered       |
-| Memory index        | None (flashlight search model)          | Built (map model — model sees what OV knows) |
-| Subagent isolation  | Explicit hook management                | Natural process-level isolation        |
-
-## Extension Structure
-
-See [DESIGN.md](./DESIGN.md) for the full design specification — comparison of all three OV plugins, detailed event flow, design rationale, and implementation guidance useful for building OV extensions for any agent harness.
-
-```
-pi-coding-agent-extension/
-├── config.json          # Default configuration (edit to customize)
-├── config.ts            # Config loader (defaults + config.json merge)
-├── client.ts            # OpenViking HTTP client (fetch + response envelope)
-├── sync.ts              # Turn capture, write queue, session lifecycle
-├── recall.ts            # Synchronous recall with ranking + budget
-├── takeover.ts          # Thin pi binding around lib/takeover-core.mjs
-├── tools.ts             # 7 registered LLM tools + /viking command
-├── lib/takeover-core.mjs # Pure context-takeover state machine
-├── index.ts             # Extension entry point (event handlers)
-├── TAKEOVER.md          # Context-takeover design
-└── README.md
-```
-
-All TypeScript files are loaded directly by pi's built-in `jiti` transpiler — zero dependencies beyond Node.js.
-
-## Troubleshooting
-
-| Symptom                                 | Cause                                                | Fix                                                         |
-|-----------------------------------------|------------------------------------------------------|-------------------------------------------------------------|
-| Extension not loading                   | `enabled: false` in config.json                      | Set `"enabled": true`                                       |
-| No recall on first prompt               | OpenViking server not running or wrong URL           | `curl http://localhost:1933/health`                         |
-| Tools not showing after `pi -c` resume  | Known pi issue (tools not re-registered on resume)   | Workaround built in — tools register in `before_agent_start`|
-| Extension crashes on load               | Wrong OV server URL or network issue                 | Check `logLevel` and server accessibility                   |
-| No memories extracted                   | Wrong embedding/extraction model in OV config        | Check OV's `embedding` / `vlm` configuration                |
-| Takeover never advances                  | Pending addMessage replay, commit, or overview polling failed | Set `OV_DEBUG_LOG=/tmp/ov-pi.log` and retry `/viking commit` |
-
-## License
-
-Apache-2.0. This extension derives from OpenViking's Apache-2.0-licensed `examples/`; the [OpenViking](https://github.com/volcengine/OpenViking) server itself is AGPL-3.0 since 0.3, which applies to whoever operates the server, not to this client.
+扩展按 Apache-2.0 发布，见 [`LICENSE`](./LICENSE)。OpenViking 服务端使用其自身许可证。

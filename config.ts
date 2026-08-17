@@ -110,8 +110,8 @@ const USER_CONFIG_TEMPLATE = `// ===============================================
 // pi-openviking 用户配置
 //
 // 生效优先级（高 → 低）：OPENVIKING_* 环境变量 > 本文件 > 扩展包内置默认值。
-// 修改后重启 pi 生效。以下每一项默认都被注释，取消注释即可覆盖；
-// 注释里标注的是扩展包当前的出厂默认值。
+// 扩展配置修改后重启 pi 生效；managedServer.proxy 修改后重启受管服务。以下每一项默认都被注释，取消注释即可覆盖；
+// 注释里标注的是当前默认值。
 //
 // 服务器地址与凭证不在本文件配置，按以下顺序解析（先命中者生效）：
 //   1. OPENVIKING_URL / OPENVIKING_API_KEY 等环境变量
@@ -158,6 +158,18 @@ const USER_CONFIG_TEMPLATE = `// ===============================================
   // "captureMaxLength": 24000,       // 单条捕获内容最大字符数
   // "captureToolMaxChars": 1000000,  // 单条工具输出最大字符数
   // "captureAssistantTurns": true,   // 是否捕获助手回合
+
+  // ---- 受管 OpenViking 服务代理 ---------------------------------------------
+  // 仅影响本包启动的 OpenViking 服务和 doctor，不修改 shell 或 pi 的环境变量。
+  // http/https 留空时服务明确不使用代理，也不会继承启动命令中的代理环境变量。
+  // "managedServer": {
+  //   "proxy": {
+  //     "http": "",
+  //     "https": "",
+  //     "noProxy": "127.0.0.1,localhost,::1"
+  //   }
+  // },
+  // 修改后执行：npx pi-openviking@latest server restart
 
   // ---- 其他 -------------------------------------------------------------------
   // "bypassPatterns": [],            // 命中这些正则的提示词跳过召回与同步
@@ -230,7 +242,7 @@ function ensureUserConfigFile(): void {
   try {
     if (existsSync(USER_CONFIG_PATH)) return;
     mkdirSync(dirname(USER_CONFIG_PATH), { recursive: true });
-    writeFileSync(USER_CONFIG_PATH, USER_CONFIG_TEMPLATE);
+    writeFileSync(USER_CONFIG_PATH, USER_CONFIG_TEMPLATE, { mode: 0o600 });
   } catch {
     // Best effort; the user config is optional.
   }

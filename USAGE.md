@@ -1,340 +1,491 @@
-# OpenViking pi 扩展（会话隔离版）使用说明
+# Pi OpenViking 扩展使用说明
 
-本文是这份扩展的权威使用文档，覆盖前置条件、安装、配置、验证与已知边界。
+本文是本扩展的详细使用文档，描述当前版本的安装、配置、运行边界和故障排查。
 
-机制本身（接管流程、归档分层、记忆抽取）由上游文档定义，本文不重复：
-- [`TAKEOVER.md`](TAKEOVER.md) — 上下文接管的状态机与失败模式
-- [`DESIGN.md`](DESIGN.md) — 捕获、召回、同步的设计
-- [`README.md`](README.md) — 上游工具与配置总览
+相关文档：
 
-本文只描述与上游行为不同、或使用时必须知道的部分。
+- [`README.md`](README.md)：项目概览与快速开始
+- [`DESIGN.md`](DESIGN.md)：捕获、召回与同步设计
+- [`TAKEOVER.md`](TAKEOVER.md)：上下文接管状态机与失败处理
 
----
+## 1. 当前行为
 
-## 1. 它解决什么问题
+扩展在一个 Pi 会话中维护两类上下文：
 
-在单个 pi 会话的长任务中自动维护两层记忆：
+- **工作上下文**：会话历史达到阈值后提交给 OpenViking，本地上下文保留最近若干用户轮次，其余内容由 `[OpenViking Session Context]` 归档概览替代。
+- **抽取后的长期记忆**：OpenViking 提交会话后异步抽取实体、事件和偏好，扩展在后续提示词中进行语义召回。
 
-- **工作记忆**：会话历史增长到阈值后提交给 OpenViking，本地上下文只保留最近若干轮，其余由归档概览（`[OpenViking Session Context]`）代替。
-- **长期记忆**：提交后由记忆模型异步抽取实体、事件、偏好，可通过 `viking_search` 按需召回。
+默认配置 `sessionScopedMemory: true`。扩展将长期记忆用户命名空间绑定为：
 
-与上游的关键差异：**长期记忆按 pi 会话隔离**，一个会话看不到另一个会话的记忆。
+```text
+<user>--pi-<piSessionId>
+```
 
----
+因此：
+
+- `pi -c` 或 `pi -p` 继续同一个 Pi 会话时沿用原命名空间；
+- 新会话和 fork 使用新的长期记忆命名空间；
+- 将 `sessionScopedMemory` 设为 `false` 后，同一 OpenViking 用户的会话恢复共享长期记忆。
+
+该命名空间约束针对 `viking://user/<user>` 下的长期记忆。`viking_archive_expand` 按调用方明确提供的 OpenViking session ID 读取 `viking://session/<id>` 会话归档，不使用上述用户记忆命名空间。
 
 ## 2. 前置条件
 
-### 2.1 OpenViking 服务
+### 2.1 客户端
 
-扩展是客户端，实际工作由常驻的 OpenViking HTTP 服务完成。安装与启停由 §3 的一键脚本完成；必须先能访问：
+- Pi Coding Agent
+- Node.js 20.18.1 或更高版本
+- 可访问的 OpenViking HTTP 服务
 
-```bash
-curl http://127.0.0.1:1933/health
-```
+扩展通过 HTTP 调用 OpenViking，不包含服务端。
 
-### 2.2 依赖约束：xxhash < 4
+### 2.2 本地服务
 
-**这一条不是可选项。** openviking 0.4.13 声明 `xxhash>=3.0.0`，但 `openviking/storage/vectordb/utils/str_to_uint64.py` 向 `xxhash.xxh64()` 传入 `str`。xxhash 4.0 移除了隐式编码，抛出 `Strings must be encoded before hashing`；该异常落在 `VikingVectorIndexBackend.upsert(partial_update=True)` 内，被记录后直接 `return ""`，**向量记录被静默丢弃**。
+本地安装还需要 Python 3.10 或更高版本。一键安装脚本当前固定安装：
 
-后果：长期记忆能写进文件系统，但永远索引不上，`search/recall` 恒返回 0 候选，而日志只有一行 ERROR。
-
-服务端安装时固定版本：
-
-```
+```text
 openviking[local-embed]==0.4.13
 xxhash<4
 ```
 
-xxhash 3.8.1 与 4.0.0 对同一输入产生相同摘要，降级不需要数据迁移。
+不要在脚本管理的虚拟环境中单独升级这两个依赖；重新运行 setup 会恢复上述版本组合。
 
 ### 2.3 记忆模型
 
-服务端 `vlm` 需要配置一个可用模型，否则提交后不会生成归档概览，接管永远无法推进边界。用 `openviking-server doctor --config <配置文件>` 确认 `VLM` 一项为 `PASS`。
+OpenViking 服务端必须配置可用的 `vlm`。没有可用的 VLM 时，服务可能通过健康检查，但不会生成记忆抽取结果和归档概览，上下文接管边界也无法推进。
 
----
+一键安装会在启动前运行：
 
-## 3. 安装
+```bash
+openviking-server doctor --config ~/.pi/openviking/ov.conf
+```
 
-### 一键安装（推荐）
+## 3. 安装与管理
+
+### 3.1 一键安装
 
 ```bash
 npx pi-openviking@latest setup
 ```
 
-一条命令完成全链路：创建 `~/.pi/openviking/venv` → 固定版本安装服务端（`openviking[local-embed]==0.4.13`、`xxhash<4`）→ （可选）预装 Ollama（本地模型路线）→ 生成 `ov.conf` 模板并引导手工编辑（含 vlm 模型）→ `doctor` 验证 → 后台启动服务并等待 `/health` 就绪 → `pi install npm:pi-openviking`。幂等，可重复运行；任何一步失败会停止并给出修复指引。
+setup 当前执行以下操作：
 
-服务启停（零依赖 Node 实现，跨平台后台运行）：
+1. 创建 `~/.pi/openviking/venv`；
+2. 安装固定版本的 OpenViking 服务端依赖；
+3. 可选安装 Ollama；
+4. 生成 `~/.pi/openviking/ov.conf`；
+5. 运行 doctor；
+6. 后台启动服务并等待 `/health`；
+7. 执行 `pi install npm:pi-openviking`。
+
+已有配置文件不会被覆盖。修改 `ov.conf` 后重新运行 setup，doctor 会再次检查配置；服务已经运行时，setup 会提示手动重启。
+
+### 3.2 服务管理
 
 ```bash
-npx pi-openviking@latest server start|stop|restart|status
+npx pi-openviking@latest server start
+npx pi-openviking@latest server stop
+npx pi-openviking@latest server restart
+npx pi-openviking@latest server status
 ```
 
-连接远端服务器或配置 API key：
+服务数据均位于 `~/.pi/openviking/`：
 
-```bash
-npx pi-openviking@latest credentials
+```text
+venv/          Python 虚拟环境
+ov.conf        OpenViking 服务端配置
+ovcli.conf     客户端地址与凭证
+server.pid     后台服务 PID
+server.log     服务日志
+data/          长期记忆和索引数据
 ```
 
-### 仅安装扩展
+### 3.3 仅安装扩展
+
+已有 OpenViking 服务时：
 
 ```bash
 pi install npm:pi-openviking
 ```
 
-首次启动自动生成 `~/.pi/pi-openviking.jsonc` 用户配置模板；之后用 `pi update --extensions` 随包更新。
+首次加载会生成 `~/.pi/pi-openviking.jsonc`。
 
-### 从仓库直接加载（便于改动）
+从仓库临时加载：
 
 ```bash
 pi -e /path/to/pi-openviking/index.ts
 ```
 
-调参写到用户配置 `~/.pi/pi-openviking.jsonc`（首次运行自动生成带全部配置项注释的模板），扩展目录内的 `config.json` 只是出厂默认值。
+### 3.4 更新
 
-### 装入 pi 扩展目录（全局生效）
+更新扩展包：
 
 ```bash
-mkdir -p ~/.pi/agent/extensions
-cp -r openviking ~/.pi/agent/extensions/openviking
-pi install ~/.pi/agent/extensions/openviking
+pi update --extensions
 ```
 
-### 升级
+更新脚本管理的服务端版本组合：
 
-- **扩展**：`pi update --extensions`。
-- **服务端**：重跑 `npx pi-openviking@latest setup` 即可。脚本按内置常量固定服务端版本（当前 `openviking==0.4.13`、`xxhash<4`），检测到版本不符会自动修正安装。上游发布新版服务端后，本扩展验证兼容性并随新版本提升该常量；`xxhash<4` 的约束在上游修复 §2.2 的编码问题前不能放松。
+```bash
+npx pi-openviking@latest setup
+```
 
-### 卸载
+### 3.5 卸载
 
 ```bash
 npx pi-openviking@latest uninstall
 ```
 
-停止服务后删除本工具管理的全部内容：`~/.pi/openviking/`（venv、服务端配置、日志、**全部长期记忆数据**）、`~/.pi/pi-openviking.jsonc`，并执行 `pi remove npm:pi-openviking`。操作前会逐项列出并等待确认。
+确认后会：
 
-两处不在清理范围：上游共享目录 `~/.openviking/`（可能被其他 OpenViking 客户端使用）与 Ollama（系统级安装，用系统包管理器移除）。
+- 停止后台服务；
+- 删除 `~/.pi/openviking/` 及其中的配置、日志和长期记忆数据；
+- 删除 `~/.pi/pi-openviking.jsonc`；
+- 执行 `pi remove npm:pi-openviking`。
 
----
+不会删除上游共享目录 `~/.openviking/`，也不会卸载系统级 Ollama。
 
-## 4. 凭证
+## 4. 地址与凭证
 
 按以下顺序解析，先命中者生效：
 
-1. `OPENVIKING_*` 环境变量（`OPENVIKING_URL`、`OPENVIKING_API_KEY` 等）
-2. `~/.pi/openviking/ovcli.conf`（`npx pi-openviking@latest credentials` 生成）
-3. `~/.pi/openviking/ov.conf`（服务端配置，见 §4.1）
+1. `OPENVIKING_*` 环境变量；
+2. `~/.pi/openviking/ovcli.conf`；
+3. `~/.pi/openviking/ov.conf`。
 
-本地 dev 模式最简用法：
+常用环境变量：
+
+| 环境变量 | 作用 |
+|---|---|
+| `OPENVIKING_URL` | OpenViking 服务地址 |
+| `OPENVIKING_API_KEY` / `OPENVIKING_BEARER_TOKEN` | Bearer token |
+| `OPENVIKING_ACCOUNT` | trusted 模式 account |
+| `OPENVIKING_USER` | OpenViking 基础用户标识 |
+| `OPENVIKING_PEER_ID` | actor peer 标识 |
+| `OPENVIKING_WORKSPACE_PEER` | 是否按当前工作目录派生 peer；设为 `0` 可关闭 |
+| `OPENVIKING_RECALL_PEER_SCOPE` | `actor` 或 `all` |
+| `OPENVIKING_RECALL_LIMIT` | 召回配额输入 |
+| `OPENVIKING_RECALL_QUERY_EXPANSION` | `auto` 或 `off` |
+
+配置远端服务或 API key：
+
+```bash
+npx pi-openviking@latest credentials
+```
+
+本地默认地址：
 
 ```bash
 export OPENVIKING_URL=http://127.0.0.1:1933
 ```
 
-### 4.1 服务端配置（ov.conf）
+本地 setup 生成的配置和扩展会自动使用该地址，通常不需要额外设置环境变量。
 
-`~/.pi/openviking/ov.conf` 由 setup 生成，是**严格 JSON（不支持注释）**。编辑后重跑 `npx pi-openviking@latest setup`，doctor 会自动验证。
+## 5. OpenViking 服务端配置
 
-| 键 | 说明 |
+`~/.pi/openviking/ov.conf` 是严格 JSON，不支持注释。默认模板包含：
+
+- `storage.workspace`: `~/.pi/openviking/data`
+- `server.host`: `127.0.0.1`
+- `server.port`: `1933`
+- 本地 dense embedding
+- 需要用户补充凭证的 `vlm`
+
+### 5.1 关键字段
+
+| 字段 | 当前作用 |
 |---|---|
-| `storage.workspace` | 服务端数据目录（长期记忆、向量索引），默认 `~/.pi/openviking/data` |
-| `server.host` / `server.port` | 监听地址，默认 `127.0.0.1:1933`（仅本机、dev 模式无认证） |
-| `server.root_api_key` | 绑定 `0.0.0.0`（Docker/局域网）时必填，设置后自动切换为 API key 认证；本机模式不要设 |
-| `embedding.dense` | 向量嵌入：`provider` / `model` / `api_key` / `api_base` / `dimension`。默认预填零依赖本地模型（`provider: "local"`，约 24MB，首次启动自动下载；完全不配置 `embedding` 段时上游也自动落到这个本地模型，**不会复用 vlm**）。**改 `dimension` 会使已有向量索引失效，需重建数据** |
-| `vlm` | 记忆模型（**必填**）：`provider` / `model` / `api_key` / `api_base` / `temperature` / `max_retries` / `timeout`。不配置则记忆抽取与上下文接管不生效（§2.3） |
+| `storage.workspace` | 长期记忆和向量索引目录 |
+| `server.host` / `server.port` | HTTP 监听地址 |
+| `server.root_api_key` | 非本机监听时使用的服务端 API key |
+| `embedding.dense` | dense embedding provider、模型、地址和维度 |
+| `vlm` | 记忆抽取和归档概览使用的模型 |
 
-**`vlm.provider` 完整取值**（对应服务端 `openviking/models/vlm/backends/` 的实现）：
+修改 embedding 的 `dimension` 后，已有向量索引与新维度不兼容。
 
-| provider | 用途 | 凭证 |
-|---|---|---|
-| `volcengine` | 火山引擎 Ark / BytePlus | API key |
-| `openai` | OpenAI API | API key |
-| `openai-codex` | **复用 Codex CLI 订阅**（OAuth） | 无需 api_key，见下 |
-| `kimi` | Kimi 编程订阅 | 订阅 API key |
-| `glm` | GLM 编程订阅 | 订阅 API key |
-| `litellm` | 任意 OpenAI 兼容端点（含 Ollama、OpenRouter、自部署网关） | 视端点而定 |
+### 5.2 `embedding.dense` 配置
 
-`embedding.dense.provider` 完整取值：`openai`、`volcengine`、`vikingdb`、`jina`、`ollama`、`gemini`、`voyage`、`dashscope`、`minimax`、`cohere`、`litellm`、`local`。
+`embedding.dense` 只负责生成检索使用的向量，与 `vlm` 是两条独立配置。更换其中一个不会自动修改另一个。
 
-vlm 还支持多凭证故障转移：`providers: { "<名字>": { provider/model/api_key/api_base } }` + `default_provider: "<名字>"`，主凭证失败后按配置切换。
-
-**火山引擎**（模板默认，只需填 `api_key`）：
+setup 当前生成的本地 embedding：
 
 ```json
-"vlm": { "provider": "volcengine", "model": "doubao-seed-2-0-code-preview-260215", "api_key": "<ARK_API_KEY>", "api_base": "https://ark.cn-beijing.volces.com/api/v3" }
+{
+  "embedding": {
+    "dense": {
+      "provider": "local",
+      "model": "bge-small-zh-v1.5-f16",
+      "dimension": 512
+    }
+  }
+}
 ```
 
-**OpenAI**（embedding 也要换成 API 模式）：
+OpenAI embedding：
 
 ```json
-"embedding": { "dense": { "provider": "openai", "model": "text-embedding-3-small", "api_key": "<KEY>", "api_base": "https://api.openai.com/v1", "dimension": 1536 } },
-"vlm": { "provider": "openai", "model": "gpt-5.4", "api_key": "<KEY>", "api_base": "https://api.openai.com/v1" }
+{
+  "embedding": {
+    "dense": {
+      "provider": "openai",
+      "model": "text-embedding-3-small",
+      "api_key": "<KEY>",
+      "api_base": "https://api.openai.com/v1",
+      "dimension": 1536
+    }
+  }
+}
 ```
 
-**Ollama 本地**（先装 Ollama 并 `ollama pull` 对应模型）：
+Ollama embedding：
 
 ```json
-"embedding": { "dense": { "provider": "ollama", "model": "qwen3-embedding:0.6b", "api_base": "http://localhost:11434/v1", "dimension": 1024 } },
-"vlm": { "provider": "litellm", "model": "ollama/<模型名>", "api_key": "no-key", "api_base": "http://localhost:11434" }
+{
+  "embedding": {
+    "dense": {
+      "provider": "ollama",
+      "model": "qwen3-embedding:0.6b",
+      "api_base": "http://localhost:11434/v1",
+      "dimension": 1024
+    }
+  }
+}
 ```
 
-**复用 Codex CLI 订阅**（已用 `codex` 登录过本机则零配置，服务端运行时自动导入 OAuth 并刷新）：
+当前固定服务端版本的 dense embedding provider 包括：`local`、`openai`、`azure`、`volcengine`、`vikingdb`、`jina`、`ollama`、`gemini`、`voyage`、`dashscope`、`minimax`、`cohere` 和 `litellm`。
+
+### 5.3 `vlm` 配置
+
+`vlm` 只负责记忆抽取和归档概览。它可以使用与 embedding 不同的 provider、模型和凭证。
+
+setup 模板当前生成火山引擎配置：
 
 ```json
-"vlm": { "provider": "openai-codex", "model": "gpt-5.4", "api_base": "https://chatgpt.com/backend-api/codex" }
+{
+  "vlm": {
+    "provider": "volcengine",
+    "model": "doubao-seed-2-0-code-preview-260215",
+    "api_key": "<ARK_API_KEY>",
+    "api_base": "https://ark.cn-beijing.volces.com/api/v3",
+    "temperature": 0.0,
+    "max_retries": 2
+  }
+}
 ```
 
-令牌缓存写在 `~/.pi/openviking/codex_auth.json`（由 setup 通过 `OPENVIKING_CODEX_AUTH_PATH` 固定在该位置；源凭证读取 `$CODEX_HOME/auth.json`，默认 `~/.codex/auth.json`）。
-
-**Kimi 编程订阅**：
+OpenAI VLM：
 
 ```json
-"vlm": { "provider": "kimi", "model": "kimi-code", "api_key": "<订阅 KEY>", "api_base": "https://api.kimi.com/coding" }
+{
+  "vlm": {
+    "provider": "openai",
+    "model": "<MODEL>",
+    "api_key": "<KEY>",
+    "api_base": "https://api.openai.com/v1"
+  }
+}
 ```
 
-**GLM 编程订阅**：
+复用已登录的 Codex CLI：
 
 ```json
-"vlm": { "provider": "glm", "model": "glm-4.6v", "api_key": "<订阅 KEY>", "api_base": "https://api.z.ai/api/coding/paas/v4" }
+{
+  "vlm": {
+    "provider": "openai-codex",
+    "model": "<MODEL>",
+    "api_base": "https://chatgpt.com/backend-api/codex"
+  }
+}
 ```
 
-**任意 OpenAI 兼容端点**：`provider: "litellm"` + 自定义 `api_base` / `api_key`（Ollama 见上例）。
+Codex OAuth 缓存位于 `~/.pi/openviking/codex_auth.json`。
 
----
+Kimi 编程订阅：
 
-## 5. 配置参考
+```json
+{
+  "vlm": {
+    "provider": "kimi",
+    "model": "kimi-code",
+    "api_key": "<订阅 KEY>",
+    "api_base": "https://api.kimi.com/coding"
+  }
+}
+```
 
-包内 `config.json`（出厂默认）与上游默认值不同的三项；用户覆盖写到 `~/.pi/pi-openviking.jsonc`，优先级更高：
+GLM 编程订阅：
 
-| 键 | 本文件取值 | 上游默认 | 原因 |
-|---|---|---|---|
-| `takeover.tokenThreshold` | `20000` | `30000` | 见 §5.1 |
-| `takeover.overviewBudget` | `16000` | `3000` | 见 §5.2 |
-| `sessionScopedMemory` | `true` | 无此键 | 见 §6.1 |
+```json
+{
+  "vlm": {
+    "provider": "glm",
+    "model": "glm-4.6v",
+    "api_key": "<订阅 KEY>",
+    "api_base": "https://api.z.ai/api/coding/paas/v4"
+  }
+}
+```
 
-### 5.1 阈值与保留轮数
+通过 LiteLLM 使用 Ollama：
 
-`tokenThreshold: 20000` + `keepRecentTurns: 3` 是针对**工具密集编程负载**实测得出的取值。
+```json
+{
+  "vlm": {
+    "provider": "litellm",
+    "model": "ollama/<模型名>",
+    "api_key": "no-key",
+    "api_base": "http://localhost:11434"
+  }
+}
+```
 
-在 12 轮工具密集任务、每格重复 3 次的对照中：
+当前固定服务端版本为 `volcengine`、`openai`、`azure`、`openai-codex`、`kimi` 和 `glm` 提供专用 VLM 后端；其他 provider 值由 LiteLLM 后端处理。
 
-| 配置 | 边界推进 | payload 均值 | 工具输出保真 |
-|---|---|---|---|
-| t30000-k3（上游默认） | 1 / 2 / 2 | 148,883 | 3/3 |
-| t20000-k1 | 3 / 3 / 4 | 119,835 | **2/3** |
-| t20000-k3（本取值） | 3 / 3 / 3 | 108,371 | 3/3 |
+## 6. 扩展配置
 
-选择依据是**稳定性与保真，不是成本**：三者成本差异未达统计显著（上游默认的变异系数为 32%，样本量 n=3 支撑不了成本结论）。上游默认在同一负载下压缩次数在 1–2 次之间波动、峰值在 197K–292K 之间波动；本取值稳定压缩 3 次、峰值波动 ±7%。
+用户配置位于：
 
-**`keepRecentTurns` 不要调到 1。** 实测 3 次中有 1 次丢失了只出现在工具输出里的精确值，且模型给出的是一个格式正确但内容错误的答案，而非承认不知道。
+```text
+~/.pi/pi-openviking.jsonc
+```
 
-对话为主、工具很少的负载下，两种配置差异在方差之内，不需要调整。
+包内 `config.json` 只是扩展出厂默认值。扩展配置与包内默认值合并，修改后重启 Pi 生效；受管服务代理由 CLI 单独读取，修改后重启 OpenViking 服务。首次生成的 JSONC 模板包含当前支持的可调项和注释。
 
-### 5.2 `overviewBudget` 必须足够大
+### 6.1 当前关键默认值
 
-`GET /sessions/{id}/context?token_budget=N` 对归档概览是**全有或全无**返回：概览放不进预算就返回空字符串，不会截断。
+| 配置 | 默认值 | 作用 |
+|---|---:|---|
+| `enabled` | `true` | 扩展总开关 |
+| `sessionScopedMemory` | `true` | 按 Pi 会话绑定长期记忆用户命名空间 |
+| `syncTurns` | `true` | 同步会话内容 |
+| `recallTokenBudget` | `2000` | 每轮召回注入预算 |
+| `recallMaxContentChars` | `500` | 单条召回内容字符上限 |
+| `recallPreferAbstract` | `true` | 优先使用摘要 |
+| `recallLimit` | `10` | 服务端分类配额的缩放输入 |
+| `recallQueryExpansion` | `auto` | 服务端查询扩展模式 |
+| `scoreThreshold` | `0.35` | 最低召回相关度 |
+| `minQueryLength` | `3` | 触发召回的最短提示词长度 |
+| `profileTokenBudget` | `10000` | 用户画像注入预算 |
+| `resumeContextBudget` | `32000` | 恢复会话时的归档上下文预算 |
+| `commitTokenThreshold` | `20000` | 客户端提交阈值 |
+| `commitKeepRecentCount` | `10` | 提交时保留的最近消息数 |
+| `takeover.enabled` | `true` | 启用上下文接管 |
+| `takeover.tokenThreshold` | `20000` | 接管提交和边界推进阈值 |
+| `takeover.keepRecentTurns` | `3` | 本地保留的最近用户轮数 |
+| `takeover.overviewBudget` | `16000` | 归档概览请求预算 |
+| `takeover.overviewPollMs` | `2000` | 概览轮询间隔 |
+| `takeover.overviewPollMax` | `15` | 单次边界推进的最大轮询次数 |
+| `captureMode` | `semantic` | `semantic` 或 `keyword` |
+| `captureMaxLength` | `24000` | 单条捕获文本上限 |
+| `captureToolMaxChars` | `1000000` | 单个工具内容部分的字符上限 |
+| `captureAssistantTurns` | `true` | 捕获助手侧内容 |
+| `bypassPatterns` | `[]` | 按当前工作目录跳过整个扩展处理 |
+| `logLevel` | `error` | `silent`、`error` 或 `info` |
 
-实测同一份 14,436 字符的概览：
+`bypassPatterns` 匹配 `process.cwd()`：普通值匹配该目录及其子目录；以 `*` 开头时匹配路径后缀；以 `*` 结尾时匹配路径前缀。
 
-| `token_budget` | 返回长度 |
-|---|---|
-| 1000 / 3000 / 4000 / 6000 / 8000 | 0 |
-| 16000 | 14,435 |
+### 6.2 受管 OpenViking 服务代理
 
-上游默认 `3000` 在概览长大后会持续拿到空值，扩展据此判定「overview not ready」并 fail-open，**边界永不推进、上下文无界增长**，而日志只有一行 `overview not ready`，看起来与正常重试无异。
+`managedServer.proxy` 只控制本包执行 `openviking-server doctor` 以及启动后台服务时传给 OpenViking 子进程的环境，不修改当前 shell、Pi 进程或其他子进程：
 
----
+```json
+{
+  "managedServer": {
+    "proxy": {
+      "http": "",
+      "https": "",
+      "noProxy": "127.0.0.1,localhost,::1"
+    }
+  }
+}
+```
 
-## 6. 相对上游的改动
+`http` 和 `https` 默认均为空，即不使用代理。启动脚本会先从子进程环境副本中移除大小写形式的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`，再按本配置写入 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY`，因此不会意外继承用户环境中的代理。代理 URL 仅支持 `http://` 和 `https://`。
 
-共 7 个文件、103 行。分两类。
+该设置为 OpenViking 服务进程中遵循标准代理环境变量的请求提供代理；当前固定版本的 embedding、VLM 客户端以及首次本地模型下载使用该机制。OpenViking 的部分内部回环或安全校验请求会显式绕过环境代理。embedding 与 VLM 不能分别指定不同的正向代理；该设置也不代理 `uv`、`pip`、`pi` 等安装命令。若代理 URL 含凭证，应确保本文件只有当前用户可读。
 
-### 6.1 会话级记忆隔离（`sessionScopedMemory`）
-
-上游把长期记忆写在 `viking://user/<user_id>` 下，同一用户的所有会话共享。开启本项后，扩展在 `session_start` 时把命名空间绑定为 `<user>--pi-<piSessionId>`。
-
-隔离需要**两层**，缺一不可：
-
-1. `client.ts` 的 `bindUser()` 改写 `X-OpenViking-User`，约束服务端的记忆语义操作（抽取写入、recall、profile 注入）。
-2. `tools.ts` 的 `scopeSearch()` / `denyOutside()` 钳制工具层。**服务端的 user 头不约束对任意 `viking://` URI 的直接访问**——只改头的话，`viking_search` 默认仍在全局根搜索，会命中其它会话。
-
-越界访问返回明确拒绝而非静默改写，避免模型误以为自己看到的是全局视图。
-
-绑定发生在 `sync.ensureSession()` 之前。**时序不能改**：晚一步，前几个请求就落进共享空间。
-
-行为后果：pi 会话 id 在 `pi -c` / `pi -p` 之间稳定，长任务持续累积到同一命名空间；**新会话或 fork 从空记忆开始**。
-
-关闭方式：`"sessionScopedMemory": false`，恢复上游的跨会话共享行为。
-
-### 6.2 工具结果捕获修复
-
-上游在 pi 下**不会把工具结果同步到 OpenViking**。
-
-`lib/capture-adapter.mjs` 的 `normalizeRole()` 只做小写化。pi 发出的 role 是 `toolResult`（camelCase），小写后为 `toolresult`，匹配不到任何分支，条目在进入捕获前即被丢弃。该函数已为 `toolcall` 特判过 camelCase，唯独漏了结果侧。这个共享模块同时服务 Claude Code / Codex / OpenCode（均为 snake_case），所以上游不会暴露此问题。
-
-后果有三层：
-
-1. 工具输出既不在归档、也在边界推进时被 `transformContext` 丢弃，只能靠重新执行命令找回。
-2. `pendingTokens` 只统计已同步内容，在工具密集负载下低估约 5 倍，接管在编程场景中基本不触发。
-3. `captureToolResults` 无法作为补救——它只在 `config.ts` 中声明了类型与默认值，逻辑代码从不读取，是个空开关。
-
-修复后同一份 3 轮工具密集负载的实测：
-
-| | 修复前 | 修复后 |
-|---|---|---|
-| 累计同步 token | 2,228 | 5,428 |
-| 带 `tool_output` 的 tool 部件 | 0 / 6 | 4 / 8 |
-
-`shared/capture-utils.mjs` 中 `normalizeType()` 的 camelCase 拆分修的是同一类问题在并行路径上的表现。**该处未单独隔离验证是否独立必需**；已证实必需的是 `lib/capture-adapter.mjs` 那一处。
-
----
-
-## 7. 验证
-
-### 7.1 确认压缩真的发生
+修改后重启受管服务：
 
 ```bash
-export OV_DEBUG_LOG=/path/to/ov.log
+npx pi-openviking@latest server restart
 ```
 
-关注三行，缺一说明未生效：
+JSONC 无法解析或代理字段无效时，`setup` 的 doctor、`server start` 和 `server restart` 会拒绝继续，避免静默绕过代理。
 
+### 6.3 上下文接管
+
+默认组合为：
+
+```json
+{
+  "takeover": {
+    "enabled": true,
+    "tokenThreshold": 20000,
+    "keepRecentTurns": 3,
+    "overviewBudget": 16000,
+    "overviewPollMs": 2000,
+    "overviewPollMax": 15
+  }
+}
 ```
-turn_end: synced N entries, ~M tokens      # 捕获在跑
-commit: session=... ok=true                # 提交成功
-takeover: boundary advanced to K user turns # 边界真的推进了
-```
 
-只有 `commit ok=true` 而没有 `boundary advanced`，通常是 §5.2 的 `overviewBudget` 问题。
+达到阈值后，扩展提交当前 OpenViking 会话并轮询归档概览。取得概览后，`context` 事件用一条 `[OpenViking Session Context]` 消息替换已覆盖的较早历史，同时保留最近用户轮次。
 
-### 7.2 确认隔离生效
+在概览尚未生成、请求失败或预算不足时，本轮保持原上下文，不推进覆盖边界。
 
-新开一个会话，只放开 viking 工具：
+### 6.4 捕获和召回
+
+接管开启时，捕获路径保留用于恢复工作上下文的会话内容，包括受 `captureToolMaxChars` 限制的工具部分。写入前会删除扩展自己注入的 OpenViking 上下文块，避免召回内容被再次捕获。
+
+召回使用当前用户提示词，并在同一轮 `context` 事件中注入。服务端支持 context 搜索时使用 `/api/v1/search/search`；不支持时回退到 `/api/v1/search/recall`。
+
+## 7. 状态与诊断
+
+### 7.1 基本状态
 
 ```bash
-pi -e .../pi-openviking/index.ts -t viking_search,viking_read,viking_browse \
-   -p --session-id <新会话> "用 viking_search 查<另一会话里的内容>；再用 viking_browse 列出 viking:// 根目录"
+npx pi-openviking@latest server status
+curl http://127.0.0.1:1933/health
+pi list
 ```
 
-预期：搜索返回 `No results found.`，浏览返回 `Refused: ... is outside this session's memory namespace (...)`。
+Pi 页脚状态：
 
----
+- `OV ✓`：OpenViking 可达；
+- `OV ✗`：OpenViking 不可达；
+- `ctx K`：已经由归档概览覆盖的用户轮数；
+- `~N/T`：当前同步 token 估算与接管阈值。
+
+在 Pi 中输入 `/viking` 可查看连接和会话信息，输入 `/viking commit` 可手动提交。
+
+### 7.2 调试日志
+
+设置日志文件后再启动 Pi：
+
+```bash
+export OV_DEBUG_LOG="$PWD/ov-pi.log"
+pi
+```
+
+扩展以 best-effort 方式写日志，日志写入失败不会中断 Pi。
 
 ## 8. 故障排查
 
-| 现象 | 检查 |
+| 现象 | 当前检查入口 |
 |---|---|
-| 页脚显示 `OV ✗` | `curl <endpoint>/health`；确认 `OPENVIKING_URL` |
-| `curl` 能通但扩展报 not connected | pi settings 配置了 `httpProxy` 时，旧版本扩展的 loopback 请求会被送进代理。0.3.2 起 loopback 端点直连绕过代理，升级即可 |
-| 日志反复 `overview not ready`，边界不推进 | 提高 `takeover.overviewBudget`（§5.2） |
-| `search/recall` 恒为 0 候选 | 服务端 xxhash 版本（§2.2） |
-| 提交后不生成概览 | `openviking-server doctor` 的 `VLM` 是否 PASS |
-| 工具输出无法回忆 | 确认 §6.2 的修复在位 |
-| 扩展未加载 | `pi list` 是否列出该扩展 |
+| 页脚显示 `OV ✗` | `server status`、`/health`、`OPENVIKING_URL` 和凭证 |
+| 本地 curl 可用但扩展无法连接 | 升级到 0.3.2 或更高版本；loopback 请求会绕过 Pi HTTP 代理 |
+| 提交后没有归档概览 | 检查 `openviking-server doctor` 的 VLM 结果和 `server.log` |
+| 日志反复出现 `overview not ready` | 检查 VLM 和 `takeover.overviewBudget` |
+| recall 一直没有结果 | 检查服务端版本组合、embedding、xxhash 和当前会话命名空间 |
+| 扩展没有加载 | 使用 `pi list` 检查安装状态，检查用户配置中的 `enabled` |
+| 扩展配置未生效 | 确认修改的是 `~/.pi/pi-openviking.jsonc`，然后重启 Pi |
+| 受管服务代理未生效 | 检查 `managedServer.proxy`、代理 URL 和 `NO_PROXY`，然后执行 `server restart`；配置错误会直接阻止启动 |
 
----
+## 9. 当前边界
 
-## 9. 已知边界
-
-- **成本结论依赖计价模型。** §5.1 的对照中，token 量为实测，任务侧成本是按较昂贵模型重新加权得到的，假设同族模型 token 数可迁移。
-- **调参结论与负载绑定。** §5.1 的取值来自工具密集编程负载。同一套指标在助手文本密集的负载下曾得出相反的推荐，不要跨负载迁移。
-- **许可证分层。** 本扩展源自上游 `examples/`（Apache-2.0），按 Apache-2.0 发布。OpenViking 服务端主程序自 0.3 起为 AGPL-3.0：自行部署自用不产生义务；对外提供网络服务时，义务由服务端部署者承担，与本扩展的分发无关。
+- `sessionScopedMemory` 隔离的是抽取后的用户长期记忆命名空间，不会把历史会话记忆迁移到新命名空间。
+- `viking_archive_expand` 使用调用方提供的 OpenViking session ID 读取会话归档。
+- OpenViking 记忆抽取和归档概览依赖服务端 VLM，扩展不会在客户端替代该模型能力。
+- 修改 embedding 维度后，已有向量索引不能直接沿用。
+- 本扩展按 Apache-2.0 发布；OpenViking 服务端使用其自身许可证。

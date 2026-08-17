@@ -1,6 +1,6 @@
 {
   "name": "pi-openviking",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Pi extension for the OpenViking context database: in-session context takeover and session-scoped long-term memory with recall tools.",
   "keywords": [
     "pi-package"
@@ -10,6 +10,9 @@
     "pi-openviking": "scripts/cli.mjs"
   },
   "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
   "pi": {
     "extensions": [
       "./index.ts"

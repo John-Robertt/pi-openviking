@@ -23,6 +23,7 @@ import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import { buildManagedServerEnv, readManagedServerProxy } from "../shared/managed-server-env.mjs";
 
 // Pinned server dependencies. xxhash<4 is NOT optional: openviking 0.4.13
 // passes str into xxhash.xxh64(), and xxhash 4 removed implicit encoding,
@@ -52,6 +53,10 @@ const USER_CONFIG = join(homedir(), ".pi", "pi-openviking.jsonc");
 // keep it inside OV_HOME. Children (doctor, server) inherit this.
 process.env.OPENVIKING_CODEX_AUTH_PATH ||= join(OV_HOME, "codex_auth.json");
 
+function managedServerEnv() {
+  return buildManagedServerEnv(process.env, readManagedServerProxy(USER_CONFIG));
+}
+
 const PKG_DIR = dirname(fileURLToPath(import.meta.url));
 const CLI_VERSION = (() => {
   try {
@@ -69,11 +74,12 @@ function fail(message, code = 1) {
   process.exit(code);
 }
 
-function run(cmd, args, { capture = false } = {}) {
+function run(cmd, args, { capture = false, env = process.env } = {}) {
   const res = spawnSync(cmd, args, {
     stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
     shell: false,
     windowsHide: true,
+    env,
   });
   if (res.error) return { ok: false, code: -1, out: "", err: String(res.error) };
   return {
@@ -260,7 +266,7 @@ async function ensureOllama() {
 
 function runDoctor() {
   say("运行 openviking-server doctor …");
-  const res = run(SERVER_BIN, ["doctor", "--config", OV_CONF]);
+  const res = run(SERVER_BIN, ["doctor", "--config", OV_CONF], { env: managedServerEnv() });
   if (!res.ok) {
     fail("doctor 存在 FAIL 项（常见问题：vlm 模型未配置或不可用）。修复后重新运行 `npx pi-openviking@latest setup`。");
   }
@@ -314,7 +320,7 @@ function pidAlive(pid) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function serverStart() {
+async function serverStart(preparedEnv) {
   if (!existsSync(SERVER_BIN)) fail(`未安装服务端，先运行 \`npx pi-openviking@latest setup\`。（缺少 ${SERVER_BIN}）`);
   if (!existsSync(OV_CONF)) fail(`未找到服务端配置 ${OV_CONF}，先运行 \`npx pi-openviking@latest setup\`。`);
 
@@ -324,6 +330,7 @@ async function serverStart() {
     return;
   }
 
+  const env = preparedEnv ?? managedServerEnv();
   mkdirSync(OV_HOME, { recursive: true });
   const logFd = openSync(LOG_FILE, "a");
   const child = spawn(SERVER_BIN, ["--config", OV_CONF], {
@@ -331,6 +338,7 @@ async function serverStart() {
     detached: true,
     stdio: ["ignore", logFd, logFd],
     windowsHide: true,
+    env,
   });
   child.unref();
   closeSync(logFd);
@@ -473,8 +481,9 @@ async function main() {
       if (sub === "start") await serverStart();
       else if (sub === "stop") await serverStop();
       else if (sub === "restart") {
+        const env = managedServerEnv();
         await serverStop();
-        await serverStart();
+        await serverStart(env);
       } else if (sub === "status") await serverStatus();
       else fail("用法: pi-openviking server start|stop|restart|status", 2);
       break;
