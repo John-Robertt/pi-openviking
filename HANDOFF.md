@@ -166,10 +166,11 @@ interface ActiveContext {
 
 ### 7. 与 Pi compaction 协作
 
-Pi 独立决定何时执行 compaction。有效 `ActiveContext` 已就绪时，compaction entry 内嵌
-checkpoint 正文、checkpoint hash、Archive 身份和 raw-tail 边界，使任务恢复可以直接装载
-确定内容。`ActiveContext` 尚未就绪时，Pi 执行原生 split-turn compaction。扩展通过 Pi
-生命周期钩子参与协作，正在运行的 agent 始终由 Pi 管理。
+OpenViking takeover 负责正常的上下文增长，Pi compaction 负责运行时 fail-open。Pi 独立决定
+何时触发 compaction：有效 `ActiveContext` 已就绪时，compaction entry 内嵌 checkpoint 正文、
+checkpoint hash、Archive 身份和 raw-tail 边界；`ActiveContext` 不可用时，Pi 执行原生
+split-turn compaction。扩展通过生命周期钩子提供可用上下文，不主动调用 compaction，也不
+中止正在运行的 agent。
 
 ### 8. 检索与恢复
 
@@ -243,7 +244,11 @@ Archive 与 takeover 预算是 Phase 3 的候选值。预算根据 Archive step 
 接管后上下文大小验证；VLM 消费能力通过候选模型选型解决。
 
 `contextTokenThreshold=0` 使用“任务模型上下文容量减去 system、工具、provider 安全余量、
-checkpoint 和 raw tail”计算高水位。目标上下文超出模型容量时使用 Pi 原生 compaction。
+checkpoint 和 raw tail”计算高水位。高水位必须为正且能够容纳目标上下文；容量不匹配时
+保持 takeover inactive，并由 `/viking` 报告。解决方式是选择更大上下文窗口的任务模型，
+或调整候选预算并重新通过 Phase 3 验证。可外置的大型 payload 使用完整存储和可追溯引用；
+非外置原子输入的支持上限由任务模型剩余容量决定，超出时需要更大模型或更小的源输入。
+Pi compaction 仍由 Pi 的运行时条件触发。
 
 上述对象是扩展配置的完整 schema。配置加载器对未知字段返回包含字段路径的校验错误；开发
 环境从当前模板生成 `~/.pi/pi-openviking.jsonc`。OpenViking 服务地址、凭证和
@@ -307,17 +312,18 @@ recorded -> archived -> VLM-enriched -> active-for-takeover
 
 ### Phase 3：端到端预算验证与模型选型
 
-- 在 Phase 0–2 完成后，对每个候选 VLM 使用同一条真实 100k+ token 长轨迹；
-- 对照原始事件检查配置候选值产生的 Archive 边界、raw tail 和接管上下文；
-- 根据 step 原子性、raw-tail 完整性和上下文容量调整对应预算并重跑；
+- 在 Phase 0–2 完成后，使用同一条真实 100k+ token 长轨迹验证候选预算、容量边界和 VLM；
+- 对照原始事件检查 Archive 边界、raw tail、checkpoint 和接管上下文；
+- 使用 Pi 报告的任务模型容量验证高水位公式两侧的 fit 与 capacity mismatch 行为；
+- 根据 step 原子性、raw-tail 完整性和上下文容量调整候选预算并重跑；
 - 选择能在下一个 Archive 产生前完成前一个 checkpoint 的 VLM；
-- 预算和模型均通过端到端验证后确认为出厂默认值。
+- 预算和 VLM 通过端到端验证后确认为出厂默认值，容量边界确认为 takeover eligibility 规则。
 
 ### Phase 4：检索和可操作状态
 
 - 语义搜索 raw events 与 checkpoint，并显示来源类型；
 - Archive manifest 支持按 session、branch、Archive 和 event ID 过滤、browse 和 expand；
-- `/viking` 默认显示连接、Archive/VLM 积压及 takeover active/fallback；
+- `/viking` 默认显示连接、Archive/VLM 积压、takeover 状态及 capacity mismatch/fallback；
 - 详细诊断输出 checkpoint ID、raw-tail 边界和内部状态字段。
 ## 验收要求
 
@@ -325,6 +331,8 @@ recorded -> archived -> VLM-enriched -> active-for-takeover
 
 - 配置模板与“目标配置”schema 一致，未知字段返回包含字段路径的校验错误；
 - 真实 100k+ token 轨迹证明候选预算满足 step 原子性、raw-tail 完整性和上下文容量；
+- 高水位公式结果为正时，当前任务模型能够在安全余量内完整装载目标上下文；
+- 高水位公式结果非正时保持 takeover inactive，并由 `/viking` 给出可操作诊断；
 - 同一轨迹证明所选 VLM 能在下一个 Archive 产生前完成前一个 checkpoint；
 - 单个用户指令后的长工具循环能够安全归档和接管；
 - 持久 Pi JSONL 中的每个源事件在服务端确认后推进 ACK frontier；
@@ -340,7 +348,9 @@ recorded -> archived -> VLM-enriched -> active-for-takeover
 - Archive、request、checkpoint 和失败事件能够完整派生 VLM 状态及积压 token；
 - 每次接管原子替换一次 `ActiveContext`，并保持到下一次上下文高水位；
 - raw events 与 checkpoint 可语义检索，Archive manifest 可确定性 browse/expand；
-- OpenViking 降级时 Pi 执行和原生 compaction 保持可用。
+- OpenViking 降级时 Pi 执行保持可用；
+- Pi 自身触发 compaction 且 `ActiveContext` 不可用时执行原生 split-turn compaction；
+- Pi 是 compaction 的唯一触发方并管理运行中的 agent，扩展只提供生命周期钩子结果。
 
 先运行相关的聚焦测试，再运行完整 `npm test` 和 `git diff --check`。
 
