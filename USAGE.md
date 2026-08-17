@@ -57,7 +57,7 @@ OpenViking 服务端必须配置可用的 `vlm`。没有可用的 VLM 时，服�
 一键安装会在启动前运行：
 
 ```bash
-openviking-server doctor --config ~/.pi/openviking/ov.conf
+npx pi-openviking@latest server doctor
 ```
 
 ## 3. 安装与管理
@@ -87,6 +87,7 @@ npx pi-openviking@latest server start
 npx pi-openviking@latest server stop
 npx pi-openviking@latest server restart
 npx pi-openviking@latest server status
+npx pi-openviking@latest server doctor
 ```
 
 服务数据均位于 `~/.pi/openviking/`：
@@ -96,6 +97,7 @@ venv/          Python 虚拟环境
 ov.conf        OpenViking 服务端配置
 ovcli.conf     客户端地址与凭证
 server.pid     后台服务 PID
+server-state.json  脱敏的运行配置快照
 server.log     服务日志
 data/          长期记忆和索引数据
 ```
@@ -410,7 +412,7 @@ GLM 编程订阅：
 npx pi-openviking@latest server restart
 ```
 
-JSONC 无法解析或代理字段无效时，`setup` 的 doctor、`server start` 和 `server restart` 会拒绝继续，避免静默绕过代理。
+JSONC 无法解析或代理字段无效时，`setup` 的 doctor、`server start`、`server restart` 和 `server doctor` 会拒绝继续，避免静默绕过代理。
 
 ### 6.3 上下文接管
 
@@ -445,9 +447,13 @@ JSONC 无法解析或代理字段无效时，`setup` 的 doctor、`server start`
 
 ```bash
 npx pi-openviking@latest server status
-curl http://127.0.0.1:1933/health
+npx pi-openviking@latest server doctor
 pi list
 ```
+
+`server status` 是无外部模型调用的快速检查，展示受管进程、结构化 `/health` 结果、运行时模型、代理、存储和日志。服务启动后修改 `ov.conf` 或 `managedServer.proxy` 时，状态会保留运行中的配置并提示执行 `server restart`；由旧版 CLI 启动且没有运行快照时，会将当前地址检查标记为 `PROBE` 并返回非零，执行一次 `server restart` 即可建立可确认的运行快照。
+
+`server doctor` 使用与受管服务相同的 `ov.conf`、代理和 Codex OAuth 路径执行 OpenViking 完整诊断，包括 Embedding、VLM、认证、运行环境和磁盘。
 
 Pi 页脚状态：
 
@@ -475,7 +481,7 @@ pi
 |---|---|
 | 页脚显示 `OV ✗` | `server status`、`/health`、`OPENVIKING_URL` 和凭证 |
 | 本地 curl 可用但扩展无法连接 | 升级到 0.3.2 或更高版本；loopback 请求会绕过 Pi HTTP 代理 |
-| 提交后没有归档概览 | 检查 `openviking-server doctor` 的 VLM 结果和 `server.log` |
+| 提交后没有归档概览 | 检查 `server doctor` 的 VLM 结果和 `server.log` |
 | 日志反复出现 `overview not ready` | 检查 VLM 和 `takeover.overviewBudget` |
 | recall 一直没有结果 | 检查服务端版本组合、embedding、xxhash 和当前会话命名空间 |
 | 扩展没有加载 | 使用 `pi list` 检查安装状态，检查用户配置中的 `enabled` |

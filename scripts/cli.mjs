@@ -4,7 +4,7 @@
  * for the OpenViking context database. Zero runtime dependencies.
  *
  *   npx pi-openviking@latest setup        full chain: venv → pinned install → init → doctor → start → pi install
- *   npx pi-openviking@latest server start|stop|restart|status
+ *   npx pi-openviking@latest server start|stop|restart|status|doctor
  *   npx pi-openviking@latest credentials  configure server URL / API key (~/.openviking/ovcli.conf)
  */
 
@@ -18,12 +18,19 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { get } from "node:http";
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { buildManagedServerEnv, readManagedServerProxy } from "../shared/managed-server-env.mjs";
+import { probeServerHealth } from "../shared/server-health.mjs";
+import {
+  configFingerprint,
+  createManagedServerState,
+  parseManagedServerState,
+  proxyFingerprint,
+  summarizeServerConfig,
+} from "../shared/managed-server-state.mjs";
 
 // Pinned server dependencies. xxhash<4 is NOT optional: openviking 0.4.13
 // passes str into xxhash.xxh64(), and xxhash 4 removed implicit encoding,
@@ -47,14 +54,20 @@ const OV_CONF = join(OV_HOME, "ov.conf");
 const OVCLI_CONF = join(OV_HOME, "ovcli.conf");
 const PID_FILE = join(OV_HOME, "server.pid");
 const LOG_FILE = join(OV_HOME, "server.log");
+const STATE_FILE = join(OV_HOME, "server-state.json");
 const USER_CONFIG = join(homedir(), ".pi", "pi-openviking.jsonc");
 
 // The server's Codex-OAuth store defaults to the upstream-shared ~/.openviking;
 // keep it inside OV_HOME. Children (doctor, server) inherit this.
 process.env.OPENVIKING_CODEX_AUTH_PATH ||= join(OV_HOME, "codex_auth.json");
 
+function managedServerRuntime() {
+  const proxy = readManagedServerProxy(USER_CONFIG);
+  return { env: buildManagedServerEnv(process.env, proxy), proxy };
+}
+
 function managedServerEnv() {
-  return buildManagedServerEnv(process.env, readManagedServerProxy(USER_CONFIG));
+  return managedServerRuntime().env;
 }
 
 const PKG_DIR = dirname(fileURLToPath(import.meta.url));
@@ -268,7 +281,7 @@ function runDoctor() {
   say("运行 openviking-server doctor …");
   const res = run(SERVER_BIN, ["doctor", "--config", OV_CONF], { env: managedServerEnv() });
   if (!res.ok) {
-    fail("doctor 存在 FAIL 项（常见问题：vlm 模型未配置或不可用）。修复后重新运行 `npx pi-openviking@latest setup`。");
+    fail("doctor 存在 FAIL 项（常见问题：vlm 模型未配置或不可用）。修复后重新运行 `npx pi-openviking@latest server doctor`。", res.code > 0 ? res.code : 1);
   }
 }
 
@@ -276,28 +289,24 @@ function runDoctor() {
 // Server lifecycle
 // ---------------------------------------------------------------------------
 
-function serverAddress() {
-  let host = "127.0.0.1";
-  let port = 1933;
+function readServerConfig() {
   try {
-    const server = JSON.parse(readFileSync(OV_CONF, "utf8")).server || {};
-    if (server.host) host = String(server.host).replace("0.0.0.0", "127.0.0.1");
-    if (Number.isFinite(Number(server.port))) port = Number(server.port);
+    return JSON.parse(readFileSync(OV_CONF, "utf8"));
   } catch {
-    // Missing/invalid config → defaults.
+    throw new Error(`${OV_CONF}: ${existsSync(OV_CONF) ? "JSON 格式无效" : "文件不存在"}`);
   }
-  return `http://${host}:${port}`;
 }
 
-function healthOk(url) {
-  return new Promise((resolve) => {
-    const req = get(`${url}/health`, (res) => {
-      res.resume();
-      resolve(res.statusCode >= 200 && res.statusCode < 500);
-    });
-    req.setTimeout(3000, () => req.destroy());
-    req.on("error", () => resolve(false));
-  });
+function serverAddress(config = readServerConfig()) {
+  return summarizeServerConfig(config).endpoint;
+}
+
+function readServerState() {
+  try {
+    return parseManagedServerState(readFileSync(STATE_FILE, "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 function readPid() {
@@ -320,7 +329,7 @@ function pidAlive(pid) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function serverStart(preparedEnv) {
+async function serverStart(preparedRuntime) {
   if (!existsSync(SERVER_BIN)) fail(`未安装服务端，先运行 \`npx pi-openviking@latest setup\`。（缺少 ${SERVER_BIN}）`);
   if (!existsSync(OV_CONF)) fail(`未找到服务端配置 ${OV_CONF}，先运行 \`npx pi-openviking@latest setup\`。`);
 
@@ -330,7 +339,9 @@ async function serverStart(preparedEnv) {
     return;
   }
 
-  const env = preparedEnv ?? managedServerEnv();
+  const config = readServerConfig();
+  const runtime = preparedRuntime ?? managedServerRuntime();
+  const url = serverAddress(config);
   mkdirSync(OV_HOME, { recursive: true });
   const logFd = openSync(LOG_FILE, "a");
   const child = spawn(SERVER_BIN, ["--config", OV_CONF], {
@@ -338,17 +349,18 @@ async function serverStart(preparedEnv) {
     detached: true,
     stdio: ["ignore", logFd, logFd],
     windowsHide: true,
-    env,
+    env: runtime.env,
   });
   child.unref();
   closeSync(logFd);
   writeFileSync(PID_FILE, String(child.pid));
+  const state = createManagedServerState({ pid: child.pid, config, proxy: runtime.proxy });
+  writeFileSync(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
 
-  const url = serverAddress();
   process.stdout.write(`启动中 (pid ${child.pid})，等待 ${url}/health …`);
   for (let i = 0; i < 60; i++) {
     await sleep(1000);
-    if (await healthOk(url)) {
+    if ((await probeServerHealth(url)).ok) {
       say("\n✓ 服务已就绪。");
       return;
     }
@@ -363,8 +375,9 @@ async function serverStop() {
   const pid = readPid();
   if (!pid || !pidAlive(pid)) {
     rmSync(PID_FILE, { force: true });
+    rmSync(STATE_FILE, { force: true });
     say("服务未在运行。");
-    return;
+    return true;
   }
   try {
     process.kill(pid);
@@ -380,18 +393,106 @@ async function serverStop() {
     }
     await sleep(500);
   }
-  rmSync(PID_FILE, { force: true });
-  say(pidAlive(pid) ? "✗ 进程仍在运行，请手动检查。" : "✓ 服务已停止。");
+  const stillAlive = pidAlive(pid);
+  if (!stillAlive) {
+    rmSync(PID_FILE, { force: true });
+    rmSync(STATE_FILE, { force: true });
+  }
+  say(stillAlive ? "✗ 进程仍在运行，请手动检查。" : "✓ 服务已停止。");
+  if (stillAlive) process.exitCode = 1;
+  return !stillAlive;
 }
 
 async function serverStatus() {
   const pid = readPid();
   const alive = pid ? pidAlive(pid) : false;
-  const healthy = await healthOk(serverAddress());
-  say(`pid:     ${pid ?? "(无)"}${alive ? "（存活）" : ""}`);
-  say(`health:  ${serverAddress()}/health → ${healthy ? "OK" : "不可达"}`);
-  say(`log:     ${LOG_FILE}`);
-  if (!alive || !healthy) process.exitCode = 1;
+  const savedState = readServerState();
+  const activeState = alive && savedState?.pid === pid ? savedState : null;
+
+  let config = null;
+  let configError = "";
+  try {
+    config = readServerConfig();
+  } catch (error) {
+    configError = error?.message || String(error);
+  }
+
+  let proxy = null;
+  let proxyError = "";
+  try {
+    proxy = readManagedServerProxy(USER_CONFIG);
+  } catch (error) {
+    proxyError = error?.message || String(error);
+  }
+
+  const currentSummary = config ? summarizeServerConfig(config) : null;
+  const configChanged = Boolean(activeState && (!config || configFingerprint(config) !== activeState.configFingerprint));
+  const proxyChanged = Boolean(activeState && (!proxy || proxyFingerprint(proxy) !== activeState.proxyFingerprint));
+  const displayed = activeState ?? currentSummary ?? {};
+  const endpoint = activeState?.endpoint || currentSummary?.endpoint || "http://127.0.0.1:1933";
+  const health = await probeServerHealth(endpoint);
+  const probeOnly = alive && !activeState;
+  const probeNote = probeOnly ? "（当前配置地址探测；与受管进程的关联未确认）" : "";
+
+  const started = activeState?.startedAt ? `, since ${activeState.startedAt}` : "";
+  say(`service:    ${alive ? `running (pid ${pid}${started})` : `stopped${pid ? ` (stale pid ${pid})` : ""}`}`);
+  if (health.ok) {
+    const version = health.data?.version ? `OpenViking ${health.data.version}` : "OpenViking";
+    const auth = health.data?.auth_mode ? `, auth ${health.data.auth_mode}` : "";
+    say(`health:     ${probeOnly ? "PROBE OK" : "OK"} (${version}${auth})${probeNote}`);
+  } else {
+    const failure = health.statusCode ? `FAIL (HTTP ${health.statusCode})` : "不可达";
+    say(`health:     ${probeOnly ? `PROBE ${failure}` : failure}${probeNote}`);
+  }
+  say(`endpoint:   ${endpoint}${probeNote}`);
+  say("");
+
+  if (configError) {
+    say(`config:     INVALID (${configError})`);
+  } else if (activeState && configChanged) {
+    say(`config:     CHANGED (${OV_CONF}; 需要 server restart)`);
+  } else if (activeState) {
+    say(`config:     ${OV_CONF}（运行中配置一致）`);
+  } else {
+    say(`config:     ${OV_CONF}（${alive ? "当前配置；运行态未确认" : "已配置；服务未运行"}）`);
+  }
+
+  const modelNote = activeState
+    ? configChanged
+      ? "（运行中；当前配置有变更，需重启）"
+      : ""
+    : `（${alive ? "当前配置；运行态未确认" : "已配置"}）`;
+  const embedding = displayed.embedding;
+  const embeddingName = embedding?.provider || embedding?.model
+    ? `${embedding.provider || "?"}/${embedding.model || "?"}${embedding.dimension ? ` (dimension ${embedding.dimension})` : ""}`
+    : "未配置";
+  say(`embedding:  ${embeddingName}${modelNote}`);
+
+  const vlm = displayed.vlm;
+  const vlmName = vlm?.provider || vlm?.model ? `${vlm.provider || "?"}/${vlm.model || "?"}` : "未配置";
+  const credential = vlm?.credential ? ` (credential: ${vlm.credential})` : "";
+  say(`vlm:        ${vlmName}${credential}${modelNote}`);
+
+  const displayedProxy = activeState?.proxy ?? proxy;
+  const proxyProtocols = [displayedProxy?.http ? "HTTP" : "", displayedProxy?.https ? "HTTPS" : ""].filter(Boolean);
+  const proxyMode = proxyProtocols.length ? `${proxyProtocols.join("+")} enabled` : "disabled";
+  if (proxyError) {
+    say(
+      activeState
+        ? `proxy:      ${proxyMode}（已注入；当前配置无效，需修复并重启：${proxyError}）`
+        : `proxy:      INVALID (${proxyError})`,
+    );
+  } else if (activeState && proxyChanged) {
+    say(`proxy:      ${proxyMode}（运行中；当前配置有变更，需重启）`);
+  } else if (activeState) {
+    say(`proxy:      ${proxyMode}（已注入）`);
+  } else {
+    say(`proxy:      ${proxyMode}（${alive ? "当前配置；运行态未确认" : "已配置"}）`);
+  }
+
+  say(`storage:    ${displayed.storage || "未配置"}`);
+  say(`log:        ${LOG_FILE}`);
+  if (!alive || !health.ok || probeOnly) process.exitCode = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -426,7 +527,7 @@ async function uninstall() {
     return;
   }
 
-  await serverStop();
+  if (!(await serverStop())) fail("服务仍在运行，已中止卸载以避免删除正在使用的数据。");
   rmSync(OV_HOME, { recursive: true, force: true });
   rmSync(USER_CONFIG, { force: true });
   if (hasCommand("pi")) {
@@ -481,11 +582,12 @@ async function main() {
       if (sub === "start") await serverStart();
       else if (sub === "stop") await serverStop();
       else if (sub === "restart") {
-        const env = managedServerEnv();
-        await serverStop();
-        await serverStart(env);
+        const runtime = managedServerRuntime();
+        if (!(await serverStop())) break;
+        await serverStart(runtime);
       } else if (sub === "status") await serverStatus();
-      else fail("用法: pi-openviking server start|stop|restart|status", 2);
+      else if (sub === "doctor") runDoctor();
+      else fail("用法: pi-openviking server start|stop|restart|status|doctor", 2);
       break;
     case "credentials": {
       const { runSetupWizard } = await import("../shared/setup-wizard.mjs");
@@ -501,7 +603,7 @@ async function main() {
       say(CLI_VERSION);
       break;
     default:
-      say(`用法: pi-openviking [setup] | server start|stop|restart|status | credentials | uninstall | --version`);
+      say(`用法: pi-openviking [setup] | server start|stop|restart|status|doctor | credentials | uninstall | --version`);
       process.exitCode = cmd === "help" || cmd === "--help" || cmd === "-h" ? 0 : 2;
   }
 }

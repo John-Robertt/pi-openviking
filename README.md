@@ -28,7 +28,10 @@ npx pi-openviking@latest server start
 npx pi-openviking@latest server stop
 npx pi-openviking@latest server restart
 npx pi-openviking@latest server status
+npx pi-openviking@latest server doctor
 ```
+
+`server status` 快速展示运行进程、健康信息、生效的模型和受管代理；`server doctor` 执行 OpenViking 的完整环境、模型与认证诊断。
 
 卸载：
 
