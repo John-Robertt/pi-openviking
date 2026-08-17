@@ -17,9 +17,13 @@ import { OVClient } from "./client.js";
 import { RecallManager } from "./recall.js";
 import { SyncManager } from "./sync.js";
 import { buildProfileBlock } from "./shared/profile-inject.mjs";
+import { createStatusRefresh } from "./shared/status-refresh.mjs";
+import { clearVikingFooter, formatVikingCommand, setVikingFooter } from "./shared/viking-status.mjs";
 import { guardVikingUriToolCall } from "./lib/uri-guard-adapter.mjs";
 import { registerTools } from "./tools.js";
 import { createTakeoverManager } from "./takeover.js";
+
+const HEALTH_REFRESH_INTERVAL_MS = 5000;
 
 export default async function (pi: ExtensionAPI) {
   // --- Load config ---
@@ -53,6 +57,9 @@ export default async function (pi: ExtensionAPI) {
   let compacted = false;
   let started = false;
   let startPromise: Promise<void> | null = null;
+  let statusContext: any = null;
+  let lastAdded = 0;
+  let startupWarningShown = false;
 
   // ================================================================
   // Event Handlers
@@ -76,12 +83,13 @@ export default async function (pi: ExtensionAPI) {
       // Health check
       connected = await client.health();
       if (!connected) {
-        if (config.logLevel === "info") {
+        if (config.logLevel === "info" && !startupWarningShown) {
           ctx.ui.notify("OpenViking: server not reachable", "warning");
         }
+        startupWarningShown = true;
         return;
       }
-
+      startupWarningShown = false;
       // Ensure OV session
       const piSessionId = ctx.sessionManager.getSessionId();
 
@@ -120,8 +128,6 @@ export default async function (pi: ExtensionAPI) {
         registerTools(pi, client, sync);
         toolsRegistered = true;
       }
-      updateStatus(ctx, connected, 0, sync.sessionId, config, takeover.state);
-
       started = true;
       if (config.logLevel === "info") {
         ctx.ui.notify(`OpenViking connected (${piSessionId.slice(0, 8)}...)`, "info");
@@ -133,15 +139,67 @@ export default async function (pi: ExtensionAPI) {
     return startPromise;
   };
 
+  const renderStatus = (ctx: any): void => {
+    if (bypassed) return;
+    const threshold = config.takeoverEnabled
+      ? config.takeoverTokenThreshold
+      : config.commitTokenThreshold;
+    setVikingFooter(ctx, {
+      connected,
+      added: lastAdded,
+      sessionId: sync.sessionId,
+      threshold,
+      takeover: config.takeoverEnabled ? takeover.state : null,
+    });
+  };
+
+  const healthRefresh = createStatusRefresh({
+    refresh: async () => {
+      if (bypassed) return false;
+      if (started) {
+        connected = await client.health();
+      } else {
+        await start(statusContext);
+      }
+      return connected;
+    },
+    publish: () => {
+      if (statusContext) renderStatus(statusContext);
+    },
+    onError: (error: unknown) => {
+      debugLog(`health refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+    },
+    intervalMs: HEALTH_REFRESH_INTERVAL_MS,
+  });
+
+  const refreshConnection = (ctx: any): Promise<boolean> => {
+    statusContext = ctx;
+    return healthRefresh.run();
+  };
+
+  const beginHealthPolling = (ctx: any): void => {
+    statusContext = ctx;
+    if (!bypassed) healthRefresh.start();
+  };
+
+  const stopHealthPolling = async (ctx: any): Promise<void> => {
+    const stopping = healthRefresh.stop();
+    clearVikingFooter(ctx);
+    await stopping;
+    statusContext = null;
+  };
+
   // --- session_start ---
-  pi.on("session_start", async (event, ctx) => {
-    await start(ctx);
+  pi.on("session_start", async (_event, ctx) => {
+    await refreshConnection(ctx);
+    beginHealthPolling(ctx);
   });
 
   // --- before_agent_start ---
   pi.on("before_agent_start", async (event, ctx) => {
-    // session_start doesn't fire for pi -c continuations.
-    await start(ctx);
+    // Keep continuations initialized and refresh health before each user-prompt run.
+    await refreshConnection(ctx);
+    beginHealthPolling(ctx);
 
     if (!connected || bypassed) return;
 
@@ -195,7 +253,8 @@ export default async function (pi: ExtensionAPI) {
     const result = await sync.syncBranch(branch);
     debugLog(`turn_end: synced ${result.added} entries, ~${result.tokens} tokens`);
     await takeover.onTurnSynced(result.tokens);
-    updateStatus(ctx, connected, result.added, sync.sessionId, config, takeover.state);
+    lastAdded = result.added;
+    renderStatus(ctx);
   });
 
   // --- session_before_compact ---
@@ -224,6 +283,7 @@ export default async function (pi: ExtensionAPI) {
 
   // --- session_shutdown ---
   pi.on("session_shutdown", async (_event, ctx) => {
+    await stopHealthPolling(ctx);
     if (!connected || bypassed) return;
 
     await sync.shutdown();
@@ -245,18 +305,28 @@ export default async function (pi: ExtensionAPI) {
 
   pi.registerCommand("viking", {
     description: "OpenViking status and manual operations. Use 'commit' to force a sync.",
+    getArgumentCompletions: (prefix) => {
+      const value = "commit";
+      return value.startsWith(prefix.trim())
+        ? [{ value, label: value, description: "Commit the current OpenViking session" }]
+        : null;
+    },
     handler: async (args, ctx) => {
-      if (!connected) {
-        ctx.ui.notify("OpenViking: not connected", "warning");
-        return;
-      }
+      const currentConnected = await refreshConnection(ctx);
+      beginHealthPolling(ctx);
 
       if (args?.trim() === "commit") {
+        if (!currentConnected) {
+          ctx.ui.notify("OpenViking: not connected", "warning");
+          return;
+        }
+
         await sync.shutdown();
         const commitResult = config.takeoverEnabled ? null : await sync.commit();
         const ok = config.takeoverEnabled
           ? await takeover.commitAndAdvance()
           : commitResult !== null;
+        await refreshConnection(ctx);
         if (ok) {
           ctx.ui.notify(
             "OpenViking: committed successfully" +
@@ -269,15 +339,13 @@ export default async function (pi: ExtensionAPI) {
         return;
       }
 
-      // Status
-      const sid = sync.sessionId ?? "none";
-      const t = takeover.state;
-      const takeoverInfo = config.takeoverEnabled
-        ? ` | takeover: ${t.coveredUserTurns}/${t.lastSeenUserTurns} turns archived, ~${t.pendingTokens} tokens pending`
-        : "";
       ctx.ui.notify(
-        `OpenViking: ${connected ? "connected" : "disconnected"} | session: ${sid.slice(0, 12)}...${takeoverInfo}`,
-        "info",
+        formatVikingCommand({
+          connected: currentConnected,
+          sessionId: sync.sessionId,
+          takeover: config.takeoverEnabled ? takeover.state : null,
+        }),
+        currentConnected ? "info" : "warning",
       );
     },
   });
@@ -352,29 +420,5 @@ async function fetchArchiveOverview(
     ].join("\n");
   } catch {
     return "";
-  }
-}
-
-function updateStatus(
-  ctx: any,
-  connected: boolean,
-  added: number,
-  sessionId: string | null,
-  config: OVConfig,
-  takeoverState?: { pendingTokens?: number; coveredUserTurns?: number },
-): void {
-  const setter = ctx?.ui?.setStatus;
-  if (typeof setter !== "function") return;
-  const threshold = config.takeoverEnabled
-    ? config.takeoverTokenThreshold
-    : config.commitTokenThreshold;
-  const pending = config.takeoverEnabled && takeoverState
-    ? ` · ctx ${takeoverState.coveredUserTurns ?? 0} · ~${takeoverState.pendingTokens ?? 0}/${threshold}`
-    : ` · ✎ ${threshold}`;
-  const status = `${connected ? "OV ✓" : "OV ✗"} · ↩${added}${pending} · ${sessionId ? sessionId.slice(0, 12) : "none"}`;
-  try {
-    setter(status);
-  } catch {
-    // Best effort; pi API shape may vary across fast-moving versions.
   }
 }

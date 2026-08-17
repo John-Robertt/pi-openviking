@@ -628,8 +628,8 @@ Main entry point. Wires everything together.
 
 | Event | Handler | What it does |
 |-------|---------|-------------|
-| `session_start` | Init + Resume + Profile | Health check OV, check bypass, create/reuse session, **inject user profile** (profile.md + preferences/ + entities/ listing, capped at `profileBudget`), on resume: fetch archive overview, build memory index, register tools |
-| `before_agent_start` | Recall queue + System prompt | Queue current prompt without I/O, inject memory index + tool ad into system prompt |
+| `session_start` | Init + Resume + Profile | Health check OV, start connection refresh, check bypass, create/reuse session, **inject user profile** (profile.md + preferences/ + entities/ listing, capped at `profileBudget`), on resume: fetch archive overview, build memory index, register tools |
+| `before_agent_start` | Health + Recall queue + System prompt | Refresh health, queue current prompt without recall I/O, inject memory index + tool ad into system prompt |
 | `context` | Recall search + injection | Search after user-message rendering, then prepend `<relevant-memories>` (reuse cached block on later LLM iterations) |
 | `turn_end` | Sync | Strip all injected blocks, **capture filter (shouldCapture)**, **preserve tool USE inputs + tool summary line**, drop tool RESULTS, **enqueue to write queue** (auto-flushes at threshold/interval), track pending tokens, check commit threshold |
 | `session_before_compact` | Pre-compact commit + rehydration | Synchronous `commit(wait=true)` before pi rewrites the transcript, then fetch new archive overview and cache for next `before_agent_start` injection — content about to be compacted is preserved in OV and rehydrated after compaction |
@@ -640,7 +640,7 @@ Main entry point. Wires everything together.
 
 Two-level guard:
 
-1. **Health check**: At `session_start`, ping OV health. If unreachable: set `connected = false`, log once, all subsequent operations become no-ops. No retrying, no spamming. Tools return "OpenViking server is not reachable."
+1. **Health state**: For enabled, non-bypassed sessions, probe OV at `session_start`, before each user-prompt agent run, on `/viking`, and about every 5 seconds while the session is active. Only one probe may run at a time. A failed probe sets `connected = false`, updates the footer, and makes OV-dependent operations no-ops; a later successful probe restores `connected` and completes deferred initialization when startup originally failed. The timer is cleared at `session_shutdown` and never invokes a model.
 
 2. **Bypass check**: Before any OV operation, check `config.bypassPatterns` against `process.cwd()`. If the cwd matches any pattern (e.g., `/tmp/**`, `**/scratch/**`), skip all OV operations for this session. This prevents throwaway experiments from polluting long-term memory (from Claude Code plugin's `OPENVIKING_BYPASS_SESSION_PATTERNS`).
 
@@ -700,7 +700,7 @@ Simple, correct, handles all edge cases (external edits, multiple writes, etc.).
 
 #### Manual commit command
 
-A `/viking commit` command (or a `viking_commit` tool) triggers a synchronous `commit(wait=true)`. This is the equivalent of OpenClaw's `compact()` — the user or agent can force a memory extraction mid-session without waiting for the token threshold. Useful when the user says "remember this" and wants immediate assurance that the memory was archived.
+The `commit` subcommand, invoked as `/viking commit`, triggers a synchronous commit. This is the equivalent of OpenClaw's `compact()` — the user can force a memory extraction mid-session without waiting for the token threshold. Useful when the user says "remember this" and wants immediate assurance that the memory was archived.
 
 ## Event Flow (Detailed)
 
@@ -712,9 +712,12 @@ A `/viking commit` command (or a `viking_commit` tool) triggers a synchronous `c
    └── MATCH → set bypassed = true, skip all OV ops, return
 4. client.health()
    ├── OK → connected = true, continue
-   └── FAIL → connected = false, log once, return
-5. sync.ensureSession() → create or reuse OV session "pi-{sessionId}"
-6. **Profile injection** (all sessions, from Claude Code plugin):
+   └── FAIL → connected = false, defer initialization
+5. Start one non-overlapping health refresh about every 5 seconds
+   └── A later OK result resumes the deferred initialization below
+6. If disconnected, update the footer and return from this initialization attempt
+7. sync.ensureSession() → create or reuse OV session "pi-{sessionId}"
+8. **Profile injection** (all sessions, from Claude Code plugin):
    a. Resolve user space: `client.resolveScopeSpace("user")` → discover namespace via /api/v1/system/status + fs/ls
    b. Read profile.md from viking://user/<space>/memories/profile.md
    c. List preferences/ and entities/ directories with abstracts
@@ -722,22 +725,23 @@ A `/viking commit` command (or a `viking_commit` tool) triggers a synchronous `c
    e. Compose <openviking-context> block with user-profile + available-memories
    f. Capped at profileBudget tokens (default 10000) using CJK-aware estimator
    g. Cached for system prompt injection in before_agent_start
-7. If event.reason == "resume":
+9. If event.reason == "resume":
    a. Fetch latest archive overview from OV (L1)
    b. Inject as [Session History Summary] alongside memory index
-8. index_builder.buildIndex() → build memory index (viking:// tree + abstracts)
-9. Register 7 tools
+10. index_builder.buildIndex() → build memory index (viking:// tree + abstracts)
+11. Register 7 tools
 ```
 
 ### Per Prompt (User sends message)
 ```
 1. before_agent_start fires
-   a. Extract user prompt text
-   b. recall.queueSearch(prompt)  ← no network I/O
-   c. Compose system prompt: event.systemPrompt + profileBlock + archiveOverview + indexBuilder.getIndex() + toolAdBlock
+   a. Refresh health; disconnected operations remain no-ops until a later probe succeeds
+   b. Extract user prompt text
+   c. recall.queueSearch(prompt)  ← no recall I/O
+   d. Compose system prompt: event.systemPrompt + profileBlock + archiveOverview + indexBuilder.getIndex() + toolAdBlock
       - Profile block: cached from session_start (or empty if OV has no profile)
       - Archive overview: cached from session_start resume, or from pre-compact rehydration
-   d. Return { systemPrompt: composed }
+   e. Return { systemPrompt: composed }
 
 2. Pi renders the submitted user message.
 

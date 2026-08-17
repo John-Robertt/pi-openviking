@@ -98,7 +98,7 @@ npx pi-openviking@latest credentials
 
 | Pi 事件 | 当前行为 |
 |---|---|
-| `session_start` | 检查服务、绑定会话记忆命名空间、创建或恢复 OpenViking 会话 |
+| `session_start` | 检查服务、绑定会话记忆命名空间、创建或恢复 OpenViking 会话，并启动连接状态刷新 |
 | `before_agent_start` | 为继续会话补做幂等初始化，并记录当前提示词 |
 | `context` | 使用当前提示词召回记忆，注入召回内容和归档概览 |
 | `turn_end` | 捕获分支内容并同步到 OpenViking，必要时提交和推进接管边界 |
@@ -107,7 +107,7 @@ npx pi-openviking@latest credentials
 
 当前提示词的召回发生在同一模型轮次的 `context` 事件中，不使用上一轮提示词的预取结果。写入前会清除已注入的 `<openviking-context>` 等上下文块，避免召回内容再次进入长期记忆。
 
-Pi 页脚中的 `OV ✓` 表示服务可达，`OV ✗` 表示当前无法连接 OpenViking。
+在启用且未被 bypass 的会话中，Pi 页脚的 `OV ✓` 表示最近一次健康检查确认服务可达，`OV ✗` 表示当前无法连接。扩展约每 5 秒自动刷新，并在执行 `/viking` 或每次用户提示开始处理前立即检查。
 
 ## 工具与命令
 
@@ -123,7 +123,7 @@ Pi 页脚中的 `OV ✓` 表示服务可达，`OV ✗` 表示当前无法连接 
 | `viking_add_resource` | 导入 HTTP URL 资源 |
 | `viking_archive_expand` | 按 OpenViking session ID 读取已归档会话内容 |
 
-在 Pi 中输入 `/viking` 可查看连接状态和当前会话信息；`/viking commit` 可手动提交当前 OpenViking 会话。
+在 Pi 中输入 `/viking` 会立即检查连接并显示当前会话信息；使用其 `commit` 子命令 `/viking commit` 可手动提交当前 OpenViking 会话。输入 `/viking ` 后可补全该子命令。
 
 ## 项目结构
 

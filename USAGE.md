@@ -457,12 +457,14 @@ pi list
 
 Pi 页脚状态：
 
-- `OV ✓`：OpenViking 可达；
-- `OV ✗`：OpenViking 不可达；
+- `OV ✓`：最近一次健康检查确认 OpenViking 可达；
+- `OV ✗`：当前无法连接 OpenViking；
 - `ctx K`：已经由归档概览覆盖的用户轮数；
 - `~N/T`：当前同步 token 估算与接管阈值。
 
-在 Pi 中输入 `/viking` 可查看连接和会话信息，输入 `/viking commit` 可手动提交。
+启用且未被 bypass 的会话约每 5 秒自动刷新连接状态，并在执行 `/viking` 或每次用户提示开始处理前立即检查。
+
+在 Pi 中输入 `/viking` 会立即检查连接并显示会话信息；`/viking commit` 是其可补全的 `commit` 子命令，用于手动提交。
 
 ### 7.2 调试日志
 
