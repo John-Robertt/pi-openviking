@@ -86,7 +86,7 @@ npx pi-openviking@latest credentials
 | `recallTokenBudget` | `2000` | 每轮召回上下文的 token 预算 |
 | `takeover.enabled` | `true` | 启用 OpenViking 上下文接管 |
 | `takeover.tokenThreshold` | `20000` | 新同步内容累计到该值时触发归档 |
-| `takeover.retainedTokenBudget` | `30000` | OpenViking 原始消息保留预算及超大单轮阈值 |
+| `takeover.retainedTokenBudget` | `30000` | OpenViking 归档后原始消息的保留预算 |
 | `takeover.keepRecentTurns` | `3` | 接管后优先保留的最近逻辑用户轮数 |
 | `takeover.overviewBudget` | `16000` | 注入模型上下文的 archive overview 最大预算 |
 | `logLevel` | `"error"` | 扩展日志级别 |
@@ -102,7 +102,7 @@ npx pi-openviking@latest credentials
 | `session_start` | 检查服务、绑定会话记忆命名空间、创建或恢复 OpenViking 会话，并启动连接状态刷新 |
 | `before_agent_start` | 为继续会话补做幂等初始化，并记录当前提示词 |
 | `context` | 使用当前提示词召回记忆，注入召回内容和归档概览 |
-| `turn_end` | 捕获并同步分支；按目标 archive 身份推进边界，超大单轮请求 Pi compaction |
+| `turn_end` | 捕获并同步分支；按目标 archive 身份推进边界 |
 | `session_before_compact` | 精确归档当前 live 内容；未就绪时让 Pi 默认 compaction 接管 |
 | `session_compact` | 重置已被 Pi compaction 取代的本地边界 |
 | `session_shutdown` | 保存接管状态或执行非接管模式的最终提交 |

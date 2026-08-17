@@ -60,7 +60,6 @@ export default async function (pi: ExtensionAPI) {
   let statusContext: any = null;
   let lastAdded = 0;
   let startupWarningShown = false;
-  let takeoverCompactionInFlight = false;
 
   // ================================================================
   // Event Handlers
@@ -245,17 +244,6 @@ export default async function (pi: ExtensionAPI) {
     const result = await sync.syncBranch(branch);
     debugLog(`turn_end: synced ${result.added} entries, ~${result.tokens} tokens`);
     await takeover.onTurnSynced(result.tokens);
-    if (config.takeoverEnabled && takeover.state.compactionRequested && !takeoverCompactionInFlight) {
-      takeoverCompactionInFlight = true;
-      debugLog(`turn_end: current user turn exceeded ${config.takeoverRetainedTokenBudget} tokens; requesting pi compaction`);
-      ctx.compact({
-        onComplete: () => { takeoverCompactionInFlight = false; },
-        onError: (error: Error) => {
-          takeoverCompactionInFlight = false;
-          debugLog(`takeover compaction failed: ${error.message}`);
-        },
-      });
-    }
     lastAdded = result.added;
     renderStatus(ctx);
   });
@@ -286,7 +274,6 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("session_compact", async (_event, _ctx) => {
     compacted = true;
-    takeoverCompactionInFlight = false;
     if (config.takeoverEnabled) takeover.onPiCompacted();
   });
 

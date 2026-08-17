@@ -1,6 +1,6 @@
 {
   "name": "pi-openviking",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Pi extension for the OpenViking context database: in-session context takeover and session-scoped long-term memory with recall tools.",
   "keywords": [
     "pi-package"

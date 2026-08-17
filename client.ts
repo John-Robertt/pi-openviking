@@ -75,7 +75,6 @@ export interface OVCommitResult {
   archived?: boolean;
   reason?: string;
   estimated_active_tokens?: number;
-  budget_exceeded?: boolean;
   trace_id?: string;
 }
 

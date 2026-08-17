@@ -231,21 +231,6 @@ test("compaction 超时保留目标 archive，Pi compaction 后不得推进旧�
   assert.equal(harness.core.state.coveredUserTurns, 0);
 });
 
-test("同一用户轮内累计同步超过保留预算时请求 Pi compaction", async () => {
-  const harness = createHarness({
-    archiveChecks: [{
-      status: "ready",
-      archiveUri: "viking://user/test/sessions/pi-test/history/archive_002",
-      overview: "fresh",
-    }],
-  });
-  harness.core.transformContext(conversation(5));
-
-  await harness.core.onTurnSynced(20);
-  await harness.core.onTurnSynced(15);
-  assert.equal(harness.core.state.compactionRequested, true);
-  assert.equal(harness.core.state.currentTurnTokens, 35);
-});
 
 test("并发推进请求最多发起一次 commit", async () => {
   let release;
@@ -303,8 +288,6 @@ test("schema v2 状态缺少 confirmed archive 身份时也不得恢复覆盖边
       pendingArchive: null,
       confirmedArchive: null,
       awaitingCommitDrain: false,
-      currentTurnTokens: 0,
-      currentTurnUserTurns: 3,
     })],
   });
 

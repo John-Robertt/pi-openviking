@@ -373,7 +373,7 @@ GLM 编程订阅：
 | `commitKeepRecentCount` | `10` | 提交时保留的最近消息数 |
 | `takeover.enabled` | `true` | 启用上下文接管 |
 | `takeover.tokenThreshold` | `20000` | 新同步内容触发归档的累计阈值 |
-| `takeover.retainedTokenBudget` | `30000` | OpenViking 原始消息保留预算及超大单轮阈值 |
+| `takeover.retainedTokenBudget` | `30000` | OpenViking 归档后原始消息的保留预算 |
 | `takeover.keepRecentTurns` | `3` | 优先保留的最近逻辑用户轮数 |
 | `takeover.overviewBudget` | `16000` | 注入模型上下文的 archive overview 最大预算 |
 | `takeover.overviewPollMs` | `2000` | 概览轮询间隔 |
@@ -435,7 +435,7 @@ JSONC 无法解析或代理字段无效时，`setup` 的 doctor、`server start`
 
 达到阈值后，扩展以 `turn_budget` 提交，并立即持久化 commit 返回的 `task_id` 与 `archive_uri`。只有该任务完成且精确 archive API 返回非空 overview 后，`context` 事件才会用 `[OpenViking Session Context]` 替换已确认覆盖的较早历史。
 
-处理中、空摘要、失败或身份不匹配均不会推进边界；等待状态跨 Pi 重启恢复，期间不会重复 commit。单个用户轮超过 `retainedTokenBudget` 时由 Pi 原生 compaction 按安全工具边界切分。
+扩展持久化待确认的 archive 身份并跨 Pi 重启继续轮询，任务完成且精确 overview 就绪后才推进边界。Pi 管理上下文压缩时机和安全工具边界；收到 `session_before_compact` 后，扩展归档剩余 live 内容，并在归档就绪时向 Pi 提供对应摘要。
 
 ### 6.4 捕获和召回
 

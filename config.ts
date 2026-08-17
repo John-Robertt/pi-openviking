@@ -133,7 +133,7 @@ const USER_CONFIG_TEMPLATE = `// ===============================================
   // "takeover": {
   //   "enabled": true,
   //   "tokenThreshold": 20000,       // 新同步内容累计到该值时触发归档
-  //   "retainedTokenBudget": 30000,  // OpenViking 保留的原始消息预算；超大单轮转交 Pi compaction
+  //   "retainedTokenBudget": 30000,  // OpenViking 归档后原始消息的保留预算
   //   "keepRecentTurns": 3,          // 正常归档优先保留的最近用户轮数
   //   "overviewBudget": 16000,       // 注入模型上下文的 archive overview 最大 token 数
   //   "overviewPollMs": 2000,        // 概览未就绪时的轮询间隔（毫秒）

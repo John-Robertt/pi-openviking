@@ -54,8 +54,9 @@ prompt caching.
 
 ## Compaction
 
-When pi emits `session_before_compact`, takeover first reconciles any accepted
-archive. It then commits the remaining live OpenViking messages with
+Pi owns the compaction decision and safe mid-turn cut boundary, including tool
+call/result pairs. When pi emits `session_before_compact`, takeover first reconciles
+any accepted archive. It then commits the remaining live OpenViking messages with
 `keep_recent_count=0`, so the exact overview covers everything Pi is about to
 replace. If that archive becomes ready in time, the extension returns:
 
@@ -83,9 +84,6 @@ slash commands, and OpenViking status messages remain filtered. Captured message
 carry the Pi user entry ID as `turn_id` and an explicit `message_kind`, allowing
 OpenViking to keep an assistant response and its tool transports in one atomic step.
 
-If one Pi user turn accumulates beyond `retainedTokenBudget`, the extension requests
-Pi's native compaction instead of implementing another message splitter. Pi owns the
-safe mid-turn cut rules, including keeping tool results with their calls.
 ## Configuration
 
 ```json
@@ -106,7 +104,7 @@ safe mid-turn cut rules, including keeping tool results with their calls.
 |-------|---------|---------|
 | `takeover.enabled` | `true` | Enable context takeover |
 | `takeover.tokenThreshold` | `20000` | Synced-token pressure required before starting an archive |
-| `takeover.retainedTokenBudget` | `30000` | Raw OpenViking tail budget and oversized Pi-turn threshold |
+| `takeover.retainedTokenBudget` | `30000` | Raw message budget retained by OpenViking after archiving |
 | `takeover.keepRecentTurns` | `3` | Recent logical user turns preferred in full fidelity |
 | `takeover.overviewBudget` | `16000` | Token budget for the injected archive overview |
 | `takeover.overviewPollMs` | `2000` | Delay between overview polling attempts |
@@ -139,6 +137,6 @@ an isolated Pi/OpenViking session and verify all of the following identities agr
 5. the provider payload contains the confirmed overview and omits only messages
    covered by that archive.
 
-The pending path must also be exercised across a Pi restart. An oversized turn must
-contain at least one tool call/result pair and verify that Pi compaction leaves no
-orphan tool result.
+The pending path must also be exercised across a Pi restart. A Pi-triggered compaction
+must include at least one tool call/result pair and verify that the safe compaction
+boundary leaves no orphan tool result.

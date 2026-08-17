@@ -33,8 +33,6 @@ export interface TakeoverPersistedState {
   pendingArchive: TakeoverPendingArchive | null;
   confirmedArchive: TakeoverArchiveIdentity | null;
   awaitingCommitDrain: boolean;
-  currentTurnTokens: number;
-  currentTurnUserTurns: number;
 }
 
 export interface TakeoverConfig {
@@ -88,7 +86,6 @@ export class TakeoverCore {
     fingerprint: string | null;
     lastSeenUserTurns: number;
     syncedEntryCount: number;
-    compactionRequested: boolean;
     committing: boolean;
   };
   restore(entries: any[]): this["state"];
