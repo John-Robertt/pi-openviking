@@ -1,64 +1,46 @@
-# OpenViking Context Takeover for Pi
+# Pi 的 OpenViking 上下文接管
 
-Context takeover makes OpenViking the authoritative long-term context store for
-pi sessions. Pi still keeps recent active turns locally, but committed history
-is represented to the model by OpenViking's archive overview through pi's
-`context` hook.
+上下文接管让 OpenViking 成为 pi 会话长期上下文的权威存储。Pi 仍在本地保留近期的活跃轮次，但已提交的历史通过 pi 的 `context` 钩子，以 OpenViking 的归档概览形式呈现给模型。
 
-## Model
+## 模型
 
-The extension tracks:
+扩展跟踪以下字段：
 
-| Field | Meaning |
+| 字段 | 含义 |
 |-------|---------|
-| `coveredUserTurns` | Number of real user turns covered by the confirmed archive overview |
-| `overview` | Overview read from the exact archive identified by its commit response |
-| `confirmedArchive` | Archive identity that owns the injected overview |
-| `pendingArchive` | Accepted commit identity and boundary snapshot awaiting its own overview |
-| `fingerprint` | Stable fingerprint of the last covered message for branch mismatch detection |
-| `pendingTokens` | Estimated synced token pressure not yet covered by a confirmed archive |
-| `syncedEntryCount` | Pi branch watermark restored across `pi -p` / `pi -c` processes |
+| `coveredUserTurns` | 已确认归档概览所覆盖的真实用户轮次数量 |
+| `overview` | 从其提交响应所标识的那个确切归档中读取的概览 |
+| `confirmedArchive` | 拥有当前已注入概览的归档身份 |
+| `pendingArchive` | 已被接受的提交身份及其边界快照，正等待自己的概览 |
+| `fingerprint` | 最后一条被覆盖消息的稳定指纹，用于检测分支不匹配 |
+| `pendingTokens` | 尚未被已确认归档覆盖的、已同步 token 压力的估算值 |
+| `syncedEntryCount` | 跨 `pi -p` / `pi -c` 进程恢复的 Pi 分支水位线 |
 
-State is persisted as a pi custom entry:
+状态以 pi 自定义条目的形式持久化：
 
 ```ts
 pi.appendEntry("ov-takeover", state)
 ```
 
-On startup the extension scans the branch from the end, restores the latest
-entry, and restores `SyncManager`'s watermark so `pi -c` does not resend the
-same branch entries to OpenViking.
+启动时，扩展从末尾开始扫描分支，恢复最新的条目，并恢复 `SyncManager` 的水位线，使 `pi -c` 不会把相同的分支条目重复发送给 OpenViking。
 
-## Runtime Flow
+## 运行时流程
 
-1. `turn_end` captures new branch entries into the OpenViking session.
-2. The capture path uses a disk pending queue when OpenViking is temporarily
-   unreachable.
-3. When `pendingTokens >= takeover.tokenThreshold`, takeover tries to advance.
-4. Advance first drains the current session's pending `addMessage` entries.
-5. The commit opts into OpenViking `turn_budget` retention and must return
-   `status=accepted`, `archived=true`, `task_id`, and `archive_uri`.
-6. The accepted identity is persisted before polling. While it is pending, all
-   automatic, manual, and compaction entry points reuse it instead of committing again.
-7. The task must complete and `GET /sessions/{id}/archives/{archive_id}` must return
-   that exact archive's non-empty overview before the boundary can advance.
-8. Completion subtracts only the token pressure present when the commit was accepted;
-   tokens synced while waiting remain pending.
-9. The `context` hook replaces confirmed covered messages with a synthetic user
-   message beginning with `[OpenViking Session Context]`, then recall is injected
-   into the remaining latest user turn.
+1. `turn_end` 把新的分支条目捕获进 OpenViking 会话。
+2. 当 OpenViking 暂时不可达时，捕获路径改用磁盘上的待处理队列。
+3. 当 `pendingTokens >= takeover.tokenThreshold` 时，接管尝试推进边界。
+4. 推进首先排空当前会话中待处理的 `addMessage` 条目。
+5. 提交会启用 OpenViking 的 `turn_budget` 保留策略，并且必须返回 `status=accepted`、`archived=true`、`task_id` 和 `archive_uri`。
+6. 被接受的身份在轮询之前先行持久化。在其处于 pending 期间，自动、手动和压缩等所有入口都复用它，而不会再次提交。
+7. 任务必须完成，且 `GET /sessions/{id}/archives/{archive_id}` 必须返回那个确切归档的非空概览，边界才能推进。
+8. 完成时只扣减提交被接受当时存在的那部分 token 压力；等待期间新同步的 token 仍然处于待处理状态。
+9. `context` 钩子把已确认覆盖的消息替换为一条以 `[OpenViking Session Context]` 开头的合成用户消息，然后把召回内容注入到剩余的最新一条用户轮次中。
 
-The overview message timestamp is derived from the first kept message, so the
-provider payload remains byte-stable between commits and can benefit from
-prompt caching.
+概览消息的时间戳取自第一条被保留的消息，因此提交之间的 provider 载荷保持逐字节稳定，可以受益于提示词缓存。
 
-## Compaction
+## 压缩
 
-Pi owns the compaction decision and safe mid-turn cut boundary, including tool
-call/result pairs. When pi emits `session_before_compact`, takeover first reconciles
-any accepted archive. It then commits the remaining live OpenViking messages with
-`keep_recent_count=0`, so the exact overview covers everything Pi is about to
-replace. If that archive becomes ready in time, the extension returns:
+压缩决策与安全的轮次中切分边界（包括工具调用/结果配对）由 pi 负责。当 pi 发出 `session_before_compact` 时，接管首先与任何已接受的归档对账。随后它以 `keep_recent_count=0` 提交剩余的 OpenViking 活跃消息，使那个确切的归档覆盖 Pi 即将替换掉的全部内容。若该归档能及时就绪，扩展返回：
 
 ```ts
 {
@@ -71,20 +53,13 @@ replace. If that archive becomes ready in time, the extension returns:
 }
 ```
 
-If any step is still pending or fails, the handler returns `undefined` and Pi's
-default compaction runs. The archive identity remains retryable, but
-`session_compact` prevents it from later advancing the pre-compaction boundary.
+若其中任一步骤仍处于 pending 或失败，处理器返回 `undefined`，Pi 的默认压缩流程运行。该归档身份仍可重试，但 `session_compact` 会阻止它之后去推进压缩前的边界。
 
-## Capture Fidelity
+## 捕获保真度
 
-Takeover mode enables faithful capture in the pi adapter. Short acknowledgments,
-punctuation-only turns, and other low-signal text are still captured because
-those turns may later disappear from the live model context. Empty text,
-slash commands, and OpenViking status messages remain filtered. Captured messages
-carry the Pi user entry ID as `turn_id` and an explicit `message_kind`, allowing
-OpenViking to keep an assistant response and its tool transports in one atomic step.
+接管模式会在 pi 适配器中启用忠实捕获。简短应答、只有标点的轮次以及其他低信号文本同样会被捕获，因为这些轮次日后可能从模型的活跃上下文中消失。空文本、斜杠命令和 OpenViking 状态消息仍然被过滤。被捕获的消息携带 Pi 用户条目 ID 作为 `turn_id`，并带有显式的 `message_kind`，使 OpenViking 能够在一个原子步骤中把一条助手回复及其工具传输保存在一起。
 
-## Configuration
+## 配置
 
 ```json
 {
@@ -100,43 +75,39 @@ OpenViking to keep an assistant response and its tool transports in one atomic s
 }
 ```
 
-| Field | Default | Meaning |
+| 字段 | 默认值 | 含义 |
 |-------|---------|---------|
-| `takeover.enabled` | `true` | Enable context takeover |
-| `takeover.tokenThreshold` | `20000` | Synced-token pressure required before starting an archive |
-| `takeover.retainedTokenBudget` | `30000` | Raw message budget retained by OpenViking after archiving |
-| `takeover.keepRecentTurns` | `3` | Recent logical user turns preferred in full fidelity |
-| `takeover.overviewBudget` | `16000` | Token budget for the injected archive overview |
-| `takeover.overviewPollMs` | `2000` | Delay between overview polling attempts |
-| `takeover.overviewPollMax` | `15` | Max overview polling attempts after commit |
+| `takeover.enabled` | `true` | 启用上下文接管 |
+| `takeover.tokenThreshold` | `20000` | 开始归档所需的已同步 token 压力 |
+| `takeover.retainedTokenBudget` | `30000` | 归档之后 OpenViking 保留的原始消息预算 |
+| `takeover.keepRecentTurns` | `3` | 优先以完整保真度保留的最近逻辑用户轮次数 |
+| `takeover.overviewBudget` | `16000` | 注入的归档概览的 token 预算 |
+| `takeover.overviewPollMs` | `2000` | 概览轮询尝试之间的延迟 |
+| `takeover.overviewPollMax` | `15` | 提交后概览轮询的最大尝试次数 |
 
-## Failure Modes
+## 失败模式
 
-| Failure | Behavior |
+| 失败情形 | 行为 |
 |---------|----------|
-| OpenViking health check fails | Extension stays disconnected; pi runs normally |
-| Pending addMessage replay fails | Boundary is not advanced; full local history remains visible |
-| Commit fails or is skipped | Boundary is not advanced; pending token pressure remains |
-| Commit response is lost after Phase 1 | New task is recovered by pre/post task IDs; ambiguous outcomes block further commits |
-| Accepted archive is pending | Identity is persisted and retried without another commit |
-| Task fails, is cancelled, or archive identity mismatches | Pending identity is cleared; pressure remains; boundary is unchanged |
-| Exact archive overview is empty | Identity remains pending; session context overview is never used as fallback |
-| Legacy state has no confirmed archive identity | Old boundary is discarded; active legacy tasks must drain before a new commit |
-| Branch fingerprint mismatch | Boundary resets to 0 and full history is shown until the next successful advance |
-| Compaction takeover fails | Returns `undefined`; Pi default compaction proceeds |
+| OpenViking 健康检查失败 | 扩展保持断开；pi 正常运行 |
+| 待处理的 addMessage 重放失败 | 不推进边界；完整的本地历史继续可见 |
+| 提交失败或被跳过 | 不推进边界；待处理的 token 压力保留 |
+| 第 1 阶段之后提交响应丢失 | 通过任务前/后的 task ID 恢复新任务；结果不明确时阻止后续提交 |
+| 已接受的归档处于 pending | 身份被持久化并重试，不会再次提交 |
+| 任务失败、被取消，或归档身份不匹配 | 清除 pending 身份；压力保留；边界不变 |
+| 确切归档的概览为空 | 身份保持 pending；绝不用会话上下文概览作为回退 |
+| 遗留状态没有已确认的归档身份 | 丢弃旧边界；活跃的遗留任务必须先排空才能发起新提交 |
+| 分支指纹不匹配 | 边界重置为 0，在下一次成功推进之前显示完整历史 |
+| 压缩接管失败 | 返回 `undefined`；Pi 默认压缩继续 |
 
-## Verification
+## 验证
 
-Run `npm test` and `git diff --check` for every takeover change. A live gate must use
-an isolated Pi/OpenViking session and verify all of the following identities agree:
+每次涉及接管的改动都要运行 `npm test` 和 `git diff --check`。实机门禁必须使用隔离的 Pi/OpenViking 会话，并验证以下各项身份彼此一致：
 
-1. commit response `archive_uri` and `task_id`;
-2. completed task result `archive_uri`;
-3. exact archive API `archive_id` and non-empty overview;
-4. persisted `confirmedArchive` and the boundary shown by `/viking`;
-5. the provider payload contains the confirmed overview and omits only messages
-   covered by that archive.
+1. 提交响应中的 `archive_uri` 与 `task_id`；
+2. 已完成任务结果中的 `archive_uri`；
+3. 确切归档 API 返回的 `archive_id` 与非空概览；
+4. 持久化的 `confirmedArchive` 与 `/viking` 显示的边界；
+5. provider 载荷中包含已确认的概览，且仅省略被该归档覆盖的消息。
 
-The pending path must also be exercised across a Pi restart. A Pi-triggered compaction
-must include at least one tool call/result pair and verify that the safe compaction
-boundary leaves no orphan tool result.
+pending 路径还必须跨一次 Pi 重启做验证。由 Pi 触发的压缩必须至少包含一对工具调用/结果，并验证安全压缩边界没有留下孤立的工具结果。
