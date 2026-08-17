@@ -324,6 +324,7 @@ pi -e .../pi-openviking/index.ts -t viking_search,viking_read,viking_browse \
 | 现象 | 检查 |
 |---|---|
 | 页脚显示 `OV ✗` | `curl <endpoint>/health`；确认 `OPENVIKING_URL` |
+| `curl` 能通但扩展报 not connected | pi settings 配置了 `httpProxy` 时，旧版本扩展的 loopback 请求会被送进代理。0.3.2 起 loopback 端点直连绕过代理，升级即可 |
 | 日志反复 `overview not ready`，边界不推进 | 提高 `takeover.overviewBudget`（§5.2） |
 | `search/recall` 恒为 0 候选 | 服务端 xxhash 版本（§2.2） |
 | 提交后不生成概览 | `openviking-server doctor` 的 `VLM` 是否 PASS |

@@ -1,4 +1,10 @@
 import type { OVConfig } from "./config.js";
+import { Agent, request as undiciRequest } from "undici";
+
+// pi installs a proxying global dispatcher (undici EnvHttpProxyAgent) when
+// settings.httpProxy is set, and it only honors NO_PROXY captured at startup.
+// Loopback endpoints must never traverse a proxy, so they get a direct agent.
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
 // --- OV API Response Shapes ---
 // All OV responses wrap in: { status: "ok"|"error", result: T, error?: {...}, ... }
@@ -88,6 +94,8 @@ export class OVClient {
   private account: string;
   private user: string;
   private peerId: string;
+  private readonly loopback: boolean;
+  private directAgent?: Agent;
   connected: boolean = false;
 
   private resolvedSpaces: Map<string, string> = new Map();
@@ -105,6 +113,7 @@ export class OVClient {
     this.account = config.account;
     this.user = config.user;
     this.peerId = config.peerId;
+    this.loopback = LOOPBACK_HOSTS.has(new URL(this.baseUrl).hostname);
   }
 
   /**
@@ -144,22 +153,36 @@ export class OVClient {
   /** Core fetch wrapper. Returns { ok, result } after parsing OV's { status, result } envelope. */
   async fetchJSON<T>(path: string, init?: RequestInit, timeoutMs = 10000): Promise<OVResponse<T>> {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      const resp = await fetch(`${this.baseUrl}${path}`, {
-        ...init,
-        headers: { ...this.headers(), ...(init?.headers as Record<string, string> || {}) },
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      const body = await resp.json().catch(() => ({}));
+      const headers = { ...this.headers(), ...((init?.headers as Record<string, string>) || {}) };
+      let ok: boolean, status: number, body: any;
+      if (this.loopback) {
+        this.directAgent ??= new Agent();
+        const resp = await undiciRequest(`${this.baseUrl}${path}`, {
+          method: (init?.method as "GET" | "POST" | "PUT" | "DELETE" | undefined) ?? "GET",
+          headers,
+          body: init?.body as string | undefined,
+          signal: AbortSignal.timeout(timeoutMs),
+          dispatcher: this.directAgent,
+        });
+        status = resp.statusCode;
+        ok = status >= 200 && status < 300;
+        body = await resp.body.json().catch(() => ({}));
+      } else {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const resp = await fetch(`${this.baseUrl}${path}`, { ...init, headers, signal: controller.signal });
+        clearTimeout(timer);
+        status = resp.status;
+        ok = resp.ok;
+        body = await resp.json().catch(() => ({}));
+      }
       const traceId = body?.result?.trace_id || body?.error?.trace_id || body?.trace_id || undefined;
-      if (!resp.ok || body.status === "error") {
+      if (!ok || body.status === "error") {
         return {
           ok: false,
           result: null,
-          status: resp.status,
-          error: body.error || { message: `HTTP ${resp.status}` },
+          status,
+          error: body.error || { message: `HTTP ${status}` },
           traceId,
         };
       }
