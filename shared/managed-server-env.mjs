@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { parseJsoncObject } from "./jsonc.mjs";
 
 export const DEFAULT_NO_PROXY = "127.0.0.1,localhost,::1";
 
@@ -9,88 +10,6 @@ const PROXY_ENV_NAMES = new Set([
   "NO_PROXY",
 ]);
 
-function stripJsonc(text) {
-  let out = "";
-  let inString = false;
-  let inLineComment = false;
-  let inBlockComment = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const next = text[i + 1];
-
-    if (inLineComment) {
-      if (char === "\n") {
-        inLineComment = false;
-        out += char;
-      }
-      continue;
-    }
-    if (inBlockComment) {
-      if (char === "*" && next === "/") {
-        inBlockComment = false;
-        i++;
-      }
-      continue;
-    }
-    if (inString) {
-      out += char;
-      if (char === "\\" && next !== undefined) {
-        out += next;
-        i++;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      out += char;
-    } else if (char === "/" && next === "/") {
-      inLineComment = true;
-      i++;
-    } else if (char === "/" && next === "*") {
-      inBlockComment = true;
-      i++;
-    } else {
-      out += char;
-    }
-  }
-
-  if (inBlockComment) throw new SyntaxError("unterminated block comment");
-  return stripTrailingCommas(out);
-}
-
-function stripTrailingCommas(text) {
-  let out = "";
-  let inString = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    if (inString) {
-      out += char;
-      if (char === "\\" && text[i + 1] !== undefined) {
-        out += text[++i];
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      out += char;
-      continue;
-    }
-    if (char === ",") {
-      let next = i + 1;
-      while (/\s/.test(text[next] || "")) next++;
-      if (text[next] === "}" || text[next] === "]") continue;
-    }
-    out += char;
-  }
-
-  return out;
-}
 
 function proxyUrl(value, field, source) {
   if (value === undefined || value === "") return "";
@@ -117,16 +36,7 @@ function proxyUrl(value, field, source) {
 }
 
 export function parseManagedServerProxy(text, source = "pi-openviking.jsonc") {
-  let root;
-  try {
-    root = JSON.parse(stripJsonc(text));
-  } catch {
-    throw new Error(`${source}: JSONC 格式无效`);
-  }
-
-  if (!root || typeof root !== "object" || Array.isArray(root)) {
-    throw new Error(`${source}: 顶层配置必须是对象`);
-  }
+  const root = parseJsoncObject(text, source);
 
   const managedServer = root.managedServer;
   if (managedServer === undefined) {

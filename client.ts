@@ -42,73 +42,6 @@ export interface OVStatInfo {
   count?: number;         // directories only
 }
 
-export interface OVSessionMeta {
-  session_id: string;
-  message_count: number;
-  total_message_count?: number;
-  commit_count: number;
-  pending_tokens?: number;
-  memories_extracted?: Record<string, number>;
-  last_commit_at?: string;
-}
-
-export interface OVSessionContext {
-  latest_archive_overview: string | null;
-  pre_archive_abstracts: any[];
-  messages: any[];
-  estimatedTokens: number;
-  stats: {
-    totalArchives: number;
-    includedArchives: number;
-    droppedArchives: number;
-    failedArchives: number;
-    activeTokens: number;
-    archiveTokens: number;
-  };
-}
-
-export interface OVCommitResult {
-  session_id?: string;
-  status?: string;
-  task_id?: string | null;
-  archive_uri?: string | null;
-  archived?: boolean;
-  reason?: string;
-  estimated_active_tokens?: number;
-  trace_id?: string;
-}
-
-export interface OVCommitOptions {
-  keepRecentCount?: number;
-  retentionMode?: "turn_budget";
-  keepRecentTurnCount?: number;
-  retainedMessageTokenBudget?: number;
-  minRawTailSteps?: number;
-}
-
-export interface OVTask {
-  task_id: string;
-  task_type: string;
-  status: string;
-  resource_id?: string;
-  stage?: string | null;
-  result?: Record<string, any> | null;
-  error?: string | null;
-}
-
-export interface OVSessionArchive {
-  archive_id: string;
-  abstract: string;
-  overview: string;
-  messages: any[];
-}
-
-export interface OVCommitResponse {
-  result: OVCommitResult | null;
-  traceId?: string;
-  error?: any;
-  status?: number;
-}
 
 export interface OVResponse<T> {
   ok: boolean;
@@ -116,6 +49,41 @@ export interface OVResponse<T> {
   error?: any;
   status?: number;
   traceId?: string;
+}
+
+export interface OVBatchWriteOperation {
+  uri: string;
+  content_base64: string;
+  precondition: { kind: "create_if_absent" };
+}
+
+export interface OVBatchWriteRequest {
+  root_uri: string;
+  operations: OVBatchWriteOperation[];
+  wait: false;
+}
+
+export interface OVBatchWriteResult {
+  root_uri: string;
+  created: string[];
+  updated: string[];
+  unchanged: string[];
+  queue_status?: unknown;
+}
+
+export interface OVUriStatus {
+  ok: boolean;
+  exists: boolean;
+  isDir: boolean;
+  status: number;
+  error?: unknown;
+}
+
+export interface OVBytesResponse {
+  ok: boolean;
+  bytes: Buffer | null;
+  status: number;
+  error?: unknown;
 }
 
 export class OVClient {
@@ -126,6 +94,7 @@ export class OVClient {
   private peerId: string;
   private readonly loopback: boolean;
   private directAgent?: Agent;
+  private lifecycleAbort = new AbortController();
   connected: boolean = false;
 
   private resolvedSpaces: Map<string, string> = new Map();
@@ -170,6 +139,14 @@ export class OVClient {
     return this.user ? `viking://user/${this.user}` : "";
   }
 
+  get recordedEventTarget(): { endpoint: string; account: string; user: string } {
+    return { endpoint: this.baseUrl, account: this.account, user: this.user };
+  }
+
+  private requestSignal(timeoutMs: number): AbortSignal {
+    return AbortSignal.any([AbortSignal.timeout(timeoutMs), this.lifecycleAbort.signal]);
+  }
+
   private headers(): Record<string, string> {
     const h: Record<string, string> = { "Content-Type": "application/json" };
     if (this.apiKey) h["Authorization"] = `Bearer ${this.apiKey}`;
@@ -191,17 +168,18 @@ export class OVClient {
           method: (init?.method as "GET" | "POST" | "PUT" | "DELETE" | undefined) ?? "GET",
           headers,
           body: init?.body as string | undefined,
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: this.requestSignal(timeoutMs),
           dispatcher: this.directAgent,
         });
         status = resp.statusCode;
         ok = status >= 200 && status < 300;
         body = await resp.body.json().catch(() => ({}));
       } else {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        const resp = await fetch(`${this.baseUrl}${path}`, { ...init, headers, signal: controller.signal });
-        clearTimeout(timer);
+        const resp = await fetch(`${this.baseUrl}${path}`, {
+          ...init,
+          headers,
+          signal: this.requestSignal(timeoutMs),
+        });
         status = resp.status;
         ok = resp.ok;
         body = await resp.json().catch(() => ({}));
@@ -225,9 +203,9 @@ export class OVClient {
   // ========== Health ==========
 
   async health(): Promise<boolean> {
-    const res = await this.fetchJSON<any>("/health", undefined, 5000);
-    this.connected = res.ok;
-    return res.ok;
+    const res = await this.fetchJSON<any>("/health", undefined, 1000);
+    this.connected = res.ok && res.result?.healthy === true;
+    return this.connected;
   }
 
   // ========== Sessions ==========
@@ -241,53 +219,6 @@ export class OVClient {
     return res.ok;
   }
 
-  /** GET /api/v1/sessions/{id} — session metadata */
-  async getSession(sessionId: string, autoCreate = false): Promise<OVSessionMeta | null> {
-    const q = autoCreate ? "?auto_create=true" : "";
-    const res = await this.fetchJSON<OVSessionMeta>(
-      `/api/v1/sessions/${encodeURIComponent(sessionId)}${q}`,
-      undefined, 5000,
-    );
-    return res.ok ? res.result : null;
-  }
-
-  /** GET /api/v1/sessions/{id}/context — assembled context with archive overview */
-  async getSessionContext(sessionId: string, tokenBudget = 128000): Promise<OVSessionContext | null> {
-    const res = await this.fetchJSON<OVSessionContext>(
-      `/api/v1/sessions/${encodeURIComponent(sessionId)}/context?token_budget=${tokenBudget}`,
-      undefined, 10000,
-    );
-    return res.ok ? res.result : null;
-  }
-
-  /** GET one completed archive by the identity returned from commit. */
-  async getSessionArchive(sessionId: string, archiveId: string): Promise<OVSessionArchive | null> {
-    const res = await this.fetchJSON<OVSessionArchive>(
-      `/api/v1/sessions/${encodeURIComponent(sessionId)}/archives/${encodeURIComponent(archiveId)}`,
-      undefined, 10000,
-    );
-    return res.ok ? res.result : null;
-  }
-
-  /** GET /api/v1/tasks/{task_id} — background commit status. */
-  async getTask(taskId: string): Promise<OVTask | null> {
-    const res = await this.fetchJSON<OVTask>(
-      `/api/v1/tasks/${encodeURIComponent(taskId)}`,
-      undefined, 10000,
-    );
-    return res.ok ? res.result : null;
-  }
-
-  /** List commit tasks for migration safety; no task content is exposed to the model. */
-  async listSessionCommitTasks(sessionId: string, limit = 50): Promise<OVTask[] | null> {
-    const query = new URLSearchParams({
-      task_type: "session_commit",
-      resource_id: sessionId,
-      limit: String(limit),
-    });
-    const res = await this.fetchJSON<OVTask[]>(`/api/v1/tasks?${query}`, undefined, 10000);
-    return res.ok && Array.isArray(res.result) ? res.result : null;
-  }
 
   /** POST /api/v1/sessions/{id}/messages — add a message (simple text mode) */
   async addMessage(sessionId: string, role: string, content: string): Promise<boolean> {
@@ -299,71 +230,14 @@ export class OVClient {
     return res.ok;
   }
 
-  /** POST /api/v1/sessions/{id}/messages — add a message with parts */
-  async addMessageParts(sessionId: string, role: string, parts: any[]): Promise<boolean> {
-    const res = await this.fetchJSON<any>(
-      `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
-      { method: "POST", body: JSON.stringify({ role, parts }) },
-      10000,
-    );
-    return res.ok;
-  }
-
-  async addMessagePayload(sessionId: string, payload: any): Promise<boolean> {
-    const res = await this.fetchJSON<any>(
-      `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
-      { method: "POST", body: JSON.stringify(payload) },
-      10000,
-    );
-    return res.ok;
-  }
-
-  /** POST /api/v1/sessions/{id}/commit — commit session for archiving + extraction */
-  async commitSessionResponse(
-    sessionId: string,
-    options: OVCommitOptions = {},
-  ): Promise<OVCommitResponse> {
-    const body: Record<string, unknown> = {
-      keep_recent_count: options.keepRecentCount ?? this.cfg.commitKeepRecentCount,
-    };
-    if (options.retentionMode) body.retention_mode = options.retentionMode;
-    if (options.keepRecentTurnCount !== undefined) body.keep_recent_turn_count = options.keepRecentTurnCount;
-    if (options.retainedMessageTokenBudget !== undefined) {
-      body.retained_message_token_budget = options.retainedMessageTokenBudget;
-    }
-    if (options.minRawTailSteps !== undefined) body.min_raw_tail_steps = options.minRawTailSteps;
-
-    const res = await this.fetchJSON<OVCommitResult>(
+  /** Commit only an explicit viking_remember message for memory extraction. */
+  async commitRememberedMessage(sessionId: string): Promise<boolean> {
+    const response = await this.fetchJSON<any>(
       `/api/v1/sessions/${encodeURIComponent(sessionId)}/commit`,
-      { method: "POST", body: JSON.stringify(body) },
+      { method: "POST", body: JSON.stringify({ keep_recent_count: 0 }) },
       30000,
     );
-    if (res.ok && res.result && !res.result.trace_id && res.traceId) {
-      res.result.trace_id = res.traceId;
-    }
-    return {
-      result: res.ok ? res.result : null,
-      traceId: res.traceId,
-      error: res.error,
-      status: res.status,
-    };
-  }
-
-  async commitSession(
-    sessionId: string,
-    options: OVCommitOptions = {},
-  ): Promise<OVCommitResult | null> {
-    return (await this.commitSessionResponse(sessionId, options)).result;
-  }
-
-  /** DELETE /api/v1/sessions/{id} */
-  async deleteSession(sessionId: string): Promise<boolean> {
-    const res = await this.fetchJSON<any>(
-      `/api/v1/sessions/${encodeURIComponent(sessionId)}`,
-      { method: "DELETE" },
-      10000,
-    );
-    return res.ok;
+    return response.ok;
   }
 
   // ========== Search ==========
@@ -433,6 +307,74 @@ export class OVClient {
     );
     return res.ok ? res.result : null;
   }
+
+  /** POST /api/v1/content/batch-write — immutable, preconditioned byte writes. */
+  async batchWrite(request: OVBatchWriteRequest): Promise<OVResponse<OVBatchWriteResult>> {
+    return this.fetchJSON<OVBatchWriteResult>(
+      "/api/v1/content/batch-write",
+      { method: "POST", body: JSON.stringify(request) },
+      30000,
+    );
+  }
+
+  /** GET /api/v1/content/download — raw stored bytes without JSON decoding. */
+  async downloadBytes(uri: string): Promise<OVBytesResponse> {
+    const path = `/api/v1/content/download?uri=${encodeURIComponent(uri)}`;
+    try {
+      const headers = this.headers();
+      if (this.loopback) {
+        this.directAgent ??= new Agent();
+        const response = await undiciRequest(`${this.baseUrl}${path}`, {
+          method: "GET",
+          headers,
+          signal: this.requestSignal(30000),
+          dispatcher: this.directAgent,
+        });
+        const status = response.statusCode;
+        const bytes = Buffer.from(await response.body.arrayBuffer());
+        return status >= 200 && status < 300
+          ? { ok: true, bytes, status }
+          : { ok: false, bytes: null, status, error: { message: `HTTP ${status}` } };
+      }
+
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        method: "GET",
+        headers,
+        signal: this.requestSignal(30000),
+      });
+      const status = response.status;
+      const bytes = Buffer.from(await response.arrayBuffer());
+      return response.ok
+        ? { ok: true, bytes, status }
+        : { ok: false, bytes: null, status, error: { message: `HTTP ${status}` } };
+    } catch (error: any) {
+      return { ok: false, bytes: null, status: 0, error: { message: error?.message || String(error) } };
+    }
+  }
+
+  /** Stat result that distinguishes not-found from transport failure. */
+  async statUri(uri: string): Promise<OVUriStatus> {
+    const response = await this.fetchJSON<OVStatInfo>(
+      `/api/v1/fs/stat?uri=${encodeURIComponent(uri)}`,
+      undefined,
+      10000,
+    );
+    if (response.ok && response.result) {
+      return { ok: true, exists: true, isDir: response.result.isDir === true, status: response.status || 200 };
+    }
+    if (response.status === 404) return { ok: true, exists: false, isDir: false, status: 404 };
+    return { ok: false, exists: false, isDir: false, status: response.status || 0, error: response.error };
+  }
+
+  /** Create one VikingFS directory; callers make parents explicitly. */
+  async mkdirUri(uri: string): Promise<OVResponse<{ uri: string }>> {
+    return this.fetchJSON<{ uri: string }>(
+      "/api/v1/fs/mkdir",
+      { method: "POST", body: JSON.stringify({ uri }) },
+      10000,
+    );
+  }
+
 
   // ========== Filesystem ==========
 
@@ -537,6 +479,17 @@ export class OVClient {
 
     const space = await this.resolveScopeSpace(scope);
     return `viking://${scope}/${space}/${parts.join("/")}`;
+  }
+
+  async close(force = false): Promise<void> {
+    this.lifecycleAbort.abort();
+    this.connected = false;
+    const agent = this.directAgent;
+    this.directAgent = undefined;
+    if (agent) {
+      if (force) await agent.destroy();
+      else await agent.close();
+    }
   }
 }
 

@@ -1,30 +1,26 @@
 {
   "enabled": true,
   "syncTurns": true,
+  "archive": {
+    "chunkTokenBudget": 20000,
+    "rawTailTokenBudget": 30000
+  },
+  "takeover": {
+    "enabled": true,
+    "contextTokenThreshold": 0,
+    "checkpointTokenBudget": 16000
+  },
   "recallTokenBudget": 2000,
   "recallMaxContentChars": 500,
   "recallPreferAbstract": true,
+  "recallLimit": 10,
+  "recallQueryExpansion": "auto",
   "scoreThreshold": 0.35,
   "minQueryLength": 3,
   "profileTokenBudget": 10000,
-  "resumeContextBudget": 32000,
-  "commitTokenThreshold": 20000,
-  "commitKeepRecentCount": 10,
-  "takeover": {
-    "enabled": true,
-    "tokenThreshold": 20000,
-    "retainedTokenBudget": 30000,
-    "keepRecentTurns": 3,
-    "overviewBudget": 16000,
-    "overviewPollMs": 2000,
-    "overviewPollMax": 15
-  },
-  "captureToolResults": false,
-  "captureMode": "semantic",
-  "captureMaxLength": 24000,
-  "captureToolMaxChars": 1000000,
-  "captureAssistantTurns": true,
+  "sessionScopedMemory": true,
+  "workspacePeer": true,
+  "recallPeerScope": "all",
   "bypassPatterns": [],
-  "logLevel": "error",
-  "sessionScopedMemory": true
+  "logLevel": "error"
 }

@@ -57,36 +57,35 @@ export class RecallManager {
 
   // --- Injection ---
 
-  injectRecall(messages: any[]): any[] {
-    if (!this.cache.block) return messages;
+  injectRecall(messages: any[]): { messages: any[]; injectedBlock: string | null } {
+    const block = this.cache.block;
+    if (!block) return { messages, injectedBlock: null };
 
-    // Find the user message (scan backwards)
+    let injected = false;
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (msg.role === "user") {
-        // Idempotency check
         const content = typeof msg.content === "string"
           ? msg.content
           : Array.isArray(msg.content)
             ? msg.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("")
             : "";
-
         if (content.includes("<openviking-context")) break;
 
-        // Prepend block to user message
-        const block = this.cache.block;
         if (typeof msg.content === "string") {
           msg.content = block + "\n" + msg.content;
+          injected = true;
         } else if (Array.isArray(msg.content)) {
           const textBlocks = msg.content.filter((b: any) => b.type === "text");
           if (textBlocks.length > 0) {
             (textBlocks[0] as any).text = block + "\n" + (textBlocks[0] as any).text;
+            injected = true;
           }
         }
         break;
       }
     }
-    return messages;
+    return { messages, injectedBlock: injected ? block : null };
   }
 
   invalidate(): void {

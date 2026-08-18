@@ -25,7 +25,7 @@
 
 - user 和 assistant 消息；
 - tool call 和 tool result，包括真实错误状态；
-- OpenViking recall、overview 的读取或注入；
+- OpenViking recall、profile、overview 的读取或注入；
 - VLM 归档输出；
 - Pi compaction 和 OpenViking 上下文接管事件。
 
@@ -43,7 +43,7 @@ interface RecordedEventBaseV1 {
   occurredAt: string;
   turnId?: string;
   stepId?: string;
-  payload: unknown;
+  payload: JsonValue;
 }
 
 interface PiRecordedEventV1 extends RecordedEventBaseV1 {
@@ -76,9 +76,17 @@ type RecordedEventV1 = PiRecordedEventV1 | ProducedRecordedEventV1;
 完整 payload 规范字节的 SHA-256。内容不参与事件身份；相同 event ID 的不同完整事件规范字节
 是完整性冲突。
 
-同一 entry 的 part 按索引连接，首个 part 连接父 entry 的最后一个事件；没有 message/part 的 entry
-投影为 `partType="opaque"`、`partIndex=0` 的事件。assistant entry 建立 step，后续对应 tool result
-沿用该 step。上述关系只表达来源和执行边界，不改写 Pi 的 `id/parentId` 事实。
+Pi message/custom-message 的 string 或数组 content 按原索引投影。payload 保存删除该 content 字段后的
+完整 entry envelope，并以 `{ container, form, count, value }` 保存原始 part；tool result 的 part 类型
+固定为 `toolResult`，其 message envelope 原样保留 `isError`、details 和状态。没有可分 part 的 entry
+使用 `partType="opaque"`、`partIndex=0`，payload 保存完整 entry。`occurredAt` 原样使用 Pi JSONL
+entry timestamp，不在投影时生成时间。
+
+同一 entry 的 part 按索引连接，首个 part 连接父 entry 的最后一个事件。user entry 建立
+`turn_<sha256(["pi-openviking/turn", 1, sessionId, entryId])>`；其后的当前分支事件沿用该 turn。
+assistant entry 建立 `step_<sha256(["pi-openviking/step", 1, sessionId, entryId])>`，后续并行或顺序
+tool results 沿用最近 assistant step，下一 assistant entry 开始新 step。上述关系只表达来源和执行
+边界，不改写 Pi 的 `id/parentId` 事实。
 
 ### 2. 可靠增量同步
 
@@ -88,22 +96,31 @@ frontier。ACK 状态丢失时从 Pi JSONL 幂等重放。
 
 OpenViking `0.4.13` 的公开 Content API 是 OpenViking `RecordedEvent` 投影的物理持久化边界。扩展
 通过 `POST /api/v1/content/batch-write` 在 OpenViking VikingFS 内实现事件兼容层，不修改
-OpenViking 核心，也不建立第二套物理长期 event store。事件命名空间属于绑定用户的 Resource：
+OpenViking 核心，也不建立第二套物理长期 event store。`sessionScopedMemory=true` 时，存储用户是
+`sanitize(configuredUser || "default") + "--pi-" + sanitize(sessionId)`；否则使用配置用户或服务解析的
+当前用户。`sessionKey` 是规范数组
+`["pi-openviking/recorded-event-storage", 1, "session", sessionId]` 的 SHA-256 小写十六进制。
+事件命名空间为：
 
 ```text
-viking://user/{user}/resources/.pi-openviking/recorded-events/v1/
-└── {sha256(sessionId)}/
-    └── {eventId digest 前四位}/
+viking://user/{storageUser}/resources/.pi-openviking/recorded-events/v1/
+└── {sessionKey}/
+    └── {eventId 中 evt_ 后 digest 的前两位}/
         └── .{eventId}.json
 ```
 
-目录由 adapter 幂等创建。命名空间根和原始事件对象使用隐藏名称；普通目录视图不暴露它们，OpenViking
-语义处理也不直接索引隐藏事件文件。该命名空间由 adapter 独占，其他扩展功能不得使用 replace、
-append、WebDAV PUT 或删除操作修改已创建的事件对象。
+`sanitize` 将不属于 `[A-Za-z0-9._-]` 的每个字符替换为 `-`。两位十六进制形成固定 256 个逻辑
+shards，避免目录数随事件数线性增长；目录由 adapter 按需幂等创建。
+原始事件文件使用隐藏名称；OpenViking 0.4.13 的普通 `ls` 会过滤 dot files，但仍可能展示 dot
+directories，因此 `.pi-openviking` 目录可见不构成事件泄露。语义 DAG 同样过滤 dot file names，
+不直接索引 raw event。该命名空间由 adapter 独占，其他功能不得对事件对象执行 replace、append、
+WebDAV PUT 或删除。append-only 是 adapter 所有权约束而非
+OpenViking ACL；具有相同凭证的外部写入不在信任边界内，回读或重放发现字节变化时按完整性冲突处理。
 
 不超过 8 MiB 的事件将完整 `RecordedEventV1` 规范字节作为一个对象，以
-`create_if_absent` 和 `wait=false` 写入。单次请求最多 128 个对象、单文件最多 8 MiB、总内容
-最多 16 MiB，并按共同父目录分组。只有响应中每个目标 URI 都明确出现在 `created` 或
+`create_if_absent` 和 `wait=false` 写入。每个 request 的 `root_uri` 是 session root，operation URI
+位于已创建的 shard 子目录；adapter 按最多 128 个对象和最多 16 MiB 内容拆分请求，单文件不超过
+8 MiB。只有响应中每个目标 URI 都明确出现在 `created` 或
 `unchanged` 时才确认对应事件；语义队列状态不构成事件 ACK。相同 URI 的不同字节返回
 `409 CONFLICT`，作为完整性错误停止该事件的 ACK 推进并通过 raw download 诊断。请求失败、响应丢失
 或底层 I/O 部分落盘时不推进 ACK，随后整组重放；已落盘的相同字节在重放时返回 `unchanged`。
@@ -116,12 +133,37 @@ append、WebDAV PUT 或删除操作修改已创建的事件对象。
 .{eventId}.commit.json
 ```
 
-claim 首先固定 event ID、完整事件规范字节 hash、总长度，以及按顺序排列的 4 MiB chunk URI、
-长度和 SHA-256；claim 自身也采用规范 JSON。chunks 分批使用 `create_if_absent` 写入，每批继续
-满足 128 项和 16 MiB 限制。adapter 回读并验证全部 chunks、重组长度和完整 hash 后，最后创建
-只包含 schema version、event ID 和 claim hash 的规范 commit marker。claim、chunk 或 marker
-冲突都是完整性错误；没有有效 commit marker 的大事件不属于已接受事件，不能推进 ACK 或进入
-Archive。同一 event ID 只能具有 direct 或 chunked 一种表示；两种表示同时存在是完整性冲突。
+claim 和 commit marker 采用以下规范 JSON：
+
+```ts
+interface StoredEventClaimV1 {
+  schemaVersion: 1;
+  type: "recorded-event-claim";
+  eventId: string;
+  eventHash: string;
+  byteLength: number;
+  chunks: Array<{
+    index: number;
+    uri: string;
+    byteLength: number;
+    contentHash: string;
+  }>;
+}
+
+interface StoredEventCommitV1 {
+  schemaVersion: 1;
+  type: "recorded-event-commit";
+  eventId: string;
+  claimHash: string;
+}
+```
+
+`eventHash` 对完整事件规范字节计算，chunk `contentHash` 对原始 chunk bytes 计算，`claimHash` 对
+claim 规范字节计算；均使用 `sha256:<小写十六进制>`。每个 chunk 最多 4 MiB，按六位十进制
+索引排序。adapter 先创建 claim，再按服务限制批量创建 chunks，回读并验证全部 chunks、重组长度和
+event hash 后最后创建 commit marker。claim、chunk 或 marker 冲突都是完整性错误；没有有效
+commit marker 的大事件不属于已接受事件，不能推进 ACK 或进入 Archive。同一 event ID 只能具有
+direct 或 chunked 一种表示；两种表示同时存在是完整性冲突。
 
 ACK frontier 是已确认叶节点的最小前沿集合：
 
@@ -133,11 +175,16 @@ interface SyncAck {
 `acknowledgedLeaves` 保存 Pi entry ID；只有一个 entry 的全部投影事件都被接受后，该 entry 才能
 进入 frontier。
 
+持久 ACK 文件位于 `~/.pi/openviking/sync-ack/{targetKey}.json`；`targetKey` 是规范数组
+`["pi-openviking/sync-ack", 1, { endpoint, account, user }, sessionId]` 的 SHA-256。文件内容只有
+`SyncAck`，以同目录临时文件和 rename 原子替换。endpoint、account 或绑定用户变化时使用新的
+ACK 文件。该文件不是事件事实源；损坏或丢失时清空 frontier 并从 Pi JSONL 重放。
 任一前沿叶节点的祖先都视为已确认；一个已确认叶节点成为另一个的祖先时从集合移除。
 切换分支后从最近的已确认祖先继续发送；无法确认的事件使用稳定 event ID 幂等重放。
 
-分支恢复完全由 Pi entry 的 `id/parentId` 树确定当前分支及共同祖先。同步覆盖进程重启、
-等长分支切换、较短分支和从已同步祖先产生的新分支，每个源事件都有可追踪的确认结果。
+持久 source 读取 JSONL 中的完整 entry tree，并按 parent-before-child 顺序同步所有未确认 entry；当前
+leaf 用于恢复活动分支，但不会排除 sibling branch 的事实。ACK frontier 覆盖进程重启、等长分支
+切换、较短分支和从已同步祖先产生的新分支，每个源事件都有可追踪的确认结果。
 
 未持久化的 Pi session 在进程存活期间提供 best-effort 同步。新消息形式以不透明 payload
 保留；tool call/result 保留 Pi 身份和真实的完成、错误状态。
@@ -159,12 +206,11 @@ interface Archive {
 }
 ```
 
-Archive 的 manifest 定义收录范围。物理表示引用已经由 OpenViking 确认的 immutable event URI
-及其 hash；确定性读取时 materialize 为上述 `events`。归档 adapter 先验证全部事件，再以
-`create_if_absent` 写入 immutable manifest，最后创建绑定 manifest hash 和事件范围的 Archive
-commit marker。只有具有有效 commit marker 且所有引用均可回读验证的 Archive 才存在；崩溃留下
-的 manifest 或其他未提交对象不可进入 VLM 处理和上下文接管。相同 `archiveId` 重放保持幂等，
-同 ID 不同字节是完整性冲突。
+Archive manifest 定义收录范围并绑定 immutable event identity、顺序和 hash。Phase 0 Content adapter
+只证明单个事件对象的字节幂等，不提供 Archive 多对象原子绑定；不得把一次 `batch-write` 或客户端
+先后写入直接当作 Archive 已提交。Phase 1 必须通过真实 OpenViking 操作调查，选择能够提供崩溃恢复、
+幂等身份和原子可见性的最小机制。只有该机制的独立验收证明 manifest 与全部引用同时有效后，Archive
+才存在并可进入 VLM 处理和上下文接管。
 
 Archive 创建由 token/step 压力驱动，支持单个超长用户轮次，并保持
 assistant/tool call/result step 边界完整。首次 Archive 的目标压力为
@@ -344,10 +390,11 @@ Pi compaction 仍由 Pi 的运行时条件触发。
 `managedServer.proxy` 属于服务连接配置，与扩展的事件、Archive 和上下文策略分离。事件 URI、
 规范编码、分片、precondition 和 ACK 规则是系统完整性约束，不提供用户可变配置。
 
-受管服务固定使用具备 Content API batch-write、raw read/download、user Resource mkdir，以及
-隐藏文件不进入普通语义处理等已验收行为的 OpenViking `0.4.13`。远端服务只有通过相同 capability
-和行为探测才视为兼容；能力缺失时保持事件待重放和 Pi 主任务 fail-open，并由 `/viking` 报告
-adapter capability mismatch。
+受管服务固定使用已通过集成探针的 OpenViking `0.4.13`。远端服务在首次真实 Content 操作中探测
+batch-write、raw download、mkdir 和严格响应语义；路由缺失、请求 schema 不兼容或响应结构不匹配
+标记 capability mismatch，网络不可用保持 unknown。隐藏文件不进入普通语义处理是支持版本的安装/
+集成验收项，不在每次启动创建额外探针对象。两类失败都保持事件待重放和 Pi 主任务 fail-open，并由
+`/viking` 报告。
 
 ## 准确性与可用性边界
 
@@ -358,7 +405,7 @@ adapter capability mismatch。
   marker 创建后，才属于 OpenViking 已接受事件；
 - ACK frontier 只在 OpenViking 确认接受后推进，queue status、请求已发送或本地 pending payload
   均不构成 ACK；
-- Archive 只有在 immutable events、manifest 和 final commit marker 相互验证后才原子可见；
+- Archive 只有在 Phase 1 验证的原子机制同时证明 manifest 和全部引用有效后才可见；
 - Archive 的事件身份、顺序和 hash 可复现；
 - 上下文接管包含完整 raw tail 和所有待归档事件；
 - 持久化 Pi session 支持崩溃恢复，未持久化 session 提供进程内 best-effort 同步。
@@ -376,16 +423,109 @@ recorded -> archived -> VLM-enriched -> active-for-takeover
 
 ## 实施状态
 
-当前执行 Phase 0A；阶段出口是完整事件投影、稳定 event identity 和可重复 100k+ token 长轨迹
-通过聚焦测试。
+Phase 0A/0B 实现已完成。自动化验证包含合成 100k+ golden、固定协议向量、版本化 seed 生成的有效
+Pi entry/树拓扑与 forward-compatible part、三个独立长工具循环、真实 Pi `SessionManager` 持久化/重启、
+sibling branches、entry `SyncAck`、确认顺序、ACK 丢失/持久化失败、并发调度、127/128/129 项、
+8/16 MiB 前一值/边界值/后一值、chunk/commit、capability 和 fail-open。OpenViking 0.4.13 兼容验收
+覆盖 created、unchanged、409、byte-exact、direct/chunked、dot-file 与语义隔离；
+`scripts/e2e-probe.ts` 提供真实 provider payload 采集；统一的 `verify:phase0:live` 入口、JSON summary
+和隔离清理断言是 Phase 0 当前剩余的阶段出口。Phase 1 尚未开始。
+
+## 验证策略
+
+验证由四类相互独立的证据组成：
+
+1. **Golden 回归基线**：固定的合成 100k+ 负载用于逐字节比较协议、对象身份和跨阶段状态，证明相同输入保持确定结果。
+2. **确定性生成与不变量**：版本化 seed 生成不同 entry 类型、payload、树拓扑和长工具循环；测试从源 entry
+   重建 payload，并验证身份唯一性、parent/turn/step、分支恢复、ACK 最小性和确认顺序无关性。失败报告
+   seed，使任何场景都能稳定重放。
+3. **边界矩阵**：按协议边界的前一值、边界值和后一值验证操作数、对象大小、批次总量、容量、失败、
+   响应丢失及重启组合；边界数据独立构造，不从 golden 轨迹截取。
+4. **真实运行证据**：使用真实 Pi JSONL/lifecycle、OpenViking 和所属阶段的 provider/VLM 工作负载验证
+   运行时格式、存储语义、模型容量和吞吐。真实样本保留来源类型、Pi/provider/model/prompt 版本和可重放
+   输入，敏感内容脱敏。
+
+固定轨迹承担回归基线职责；输入分布覆盖由生成场景、边界矩阵和真实样本共同提供。模型 token 数使用 Pi
+或 provider 的实际计量，不以字符数估算替代。模型输出允许非确定，但事件对应、step 原子性、hash、容量
+和时序预算使用确定不变量验收。每个阶段只有在其四类适用证据共同通过后才完成；实践结果改变理解时，
+先更新当前约束与验收场景，再继续实施。
+
+Phase 3 使用多个彼此独立的真实 100k+ 工作负载完成模型级端到端验收，至少覆盖：多轮长工具循环与
+并行成功/失败、单轮超长原子输入及大型 payload、分支/重启/Pi compaction，并覆盖多个真实
+provider/VLM 组合。各工作负载均走 Archive、checkpoint 和 takeover 链路；固定 golden 回放只提供
+结果对照。
+
+## 真实验收门禁
+
+每个实施阶段交付一个由 `package.json` 暴露的 live verifier：`verify:phase0:live`、
+`verify:phase1:live`、`verify:phase2a:live`、`verify:phase2b:live`、`verify:phase2c:live`、
+`verify:phase3:live` 和 `verify:phase4:live`。一个入口可以组合多个聚焦脚本，但阶段出口只引用该入口。
+live verifier 是阶段实现的一部分，mock、内存 transport、合成模型输出和人工检查不构成该门禁的替代品。
+
+所有 live verifier 使用同一契约：
+
+- 每个阶段先提交 `test/live/{gate}.workloads.json` manifest，固定 workload/seed、适用版本与真实进程/
+  端点身份、成功标准、证伪条件、证据提取方式和阈值决策规则；基线探针完成后，将 baseline、数值阈值
+  与预期变化写入 manifest 并在实现前固定其 hash，运行时不能临时改变；
+- 启动前连接并校验 manifest 声明的真实 Pi、OpenViking、provider/model、VLM、prompt 和协议身份；
+  支持矩阵或端点身份不匹配时明确拒绝运行；
+- 输入使用脱敏 fixture 或可重放生成参数；live verifier 在专用测试 workspace 和测试用户 namespace
+  运行，凭证只从环境读取，不写入输入、payload artifact 或 summary；
+- summary 使用一个版本化 JSON 结构，记录 phase、run ID、manifest hash、版本/端点身份、逐项 expected/
+  actual/delta、证据文件 hash、实际 token/时长和 cleanup。`passed` 只由全部必要断言与 cleanup 派生，
+  退出码与之保持一致；
+- 本地数据位于仓库 `test/.artifacts/live/{runId}` 并由 `.gitignore` 排除。verifier 以 exclusive create
+  建立含 run ID、manifest hash 和随机 nonce 的本地 ownership marker；Pi 每次启动使用一个新的 `0600`
+  segment file，verifier 先以 `wx` 打开并把继承 FD 交给探针。探针只写 FD，不接触路径；重启复用 run
+  目录前重新核对 marker、owner 和权限；
+- 捕获 provider payload 时，manifest 固定扩展加载顺序且探针最后加载；summary 记录顺序和 segment。
+  verifier 根据 Pi 请求观察点确定预期捕获数，逐条校验 JSONL 和 segment hash，并检查 extension-error
+  通道；缺失、序列化/写入错误或后续 payload 修改均使 gate 失败；
+- 原始 provider payload 只在专用 workload 中临时保存。summary 和跨阶段 CI artifact 仅保留白名单
+  脱敏测量、身份与证据 hash；
+- OpenViking 写入前确认本次随机 namespace 不存在或为空，以 create-if-absent 写入包含 run ID、
+  manifest hash 和随机 nonce 的 ownership marker，并逐字节回读。verifier 只在写入前检查与删除前复核
+  均匹配同一精确根路径和 marker 字节时删除该 namespace；
+- 受管环境可执行中断/重启；远端破坏性测试需要显式 opt-in。清理前先生成脱敏测量与证据 hash，随后
+  成功或失败都删除远端对象；清理失败使 gate 失败；
+- 完成测量后，成功时删除整个本地 run 目录；失败时删除全部 raw payload，只保留字段白名单式脱敏诊断。
+  任一本地删除失败同样使 gate 失败。仓库长期保留 verifier、workload manifest 和断言，不提交单次运行日志；
+  需要跨阶段消费的 summary 作为同一 release run 的 CI artifact；
+- 任一必要断言、观察点或清理失败即保持阶段出口未通过，并由 expected/actual/delta 重新定位主导约束。
+  各阶段先实现自己的入口；出现第二个真实消费者后才提取共享 verifier 代码。
+
+阶段 live gate 的职责如下：
+
+| Gate | 真实边界 | 必须由机器断言的结果 |
+| --- | --- | --- |
+| Phase 0 | 当前 Pi CLI/lifecycle、真实 `SessionManager`、受支持 OpenViking Content API；模型输出可受控 | Pi JSONL → 全部 `RecordedEvent` → direct/chunked 对象 → entry ACK 逐项对应；重放、409、断线、shutdown 和清理成立 |
+| Phase 1 | 受管 OpenViking 的 Archive 发布中断/客户端重启，以及多个真实 Pi workload 形成的 Archive | 原子可见、幂等恢复、确定 expand、event/step 边界和每种真实样本的 Archive 完整性成立 |
+| Phase 2A | Phase 1 的各真实 Archive 与候选 VLM | checkpoint 来源/hash、失败重试、重启恢复和积压派生正确；实际 VLM 吞吐满足 manifest 阈值 |
+| Phase 2B | 真实 Pi session、候选 checkpoint/raw tail 和拟进入 Phase 3 的 task-model 元数据；takeover 保持 inactive | 候选 payload 可由源事件逐项重算，step/anchor 完整；Pi 报告容量在边界两侧分别 fit/mismatch |
+| Phase 2C | 真实 Pi `context` hook、全部 Phase 3 候选 task provider、可控 OpenViking/VLM 降级及 Pi compaction | 实际 provider 请求与 Phase 2B 候选 payload 一致；每个高水位只切换一次；分支/重启成立；降级时使用完整 Pi 上下文 |
+| Phase 3 | 多个拟出厂 provider/VLM 组合和多个彼此独立的真实 100k+ workload；每个拟出厂组合至少重复三次 | 源事件到实际 provider 请求全链一致；实际 token、吞吐、延迟和容量安全余量满足 manifest 阈值，重复运行结论一致 |
+| Phase 4 | 同一 release run 的 Phase 3 summary，以及在本次 namespace 重建的对应 events/Archive/checkpoint | summary/manifest hash 匹配；索引就绪及重启后 search/browse/expand 返回预期身份和来源链；过滤、隐藏 raw event 隔离及清理成立 |
 
 ## 实施顺序
 
-各阶段复用同一条可重复的 100k+ token 长轨迹。Phase 0 建立确定性回放基线，Phase 1–2 验证
-对应持久状态，Phase 3 在真实 provider 和 VLM 环境中完成最终端到端校准。每个状态在所属阶段
-同时提供确定性读取、运行诊断和独立验收；下一阶段消费已经通过验收的状态。
+Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依次建立 checkpoint、`ActiveContext`
+和真实上下文切换；Phase 3 校准多 workload/model 组合；Phase 4 建立检索与诊断。下一阶段只消费
+已通过上一阶段 deterministic checks 与 live gate 的状态。
 
-每个实施步骤按对应验收项先运行聚焦测试；步骤完成时运行完整 `npm test` 和 `git diff --check`。
+每个阶段按同一调查闭环执行：
+
+1. 在实现前建立 manifest，固定阶段成功标准、当前可重现现象、与目标的差距、证伪条件、输入和机器
+   观察点；
+2. 对真实边界运行最小基线探针，收集足以区分候选机制的日志/trace，把 baseline、阈值和预期变化写回
+   manifest 并固定 hash；Phase 1 的原子机制选择必须先完成该调查；
+3. 选择当前主导约束，实施能闭合该约束的最小结构，并先运行聚焦 deterministic checks；
+4. 运行阶段 live verifier，把结果与基线和预期变化逐项比较；结果偏离时回到步骤 1，重新调查并识别
+   主导约束；
+5. deterministic checks、live gate、完整 `npm test`、`git diff --check` 和文档自检共同通过后关闭阶段出口。
+
+Phase 0 的 production 实现先于统一 live gate 存在，因此当前按补建门禁处理：先用独立协议向量和真实
+Pi/OpenViking 探针建立 reference baseline 并固定 manifest，再实现 verifier；verifier 失败即重新打开
+对应的 Phase 0 实现约束。Phase 1 起完整按上述 1–5 顺序执行。
 
 ### Phase 0：完整记录与最小可靠同步
 
@@ -395,18 +535,22 @@ recorded -> archived -> VLM-enriched -> active-for-takeover
 - 完整捕获不透明或大型 payload，并保留 tool result 的真实完成和错误状态；
 - 固定 user、assistant、tool call/result 和未知 part 的 `RecordedEvent` 投影及 step 边界；
 - 用 RFC 8785 规范字节固定 event identity、content hash 和完整事件字节；
-- 建立覆盖长工具循环、分支替换和进程重启的可重复 100k+ token 轨迹，逐事件校验投影和身份。
+- 建立合成 100k+ golden 负载，并以独立 seed 生成多类型 entry、不同树拓扑和长工具循环；逐事件校验
+  投影、身份以及可从事件无损重建源 entry。
 
 **验收**：
 
 - 配置模板与“目标配置”schema 一致，未知字段返回包含字段路径的校验错误；
-- 长轨迹逐事件保留 payload、part 类型与索引、step 边界以及 tool result 的真实完成和错误状态；
+- 当前 Pi `SessionManager` 真实持久化的 user/assistant/tool result、分支、custom、model change 和 compaction
+  JSONL 可在重启后完整恢复并投影；
+- golden 负载逐事件保留 payload、part 类型与索引、step 边界以及 tool result 状态；独立生成场景
+  对多种 payload、树拓扑和长工具循环满足相同不变量；
 - 同一源事件重复投影得到相同 event ID、规范字节和 content hash，相同内容的不同事件得到不同
   event ID；event/parent/source/part/turn/step 字段与 Pi JSONL 可逐项重算。
 
 #### Phase 0B：确认前沿与重放
 
-- 以持久 Pi JSONL 提供待同步事件，并根据 `id/parentId` 树恢复当前分支和共同祖先；
+- 以持久 Pi JSONL 提供完整 entry tree，根据 `id/parentId` 同步所有未确认分支并恢复当前 leaf；
 - 实现 OpenViking Content API adapter：探测 capability、幂等建立绑定用户的隐藏 Resource、
   按确定性 URI/共同父目录/服务限制组织 `batch-write`，并严格核对每个响应 URI；
 - 小事件使用 immutable 单对象，大事件使用 claim/chunks/commit marker，在服务存储容量内完整
@@ -414,48 +558,52 @@ recorded -> archived -> VLM-enriched -> active-for-takeover
 - 使用稳定 event ID 处理 ACK/响应丢失、部分落盘和重放，将 `409 CONFLICT` 作为不可覆盖的
   完整性错误；
 - 仅在一个 Pi entry 的全部事件被 OpenViking 接受后，以最小 `SyncAck` 增量更新 ACK frontier；
-- 删除 add-message payload pending store；待同步内容始终从 Pi JSONL 重建；
+- 同步层只持久化 `SyncAck`；待同步内容始终从 Pi JSONL 重建；
+- `turn_end` 和 `session_compact` 只非阻塞调度同步；shutdown 调度最终 snapshot，最多等待 500ms
+  后取消 transport；网络超时不得阻塞 Pi 主任务或 compaction；
 - `/viking` 提供连接、adapter capability、ACK frontier、待重放和同步失败状态，使 ACK 推进和
   fail-open 可直接观察。
 
 **验收**：
 
 - 在受支持 OpenViking 实例上验证首次写入为 `created`、同字节重放为 `unchanged`、不同字节为
-  `409 CONFLICT`、raw download byte-exact，且隐藏事件不进入普通目录视图或普通 Resource 语义索引；
+  `409 CONFLICT`、raw download byte-exact；普通 shard `ls` 不返回 dot event files，允许上层 dot
+  directory 可见，raw events 不进入普通 Resource 语义索引；
 - 持久 Pi JSONL 中的每个源事件都有确认结果，entry 仅在全部投影事件确认后推进 ACK frontier；
-- ACK 丢失、响应丢失、同批部分落盘、等长分支替换、较短分支、从已同步祖先创建分支和进程
-  重启后，每个事件均得到确认；
+- golden 分支在 ACK 丢失、响应丢失、同批部分落盘、等长替换、短分支、从已确认祖先创建分支和
+  进程重启后逐事件得到确认；生成树在不同拓扑与确认顺序下得到同一最小 ACK frontier；
 - 相同 event ID 的重试保持幂等，同 ID 不同规范字节停止 ACK 并给出完整性诊断；
-- 超过 8 MiB 的事件跨多个请求重放后，只能在 chunks 完整、hash 一致和 commit marker 有效时
-  确认；
+- 127/128/129 项、8 MiB 单对象及 16 MiB 批次边界按矩阵拆分；超过 8 MiB 的事件跨请求重放后，
+  在 chunks 完整、hash 一致和 commit marker 有效时确认；
 - 持久同步状态仅包含最小 `SyncAck`，非持久化 Pi session 提供进程内 best-effort 同步；
-- OpenViking 不可用或 capability 不匹配时，未确认事件保持待重放，Pi 主任务保持可用。
+- OpenViking 不可用或 capability 不匹配时，未确认事件保持待重放，Pi 主任务保持可用；
+- health 后网络退化或大事件传输仍在进行时，Pi lifecycle 不等待同步完成；shutdown 最多等待
+  500ms 后取消 transport。
 
-### Phase 1：原子 Archive 与可行性预检
+### Phase 1：原子 Archive
 
+- 调查 OpenViking 可用于 Archive 原子绑定的公开操作及崩溃语义，以实践结果选择最小机制；
 - 从已经确认的 immutable event 对象选择完整 event/step 范围，生成确定性 `archiveId`；
 - 回读事件并重算 event identity、顺序和内容 hash，manifest 记录 event/step 边界、数量和聚合
   hash；
-- 通过同一 Content API adapter 写入 immutable manifest，并在全部引用验证后最后创建 Archive
-  commit marker；未提交对象不构成 Archive；
+- 固定所选原子机制的数据结构、接受证明、冲突和恢复规则；Phase 0 的事件 commit marker 不得代替
+  Archive 接受证明；
 - 提供按 `archiveId` 的确定性读取和 expand，按 manifest materialize 事件并重新验证全部 hash；
 - 根据单个用户轮次内的 token/step 压力生成有效 Archive；
-- 跨重启恢复未完成的 Archive，复用相同 `archiveId` 幂等补齐 manifest 或 commit marker；
-- 用 Phase 0 长轨迹验证 Archive 边界、单个超长用户轮次、step 原子性和重启恢复；
-- 用真实 Archive 样本测量候选 VLM 吞吐以及 checkpoint、raw tail 与任务模型容量的 fit；
+- 跨重启恢复未完成的 Archive，复用相同 `archiveId`，不产生第二个逻辑对象；
+- 用 golden 基线验证确定结果；用独立生成的 Archive 边界、长工具循环、单轮超长输入和重启场景验证
+  manifest/step 不变量；
+- 用多个真实 Pi workload 形成 Archive，回读并验证各自事件顺序、step 边界、manifest 和 expand；
 - `/viking` 展示 Archive 身份、提交状态、处理状态和边界诊断。
 
 **验收**：
 
-- 只有 final commit marker、manifest hash、event/step 边界、数量和引用事件全部一致时 Archive
-  才可见；
+- 所选机制的接受证明、manifest hash、event/step 边界、数量和引用事件全部一致时 Archive 才可见；
 - 响应丢失、部分落盘和进程重启后复用相同 `archiveId`，不会产生重复或半可见 Archive；
 - 按 `archiveId` 回读和 expand 得到确定且完整的源事件序列；
 - tool call/result 在 Archive 边界保持原子，单个用户轮次内的 token/step 压力能够生成有效
   Archive；
-- 真实 Archive 样本证明至少一个候选 VLM 满足吞吐要求，且候选 checkpoint 与 raw tail 能装入
-  任务模型；
-- VLM 预检失败时，事件记录和 raw Archive 保持可用。
+- 各真实 Pi workload 的 Archive 均满足 manifest、event/step 边界、hash 和 expand 完整性。
 
 ### Phase 2：单一 checkpoint 与上下文接管
 
@@ -466,7 +614,9 @@ recorded -> archived -> VLM-enriched -> active-for-takeover
 - 以 request、checkpoint 和失败事件表达 VLM 运行事实；
 - 从未消费 Archive 派生处理中、落后、恢复和积压 token，并实现对应通知；
 - `/viking` 展示 VLM 积压、失败、checkpoint ID 和来源 Archive；
-- 校验 checkpoint 身份、hash、重试和跨重启恢复，并将有效 checkpoint 作为 Phase 2B 输入。
+- 校验 checkpoint 身份、hash、重试和跨重启恢复，并将有效 checkpoint 作为 Phase 2B 输入；
+- 用 golden 固定输出回归身份，以独立生成的重试/失败/积压场景验证状态不变量，并让 Phase 1 的多种
+  真实 Archive 工作负载分别经过候选 VLM。
 
 **验收**：
 
@@ -475,14 +625,16 @@ recorded -> archived -> VLM-enriched -> active-for-takeover
 - 一个未消费 Archive 显示处理中，第二个产生时通知消费落后，恢复到至多一个在途 Archive 时
   通知一次；
 - Archive、request、checkpoint 和失败事件能够完整派生 VLM 状态、失败原因及积压 token；
-- VLM 失败不改变已经持久化的事件和 raw Archive。
+- VLM 失败不改变已经持久化的事件和 raw Archive；
+- Phase 1 的各真实 Archive 工作负载均产生来源和 hash 可核验的 checkpoint，并分别满足候选 VLM
+  吞吐要求。
 
 #### Phase 2B：活动上下文构造
 
 - 选择已确认 checkpoint 和原子的 raw-tail 边界，形成并持久化最小 `ActiveContext`；
 - 跨重启恢复 `ActiveContext`，分支变化时只复用来源边界仍在当前祖先链上的上下文；
-- dry-run 捕获目标 provider payload，对照原始事件验证 checkpoint、原始用户指令 anchor、raw
-  tail 和 tool call/result step 完整性；
+- dry-run 从 checkpoint、原始用户指令 anchor、raw tail 和未归档事件 materialize 候选 task payload，
+  对照源事件验证内容与 tool call/result step；
 - dry-run 期间 provider 使用完整 Pi 上下文；
 - 使用 Pi 报告的任务模型容量计算 takeover eligibility；容量不匹配时保持 inactive，并由
   `/viking` 显示 capacity mismatch、checkpoint ID 和 raw-tail 边界。
@@ -504,7 +656,8 @@ recorded -> archived -> VLM-enriched -> active-for-takeover
 - 每次高水位只替换一次 `ActiveContext`，后续事件追加在稳定前缀之后；
 - 无有效 `ActiveContext`、OpenViking/VLM 降级或容量不匹配时继续使用完整 Pi 上下文；
 - Pi 原生 compaction 提供运行时 fail-open，扩展只提供生命周期钩子结果；
-- 用同一长轨迹验证接管、分支变化、进程重启和 Pi compaction 后的 provider payload。
+- 用 golden 回归和独立生成场景验证切换不变量；用全部 Phase 3 候选 task provider 的真实请求验证
+  高水位、分支、重启、compaction 和 fail-open payload。
 
 **验收**：
 
@@ -517,8 +670,8 @@ recorded -> archived -> VLM-enriched -> active-for-takeover
 
 ### Phase 3：端到端预算校准与模型定型
 
-- 在 Phase 0–2 的逐阶段验证通过后，在真实 provider 和 VLM 环境中回放同一条 100k+ token
-  长轨迹；
+- 在 Phase 0–2 逐阶段通过后，于真实 provider 和 VLM 环境中运行“验证策略”定义的多个独立 100k+
+  工作负载；token 数取自 Pi/provider 实际计量；
 - 对照原始事件检查 Archive 边界、raw tail、checkpoint 和接管上下文；
 - 使用 Pi 报告的任务模型容量验证高水位公式两侧的 fit 与 capacity mismatch 行为；
 - 根据 step 原子性、raw-tail 完整性和上下文容量调整候选预算并重跑；
@@ -527,7 +680,7 @@ recorded -> archived -> VLM-enriched -> active-for-takeover
 
 **验收**：
 
-- 真实 100k+ token 轨迹中的 Archive、raw tail、checkpoint 和 provider payload 与源事件逐项对应，
+- 各真实 100k+ 工作负载中的 Archive、raw tail、checkpoint 和 provider payload 与各自源事件逐项对应，
   没有遗漏、重复或破坏 step 原子性；
 - 候选 Archive、checkpoint 和 raw-tail 预算满足完整性及任务模型安全余量；
 - 所选 VLM 能在下一个 Archive 产生前完成前一个 checkpoint；
@@ -552,6 +705,9 @@ recorded -> archived -> VLM-enriched -> active-for-takeover
 
 ## 下一实施入口
 
-Phase 0A 的下一实施入口是 `lib/capture-adapter.mjs` 和 `shared/capture-utils.mjs`：实现
-`RecordedEventV1` 完整投影、RFC 8785 规范字节、event/content hash、part/step/parent 边界，并以
-可重复长轨迹逐事件验证。
+当前入口是补建并运行 `verify:phase0:live`：先固定 Phase 0 manifest/reference baseline，再在真实 Pi 和
+OpenViking 0.4.13 上建立统一 summary、ownership namespace、逐事件/ACK 和清理断言。
+`scripts/e2e-probe.ts` 作为最后加载的扩展向 verifier 预开的 segment FD 写最终 payload；verifier 必须
+核对预期捕获数量/hash 和 extension-error 通道。该门禁通过后，Phase 1 从 Archive 原子绑定与崩溃语义的
+真实基线探针开始；获得
+原子可见性、幂等恢复和确定性读取证据后再实现 Archive。

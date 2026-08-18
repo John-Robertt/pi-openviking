@@ -1,7 +1,7 @@
 {
   "name": "pi-openviking",
   "version": "0.3.6",
-  "description": "Pi extension for the OpenViking context database: in-session context takeover and session-scoped long-term memory with recall tools.",
+  "description": "Pi extension for append-only OpenViking event recording, reliable replay, and memory recall.",
   "keywords": [
     "pi-package"
   ],
@@ -10,6 +10,9 @@
     "pi-openviking": "scripts/cli.mjs"
   },
   "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "test": "node --test"
   },
@@ -29,9 +32,9 @@
     "lib/",
     "shared/",
     "scripts/",
+    "HANDOFF.md",
     "README.md",
     "DESIGN.md",
-    "TAKEOVER.md",
     "USAGE.md"
   ],
   "dependencies": {

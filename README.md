@@ -1,27 +1,56 @@
-# Pi OpenViking 记忆扩展
+# Pi OpenViking 扩展
 
-这是一个面向 [Pi Coding Agent](https://github.com/earendil-works/pi) 的 [OpenViking](https://github.com/volcengine/OpenViking) 客户端扩展。它在当前 Pi 会话中自动同步对话、召回相关长期记忆，并在上下文增长后用 OpenViking 归档概览替代较早的完整历史。
+这是面向 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
+[OpenViking](https://github.com/volcengine/OpenViking) 扩展。当前版本负责两件事：
 
-默认开启 `sessionScopedMemory`：抽取后的长期记忆按 Pi 会话隔离。继续同一个会话（例如 `pi -c` 或 `pi -p`）会沿用原命名空间；新会话和 fork 使用新的命名空间，不会自动召回旧会话的长期记忆。将该配置设为 `false` 才会恢复同一 OpenViking 用户下的跨会话共享。
+1. 将 Pi 会话完整投影为稳定、可重放的原始事件并写入 OpenViking；
+2. 在模型请求前检索已有 OpenViking 记忆。
+
+Pi JSONL 始终保留完整历史并是 Pi 事件的唯一事实源。OpenViking 不可用时，编码任务继续运行；
+未确认事件留在 Pi 来源中，连接恢复后重放。
+
+## 当前边界
+
+- user、assistant、tool call/result、thinking、image、未知 part、错误、aborted、custom entry 和
+  Pi compaction 均按原始 JSON 值记录；
+- 事件使用 RFC 8785 规范字节、稳定 event ID 和内容 hash；
+- OpenViking `0.4.13` Content API 以 dot-prefixed event files 保存投影；
+- 小事件直接写入，超过 8 MiB 的事件使用 claim/chunks/commit marker；
+- 服务端确认一个 Pi entry 的全部事件后才推进最小 `SyncAck`；
+- 不持久化待发送 transcript payload，也不使用数组长度作为同步水位；
+- Pi compaction 只由 Pi 触发，扩展在完成后记录该事件。
+
+Archive、VLM checkpoint 和上下文接管属于后续阶段。相关配置表达目标策略，但在产生经过验收的
+Archive 和 `ActiveContext` 前不会替换 Pi 上下文。
 
 ## 前置条件
 
 - Pi Coding Agent
-- Node.js 20.18.1 或更高版本
-- 可访问的 OpenViking HTTP 服务
-- Python 3.10 或更高版本（仅本地安装 OpenViking 服务时需要）
+- Node.js 22.19.0 或更高版本（与当前 Pi 运行时要求一致）
+- OpenViking `0.4.13` 或通过相同 Content API 行为验收的服务
+- Python 3.10 或更高版本（仅本地安装服务时需要）
 
 ## 快速开始
 
-### 一键安装
+一键安装本地服务和扩展：
 
 ```bash
 npx pi-openviking@latest setup
 ```
 
-该命令会在 `~/.pi/openviking/` 下安装并配置本地 OpenViking 服务，运行 doctor 检查，启动服务，然后通过 `pi install npm:pi-openviking` 安装扩展。
+已有 OpenViking 服务时只安装扩展：
 
-本地服务管理：
+```bash
+pi install npm:pi-openviking
+```
+
+从仓库临时加载：
+
+```bash
+pi -e /path/to/pi-openviking/index.ts
+```
+
+服务管理：
 
 ```bash
 npx pi-openviking@latest server start
@@ -31,124 +60,78 @@ npx pi-openviking@latest server status
 npx pi-openviking@latest server doctor
 ```
 
-`server status` 快速展示运行进程、健康信息、生效的模型和受管代理；`server doctor` 执行 OpenViking 的完整环境、模型与认证诊断。
-
-卸载：
-
-```bash
-npx pi-openviking@latest uninstall
-```
-
-卸载会删除 `~/.pi/openviking/`、`~/.pi/pi-openviking.jsonc` 以及其中由本工具管理的长期记忆数据，并从 Pi 中移除该扩展。
-
-### 仅安装扩展
-
-已有 OpenViking 服务时可以只安装扩展：
-
-```bash
-pi install npm:pi-openviking
-```
-
-从当前仓库临时加载：
-
-```bash
-pi -e /path/to/pi-openviking/index.ts
-```
-
 ## 配置
 
-首次加载扩展时会生成用户配置：
+首次加载生成：
 
 ```text
 ~/.pi/pi-openviking.jsonc
 ```
 
-包内 `config.json` 是扩展出厂默认值，不应作为用户配置文件修改。扩展配置会在包内默认值之上合并，修改后重启 Pi 生效；`managedServer.proxy` 只控制本包启动的 OpenViking 服务进程，修改后执行 `npx pi-openviking@latest server restart`。
+包内 `config.json` 是经过 schema 测试的出厂默认值，生成的 JSONC 模板列出可覆盖字段；
+`HANDOFF.md` 定义策略语义。配置加载器拒绝未知字段并报告完整路径。用户文件只需写覆盖项，例如：
+
+```jsonc
+{
+  "syncTurns": true,
+  "bypassPatterns": []
+}
+```
 
 OpenViking 地址与凭证按以下顺序解析：
 
-1. `OPENVIKING_*` 环境变量
-2. `~/.pi/openviking/ovcli.conf`
-3. `~/.pi/openviking/ov.conf`
+1. `OPENVIKING_*` 环境变量；
+2. `~/.pi/openviking/ovcli.conf`；
+3. `~/.pi/openviking/ov.conf`。
 
-配置远端服务或 API key：
+`managedServer.proxy` 是服务连接配置，只影响本包启动的 OpenViking 子进程。完整说明见
+[`USAGE.md`](./USAGE.md)。
 
-```bash
-npx pi-openviking@latest credentials
-```
+## 状态与命令
 
-关键出厂默认值：
+页脚只显示连接健康状态：
 
-| 配置 | 默认值 | 作用 |
-|---|---:|---|
-| `sessionScopedMemory` | `true` | 抽取后的长期记忆按 Pi 会话隔离 |
-| `syncTurns` | `true` | 自动同步会话内容 |
-| `recallTokenBudget` | `2000` | 每轮召回上下文的 token 预算 |
-| `takeover.enabled` | `true` | 启用 OpenViking 上下文接管 |
-| `takeover.tokenThreshold` | `20000` | 新同步内容累计到该值时触发归档 |
-| `takeover.retainedTokenBudget` | `30000` | OpenViking 归档后原始消息的保留预算 |
-| `takeover.keepRecentTurns` | `3` | 接管后优先保留的最近逻辑用户轮数 |
-| `takeover.overviewBudget` | `16000` | 注入模型上下文的 archive overview 最大预算 |
-| `logLevel` | `"error"` | 扩展日志级别 |
+- `OV ✓`：最近一次检查可达；
+- `OV ✗`：当前不可达。
 
-完整配置、服务端模型配置和故障排查见 [`USAGE.md`](./USAGE.md)。
+`/viking` 显示来源类型、Content adapter capability、ACK frontier、待重放 entry 和最近失败。
+`/viking sync` 立即从当前 Pi 会话来源重放。
 
-## 当前运行机制
+## 工具
 
-扩展入口是 `index.ts`，通过 Pi 生命周期事件驱动：
+扩展注册：
 
-| Pi 事件 | 当前行为 |
-|---|---|
-| `session_start` | 检查服务、绑定会话记忆命名空间、创建或恢复 OpenViking 会话，并启动连接状态刷新 |
-| `before_agent_start` | 为继续会话补做幂等初始化，并记录当前提示词 |
-| `context` | 使用当前提示词召回记忆，注入召回内容和归档概览 |
-| `turn_end` | 捕获并同步分支；按目标 archive 身份推进边界 |
-| `session_before_compact` | 精确归档当前 live 内容；未就绪时让 Pi 默认 compaction 接管 |
-| `session_compact` | 重置已被 Pi compaction 取代的本地边界 |
-| `session_shutdown` | 保存接管状态或执行非接管模式的最终提交 |
+- `viking_search`
+- `viking_read`
+- `viking_browse`
+- `viking_remember`
+- `viking_forget`
+- `viking_add_resource`
+- `viking_archive_expand`
 
-当前提示词的召回发生在同一模型轮次的 `context` 事件中，不使用上一轮提示词的预取结果。写入前会清除已注入的 `<openviking-context>` 等上下文块，避免召回内容再次进入长期记忆。
-
-在启用且未被 bypass 的会话中，Pi 页脚只显示连接健康状态：`OV ✓` 表示最近一次检查确认服务可达，`OV ✗` 表示当前不可达。同步、上下文接管、archive 和会话诊断统一由 `/viking` 使用中文多行展示。扩展约每 5 秒自动刷新，并在执行 `/viking` 或每次用户提示开始处理前立即检查。
-
-## 工具与命令
-
-扩展注册以下 7 个工具：
-
-| 工具 | 作用 |
-|---|---|
-| `viking_search` | 在当前允许的 OpenViking 范围内进行语义搜索 |
-| `viking_read` | 按 abstract、overview 或 full 层级读取 `viking://` 内容 |
-| `viking_browse` | 浏览或查看 `viking://` 路径元数据 |
-| `viking_remember` | 向当前 OpenViking 会话写入待抽取的事实或记忆 |
-| `viking_forget` | 删除指定记忆或搜索后删除高置信匹配 |
-| `viking_add_resource` | 导入 HTTP URL 资源 |
-| `viking_archive_expand` | 按 OpenViking session ID 读取已归档会话内容 |
-
-在 Pi 中输入 `/viking` 会立即检查连接并显示当前会话信息；使用其 `commit` 子命令 `/viking commit` 可手动提交当前 OpenViking 会话。输入 `/viking ` 后可补全该子命令。
+这些工具操作显式 OpenViking 记忆和资源；原始事件同步不依赖工具调用。
 
 ## 项目结构
 
 ```text
-index.ts                     Pi 扩展入口与事件处理
-config.ts / config.json      配置加载、用户模板与包内默认值
-client.ts                    OpenViking HTTP 客户端
-sync.ts                      会话同步、待处理队列与提交
+index.ts                     Pi 生命周期与 fail-open 接入
+config.ts / config.json      统一配置加载与出厂默认值
+client.ts                    OpenViking HTTP/Content transport
+sync.ts                      JSONL source、RecordedEvent 与 SyncAck 协调
 recall.ts                    当前提示词召回
-takeover.ts                  Pi 与接管状态机的适配层
 tools.ts                     Viking 工具与 /viking 命令
-lib/                         接管、捕获和 URI 防护适配器
-shared/                      凭证、捕获、队列、召回等共享实现
+shared/recorded-event*.mjs   规范事件与 Content adapter
+shared/pi-session-source.mjs 持久 Pi JSONL 分支恢复
+shared/sync-ack.mjs          最小 ACK frontier
 scripts/cli.mjs              安装与服务管理 CLI
-scripts/e2e-probe.ts         端到端探针
 ```
 
 ## 文档
 
-- [`USAGE.md`](./USAGE.md)：安装、服务端配置、扩展配置和故障排查
-- [`DESIGN.md`](./DESIGN.md)：捕获、召回与同步设计
-- [`TAKEOVER.md`](./TAKEOVER.md)：上下文接管状态机与失败处理
+- [`HANDOFF.md`](./HANDOFF.md)：目标架构、阶段边界和验收标准的唯一权威规范；
+- [`DESIGN.md`](./DESIGN.md)：当前 Phase 0 实现的职责与数据流；
+- [`USAGE.md`](./USAGE.md)：安装、配置和故障排查。
 
 ## 许可证
 
-扩展按 Apache-2.0 发布，见 [`LICENSE`](./LICENSE)。OpenViking 服务端使用其自身许可证。
+Apache-2.0，见 [`LICENSE`](./LICENSE)。OpenViking 服务端使用其自身许可证。

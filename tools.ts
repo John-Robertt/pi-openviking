@@ -167,12 +167,13 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
 
       // Directly add to OV session if available
       let stored = false;
-      if (sync?.sessionId) {
-        stored = await client.addMessage(sync.sessionId, "user", tagged);
+      if (sync?.sessionId && await client.createSession(sync.sessionId)) {
+        const added = await client.addMessage(sync.sessionId, "user", tagged);
+        stored = added && await client.commitRememberedMessage(sync.sessionId);
       }
 
       return {
-        content: [{ type: "text", text: stored ? `Remembered in OpenViking: "${params.content}" (${category})` : `Queued for OpenViking: "${params.content}" (${category})` }],
+        content: [{ type: "text", text: stored ? `Remembered in OpenViking: "${params.content}" (${category})` : `OpenViking could not store: "${params.content}" (${category})` }],
         details: { stored, category, tagged },
       };
     },
