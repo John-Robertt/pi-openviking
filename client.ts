@@ -97,11 +97,6 @@ export class OVClient {
   private lifecycleAbort = new AbortController();
   connected: boolean = false;
 
-  private resolvedSpaces: Map<string, string> = new Map();
-
-  private static RESERVED_USER = new Set(["memories"]);
-  private static RESERVED_AGENT = new Set(["memories", "skills", "instructions", "workspaces"]);
-
   /** Read-only access to config (for value access across modules). */
   readonly cfg: OVConfig;
 
@@ -120,12 +115,10 @@ export class OVClient {
    *
    * Must be called before the first request that touches memory, otherwise
    * earlier calls land in the shared user space and leak across sessions.
-   * Cached space resolutions are dropped because they belong to the old user.
    */
   bindUser(user: string): void {
     if (!user || user === this.user) return;
     this.user = user;
-    this.resolvedSpaces.clear();
   }
 
   /**
@@ -141,6 +134,19 @@ export class OVClient {
 
   get recordedEventTarget(): { endpoint: string; account: string; user: string } {
     return { endpoint: this.baseUrl, account: this.account, user: this.user };
+  }
+
+  /**
+   * 记忆空间名：profile 注入和 recall 展开 `viking://user/<reserved>/...` 时使用。
+   *
+   * 与 `userRoot` 和 `recordedEventTarget` 同源，都是 `this.user`：读取必须落在
+   * 写入所在的命名空间，否则扩展会写进一处、读另一处。因此这里不做任何回退或
+   * 服务端查询——身份只由已绑定的凭证决定。
+   *
+   * 未绑定用户时返回 ""，调用方跳过 profile 与 URI 展开。
+   */
+  get memorySpace(): string {
+    return this.user;
   }
 
   private requestSignal(timeoutMs: number): AbortSignal {
@@ -431,54 +437,24 @@ export class OVClient {
     return res.ok ? res.result : null;
   }
 
-  // ========== URI Space Resolution ==========
+  // ========== User Space Resolution ==========
 
-  async resolveScopeSpace(scope: "user" | "agent"): Promise<string> {
-    const cached = this.resolvedSpaces.get(scope);
-    if (cached) return cached;
-
-    // Probe system status for user identity fallback
-    let fallbackSpace = "default";
+  /**
+   * 未配置用户时的存储用户名：服务端为本次凭证解析出的当前用户。
+   *
+   * SPEC“目标配置”规定 `sessionScopedMemory=false` 时使用配置用户或服务解析的
+   * 当前用户。这里只问服务端本身，不枚举 `viking://user` 后挑选——该 ls 不按调
+   * 用方过滤，任何挑选都可能选中其他用户的 space，并把事件写进去。
+   *
+   * 服务端未给出身份时回落到 `"default"`，与 index.ts:deriveMemoryNamespace
+   * 对空配置用户的处理保持一致。
+   */
+  async resolveUserSpace(): Promise<string> {
     const statusRes = await this.fetchJSON<any>("/api/v1/system/status", undefined, 5000);
-    if (statusRes.ok && typeof statusRes.result?.user === "string" && statusRes.result.user.trim()) {
-      fallbackSpace = statusRes.result.user.trim();
-    }
-
-    // List scope root for actual namespaces
-    const reserved = scope === "user" ? OVClient.RESERVED_USER : OVClient.RESERVED_AGENT;
-    const entries = await this.ls(`viking://${scope}/`);
-    const spaces = entries
-      .filter(e => e.isDir && !e.name.startsWith(".") && !reserved.has(e.name))
-      .map(e => e.name);
-
-    if (spaces.length > 0) {
-      // Prefer the fallback space if it exists, then "default", then first available
-      let chosen = spaces[0];
-      if (spaces.includes(fallbackSpace)) chosen = fallbackSpace;
-      else if (spaces.includes("default")) chosen = "default";
-      this.resolvedSpaces.set(scope, chosen);
-      return chosen;
-    }
-
-    this.resolvedSpaces.set(scope, fallbackSpace);
-    return fallbackSpace;
-  }
-
-  async resolveTargetUri(targetUri: string): Promise<string> {
-    const trimmed = targetUri.trim().replace(/\/+$/, "");
-    const m = trimmed.match(/^viking:\/\/(user|agent)(?:\/(.*))?$/);
-    if (!m) return trimmed;
-    const scope = m[1] as "user" | "agent";
-    const rawRest = (m[2] ?? "").trim();
-    if (!rawRest) return trimmed;
-    const parts = rawRest.split("/").filter(Boolean);
-    if (parts.length === 0) return trimmed;
-
-    const reserved = scope === "user" ? OVClient.RESERVED_USER : OVClient.RESERVED_AGENT;
-    if (!reserved.has(parts[0])) return trimmed; // already has space
-
-    const space = await this.resolveScopeSpace(scope);
-    return `viking://${scope}/${space}/${parts.join("/")}`;
+    const resolved = statusRes.ok && typeof statusRes.result?.user === "string"
+      ? statusRes.result.user.trim()
+      : "";
+    return resolved || "default";
   }
 
   async close(force = false): Promise<void> {

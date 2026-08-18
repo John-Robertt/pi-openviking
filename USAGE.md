@@ -156,6 +156,10 @@ sanitize(baseUser || "default")--pi-sanitize(piSessionId)
 因此 `pi -c`、`pi -p` 沿用同一会话命名空间；新 session/fork 使用新命名空间。关闭该选项后使用
 配置用户或服务解析的当前用户。
 
+开启时，`viking_*` 工具把命名空间作为执行边界：读取、删除和浏览只接受绑定根本身或其子路径，
+越界调用被拒绝且不发出请求；搜索范围夹回绑定根，返回结果按同一规则过滤；`viking_archive_expand`
+只展开本会话自己的 OV session。关闭该选项后不施加这一边界。
+
 原始 event files 使用 dot-prefixed 名称，普通 shard 列表不返回这些文件；上层 dot directory 仍可能
 可见。语义处理过滤 dot event files。客户端仅持久化最小 ACK：
 

@@ -17,6 +17,7 @@ class MemoryEventStore {
     if (this.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
     if (this.failNext) {
       this.failNext = false;
+      if (this.failureError) throw this.failureError;
       const error = new Error(this.failureMessage);
       if (this.failureStatus) error.status = this.failureStatus;
       throw error;
@@ -35,7 +36,7 @@ function client() {
   return {
     connected: true,
     userRoot: "viking://user/test",
-    resolveScopeSpace: async () => "test",
+    resolveUserSpace: async () => "test",
     fetchJSON: async () => ({ ok: true, result: {} }),
   };
 }
@@ -234,7 +235,22 @@ test("Content API capability 不匹配时保持待重放并进入可诊断状态
     const verificationSync = manager(verificationStore, `${root}/verification.json`);
     await verificationSync.ensureSession(`${trace.sessionId}-verification`);
     await syncBranch(verificationSync, trace.shorter);
-    assert.equal(verificationSync.status.capability, "mismatch");
+    // 字节核验失败是完整性问题而非 capability 问题：不得误标 mismatch，ACK 保持冻结。
+    assert.equal(verificationSync.status.capability, "unknown");
+    assert.deepEqual(verificationSync.status.acknowledgedLeaves, []);
+    assert.match(verificationSync.status.lastFailure, /verification failed/);
+
+    // 完整性冲突的诊断必须携带冲突对象 URI，支撑 raw download 排障。
+    const conflictStore = new MemoryEventStore();
+    conflictStore.failNext = true;
+    conflictStore.failureError = Object.assign(
+      new Error("RecordedEvent bytes conflict with an existing OpenViking object"),
+      { name: "RecordedEventConflictError", uri: "viking://user/dev--pi-x/resources/.pi-openviking/recorded-events/v1/ab/cd/.evt_x.json" },
+    );
+    const conflictSync = manager(conflictStore, `${root}/conflict.json`);
+    await conflictSync.ensureSession(`${trace.sessionId}-conflict`);
+    await syncBranch(conflictSync, trace.shorter);
+    assert.match(conflictSync.status.lastFailure, /viking:\/\/user\/dev--pi-x.*\.evt_x\.json/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -245,7 +261,7 @@ test("未配置用户时把解析空间同时绑定到 URI、header 和 ACK targ
   const resolvingClient = {
     userRoot: "",
     recordedEventTarget: { endpoint: "https://example.test", account: "account", user: "" },
-    resolveScopeSpace: async () => "resolved-user",
+    resolveUserSpace: async () => "resolved-user",
     bindUser(user) {
       this.userRoot = `viking://user/${user}`;
       this.recordedEventTarget = { ...this.recordedEventTarget, user };

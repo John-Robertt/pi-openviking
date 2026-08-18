@@ -1,4 +1,3 @@
-// GENERATED FROM examples/memory-plugin-shared/lib. DO NOT EDIT.
 const DEFAULT_URI_KEYS = [
   "filePath",
   "file_path",
@@ -45,7 +44,7 @@ export function findVikingUriInValue(value) {
 }
 
 export function buildGuardMessage(uri, hint = {}) {
-  const tool = hint.tool || "the OpenViking MCP tools";
+  const tool = hint.tool || "the viking_* tools";
   const example = typeof hint.example === "function" ? hint.example(uri) : hint.example;
   const lines = [
     "viking:// URIs are OpenViking virtual paths, not local filesystem paths.",

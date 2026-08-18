@@ -94,3 +94,48 @@ test("OVClient 严格传输 batch-write、stat、mkdir 和 raw download", async 
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("未配置用户时只按服务端身份解析 space，不枚举 viking://user", async () => {
+  const requests = [];
+  const server = createServer((request, response) => {
+    requests.push(request.url);
+    if (request.url === "/api/v1/system/status") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ status: "ok", result: { user: "resolved-user" } }));
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ status: "ok", result: [{ name: "someone-else", isDir: true }] }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const endpoint = `http://127.0.0.1:${server.address().port}`;
+
+  const client = new OVClient({ ...config(endpoint), user: "" });
+  try {
+    assert.equal(await client.resolveUserSpace(), "resolved-user");
+    // 枚举 viking://user 会看到其他用户的 space；解析身份不得依赖它。
+    assert.deepEqual(requests, ["/api/v1/system/status"]);
+    assert.equal(client.memorySpace, "");
+    client.bindUser("resolved-user");
+    assert.equal(client.memorySpace, "resolved-user");
+    assert.equal(client.userRoot, "viking://user/resolved-user");
+  } finally {
+    await client.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("服务端未给出身份时回落到 default", async () => {
+  const server = createServer((request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ status: "ok", result: {} }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const client = new OVClient({ ...config(`http://127.0.0.1:${server.address().port}`), user: "" });
+  try {
+    assert.equal(await client.resolveUserSpace(), "default");
+  } finally {
+    await client.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

@@ -5,6 +5,8 @@ export function buildRecallBlock(
   options?: {
     actorPeerId?: string;
     sessionId?: string;
+    /** 已绑定的记忆空间名；缺省时 viking://user/<reserved> 不展开，不做推断。 */
+    userSpace?: string;
     log?: (stage: string, data?: any) => void;
   },
 ): Promise<string | null>;

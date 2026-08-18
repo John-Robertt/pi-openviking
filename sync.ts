@@ -25,7 +25,6 @@ export interface SyncBranchResult {
   failure: string | null;
 }
 
-
 export interface SyncStatus {
   source: "persistent-jsonl" | "in-memory" | "none";
   capability: "unknown" | "ready" | "mismatch";
@@ -60,7 +59,6 @@ function defaultAckPath(
   return join(homedir(), ".pi", "openviking", "sync-ack", `${key}.json`);
 }
 
-
 export class SyncManager {
   private client: OVClient;
   private options: SyncManagerOptions;
@@ -89,13 +87,14 @@ export class SyncManager {
 
   async ensureSession(piSessionId: string): Promise<boolean> {
     if (this.piSessionId === piSessionId && this.adapter) return true;
+    // in-memory 父子映射只描述当前会话的 entry 树，换会话即失效。
+    if (this.piSessionId !== piSessionId) this.knownParents.clear();
     this.piSessionId = piSessionId;
     this.ovSessionId = deriveHarnessSessionId("pi-", piSessionId);
 
     let userRoot = this.client.userRoot;
     if (!userRoot) {
-      const userSpace = await this.client.resolveScopeSpace("user");
-      this.client.bindUser(userSpace);
+      this.client.bindUser(await this.client.resolveUserSpace());
       userRoot = this.client.userRoot;
     }
     this.adapter = this.options.adapterFactory
@@ -114,7 +113,6 @@ export class SyncManager {
     this.publishStatus();
     return true;
   }
-
 
   private async serialize<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.operationTail;
@@ -209,7 +207,6 @@ export class SyncManager {
     }
   }
 
-
   private async syncSource(
     entries: any[],
     parentById: Map<string, string | null>,
@@ -258,10 +255,10 @@ export class SyncManager {
         this.publishStatus();
       } catch (error: any) {
         const status = Number(error?.status || 0);
-        if ([404, 405, 422].includes(status) || /invalid result|did not confirm|verification failed/.test(error?.message || "")) {
+        if ([404, 405, 422].includes(status) || /invalid result|did not confirm/.test(error?.message || "")) {
           this.syncStatus.capability = "mismatch";
         }
-        const failure = `${error?.name || "Error"}: ${error?.message || String(error)}`;
+        const failure = `${error?.name || "Error"}: ${error?.message || String(error)}${error?.uri ? ` — ${error.uri}` : ""}`;
         this.syncStatus.lastFailure = failure;
         this.publishStatus();
         debugLog(`recorded-event sync failed: ${failure}`);
@@ -287,6 +284,5 @@ export class SyncManager {
     this.publishStatus();
     return this.emptyResult(failure);
   }
-
 
 }

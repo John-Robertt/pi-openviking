@@ -1,11 +1,12 @@
-// GENERATED FROM examples/memory-plugin-shared/lib. DO NOT EDIT.
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_OVCLI_CONF_PATH = join(homedir(), ".openviking", "ovcli.conf");
-const DEFAULT_OV_CONF_PATH = join(homedir(), ".openviking", "ov.conf");
+// 受管服务、CLI 和扩展共用 ~/.pi/openviking，与 scripts/cli.mjs 的 OV_HOME 一致。
+const PI_OV_HOME = join(homedir(), ".pi", "openviking");
+const DEFAULT_OVCLI_CONF_PATH = join(PI_OV_HOME, "ovcli.conf");
+const DEFAULT_OV_CONF_PATH = join(PI_OV_HOME, "ov.conf");
 const DEFAULT_BASE_URL = "http://127.0.0.1:1933";
 
 function str(val, fallback = "") {
@@ -31,7 +32,7 @@ function tryLoadJson(path) {
 }
 
 /**
- * Build the User-Agent every harness plugin sends on OpenViking-bound requests.
+ * Build the User-Agent this extension sends on OpenViking-bound requests.
  * Shape is `name/semver` so downstream stats layers can parse it as one token.
  */
 export function buildUserAgent(harness, version) {
@@ -150,7 +151,6 @@ export function resolveOpenVikingCredentials(env = process.env) {
   const envHasCredentials = hasEnvCredentialFields(env);
   const useCli = mode === "cli" ||
     (mode === "auto" && !envHasCredentials && files.cliPath && hasCredentialFields(files.cliFile));
-  const cx = files.ovFile.codex || {};
   const server = files.ovFile.server || {};
 
   const baseUrl = deriveBaseUrl({ env, ...files, mode, useCli });
@@ -161,7 +161,6 @@ export function resolveOpenVikingCredentials(env = process.env) {
         str(env.OPENVIKING_BEARER_TOKEN, "") ||
         str(env.OPENVIKING_API_KEY, "") ||
         str(files.cliFile.api_key, "") ||
-        str(cx.apiKey, "") ||
         str(server.root_api_key, "")
       );
 
@@ -169,24 +168,21 @@ export function resolveOpenVikingCredentials(env = process.env) {
     ? str(files.cliFile.account, str(files.cliFile.account_id, ""))
     : (
         str(env.OPENVIKING_ACCOUNT, "") ||
-        str(files.cliFile.account, str(files.cliFile.account_id, "")) ||
-        str(cx.accountId, "")
+        str(files.cliFile.account, str(files.cliFile.account_id, ""))
       );
 
   const user = useCli
     ? str(files.cliFile.user, str(files.cliFile.user_id, ""))
     : (
         str(env.OPENVIKING_USER, "") ||
-        str(files.cliFile.user, str(files.cliFile.user_id, "")) ||
-        str(cx.userId, "")
+        str(files.cliFile.user, str(files.cliFile.user_id, ""))
       );
 
   const peerId = useCli
     ? str(files.cliFile.actor_peer_id, str(files.cliFile.peer_id, ""))
     : (
         str(env.OPENVIKING_PEER_ID, "") ||
-        str(files.cliFile.actor_peer_id, str(files.cliFile.peer_id, "")) ||
-        str(cx.peerId, str(cx.peer_id, ""))
+        str(files.cliFile.actor_peer_id, str(files.cliFile.peer_id, ""))
       );
 
   const explicitMcpUrl = str(env.OPENVIKING_MCP_URL, "");

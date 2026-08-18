@@ -1,4 +1,3 @@
-// GENERATED FROM examples/memory-plugin-shared/lib. DO NOT EDIT.
 /**
  * Session-start profile injection helper.
  *
@@ -7,52 +6,15 @@
  *   viking://user/<space>/memories/preferences/   (ls with abstracts)
  *   viking://user/<space>/memories/entities/      (ls with abstracts)
  *
+ * `<space>` 由调用方按已绑定身份传入，本模块不做推断。
+ *
  * Budget enforced via the CJK-aware estimateTokens() below — codepoint >=
  * 0x3000 counts at 1.5 tokens, else chars/4. The estimator is exported so
- * callers (e.g. session-start.mjs) can log token counts that match what
- * the budget logic actually sees.
+ * callers can log token counts that match what the budget logic actually sees.
  *
  * Returned block is the *inner* content only (no outer <openviking-context>);
- * session-start.mjs composes the outer wrapper so the archive block can sit
- * alongside in a single context envelope.
+ * index.ts:buildSessionProfileBlock composes the outer wrapper.
  */
-
-const USER_RESERVED_DIRS = new Set(["memories"]);
-let _userSpaceCache = null;
-
-/**
- * Mirrors auto-recall.mjs resolveScopeSpace for scope="user" (lines 123-147).
- * Duplicated rather than imported to avoid coupling session-start to
- * auto-recall's module-level fetchJSON closure.
- */
-async function resolveUserSpace(fetchJSON, actorPeerId = "") {
-  if (_userSpaceCache) return _userSpaceCache;
-
-  let fallbackSpace = "default";
-  const status = await fetchJSON("/api/v1/system/status");
-  if (status.ok && typeof status.result?.user === "string" && status.result.user.trim()) {
-    fallbackSpace = status.result.user.trim();
-  }
-
-  const lsRes = await fetchJSON(
-    `/api/v1/fs/ls?uri=${encodeURIComponent("viking://user")}&output=original`,
-    {},
-    { actorPeerId },
-  );
-  if (lsRes.ok && Array.isArray(lsRes.result)) {
-    const spaces = lsRes.result
-      .filter((e) => e?.isDir)
-      .map((e) => (typeof e.name === "string" ? e.name.trim() : ""))
-      .filter((n) => n && !n.startsWith(".") && !USER_RESERVED_DIRS.has(n));
-    if (spaces.length > 0) {
-      if (spaces.includes(fallbackSpace)) { _userSpaceCache = fallbackSpace; return fallbackSpace; }
-      if (spaces.includes("default")) { _userSpaceCache = "default"; return "default"; }
-      if (spaces.length === 1) { _userSpaceCache = spaces[0]; return spaces[0]; }
-    }
-  }
-  _userSpaceCache = fallbackSpace;
-  return fallbackSpace;
-}
 
 /**
  * Token estimate that splits CJK from the rest. The rest of the plugin uses a
@@ -232,7 +194,9 @@ function formatListing(headerUri, entries, budgetTokens) {
  * The returned `block` is just the inner <user-profile>/<available-memories>
  * payload — the caller wraps it in <openviking-context source="...">.
  *
- * @param {Function} fetchJSON  ov-session.mjs:makeFetchJSON closure
+ * @param {Function} fetchJSON  客户端 fetchJSON 闭包
+ * @param {string} userSpace  已绑定的记忆空间名；由调用方从 client 身份派生，
+ *   此处不做任何推断，避免读到其他用户的 space
  * @param {number} totalBudgetTokens  chars/4 budget, total for the whole block
  * @returns {Promise<null | {
  *   block: string, chars: number, tokens: number, profileUri: string,
@@ -240,8 +204,9 @@ function formatListing(headerUri, entries, budgetTokens) {
  *   droppedPref: number, droppedEnt: number,
  * }>}
  */
-export async function buildProfileBlock(fetchJSON, totalBudgetTokens, actorPeerId = "") {
-  const space = await resolveUserSpace(fetchJSON, actorPeerId);
+export async function buildProfileBlock(fetchJSON, userSpace, totalBudgetTokens, actorPeerId = "") {
+  const space = String(userSpace || "").trim();
+  if (!space) return null;
   const profileUri = `viking://user/${space}/memories/profile.md`;
   const prefUri = `viking://user/${space}/memories/preferences`;
   const entUri = `viking://user/${space}/memories/entities`;

@@ -108,9 +108,6 @@ export function loadConfig(extensionDir: string): OVConfig {
   const configuredQueryExpansion = Object.prototype.hasOwnProperty.call(userFile, "recallQueryExpansion");
   const extension = validateExtensionConfig(mergeConfig(packageFile, userFile));
 
-  const piOvHome = join(homedir(), ".pi", "openviking");
-  process.env.OPENVIKING_CLI_CONFIG_FILE ||= join(piOvHome, "ovcli.conf");
-  process.env.OPENVIKING_CONFIG_FILE ||= join(piOvHome, "ov.conf");
   const credentials = resolveOpenVikingCredentials();
 
   const config: OVConfig = {

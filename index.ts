@@ -16,7 +16,7 @@ import { buildProfileBlock } from "./shared/profile-inject.mjs";
 import { createStatusRefresh } from "./shared/status-refresh.mjs";
 import { clearVikingFooter, formatVikingCommand, setVikingFooter } from "./shared/viking-status.mjs";
 import { guardVikingUriToolCall } from "./lib/uri-guard-adapter.mjs";
-import { registerTools } from "./tools.js";
+import { registerTools, VIKING_TOOL_NAMES } from "./tools.js";
 
 const HEALTH_REFRESH_INTERVAL_MS = 5000;
 const OBSERVATION_ENTRY_TYPE = "ov-observation";
@@ -25,8 +25,6 @@ export default async function (pi: ExtensionAPI) {
   // --- Load config ---
   const config = loadConfigFromModuleUrl(import.meta.url);
   if (!config.enabled) return;
-
-  // Env overrides
 
   // --- Initialize modules ---
   const client = new OVClient(config);
@@ -193,7 +191,7 @@ export default async function (pi: ExtensionAPI) {
       parts.push(profileBlock);
       recordObservation("profile-injection", profileBlock, ctx.sessionManager.getLeafId());
     }
-    parts.push("OpenViking tools: viking_search, viking_read, viking_browse, viking_remember, viking_forget, viking_add_resource, viking_archive_expand.");
+    parts.push(`OpenViking tools: ${VIKING_TOOL_NAMES.join(", ")}.`);
 
     const additions = parts.join("\n\n");
     if (!additions) return;
@@ -374,6 +372,7 @@ async function buildSessionProfileBlock(
   try {
     const profile = await buildProfileBlock(
       (path: string, init?: any, options?: any) => client.fetchJSON(path, init, options?.timeoutMs ?? 2000),
+      client.memorySpace,
       config.profileTokenBudget,
       config.peerId,
     );

@@ -49,6 +49,8 @@ export class RecallManager {
         // Passing the OV session id is what turns on server-side query
         // expansion and the cross-turn dedup ledger.
         sessionId: this.sessionId() ?? "",
+        // 读取边界由 client 的已绑定身份决定，recall-core 不再自行推断。
+        userSpace: this.client.memorySpace,
       },
     );
     this.cache = { block, promptText: userQuery };

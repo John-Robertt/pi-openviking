@@ -1,9 +1,6 @@
-// GENERATED FROM examples/memory-plugin-shared/lib. DO NOT EDIT.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-
-import { compressRecallContext } from "./recall-compress-core.mjs";
 
 const PREFERENCE_QUERY_RE = /prefer|preference|favorite|favourite|like|偏好|喜欢|爱好|更倾向/i;
 const TEMPORAL_QUERY_RE = /when|what time|date|day|month|year|yesterday|today|tomorrow|last|next|什么时候|何时|哪天|几月|几年|昨天|今天|明天/i;
@@ -19,7 +16,6 @@ const SOURCES = [
 ];
 const DEFAULT_CONTEXT_LIMIT = 10;
 const DEFAULT_CONTEXT_MAX_TOKENS = 1600;
-const DEFAULT_REWRITE_MAX_BULLETS = 6;
 const CODING_QUOTA_WEIGHTS = {
   events: 1,
   entities: 2,
@@ -28,8 +24,6 @@ const CODING_QUOTA_WEIGHTS = {
   resources: 3,
   skills: 2,
 };
-
-let userSpaceCache = "";
 
 export function estimateTokens(text) {
   return text ? Math.ceil(String(text).length / 4) : 0;
@@ -90,7 +84,6 @@ export function buildRecallEndpointBody(cfg = {}) {
  * degradation, cross-turn dedup — to the server's defaults.
  */
 export function buildContextSearchBody(cfg = {}, options = {}) {
-  const rewriteMode = String(cfg.recallRewrite || "off").toLowerCase();
   const limit = Math.max(1, Math.floor(Number(cfg.recallLimit || DEFAULT_CONTEXT_LIMIT)));
   const maxTokens = Math.max(
     64,
@@ -125,16 +118,6 @@ export function buildContextSearchBody(cfg = {}, options = {}) {
   const excludeUris = Array.isArray(options.excludeUris) ? options.excludeUris.slice(0, 200) : [];
   if (excludeUris.length) body.exclude_uris = excludeUris;
 
-  if (rewriteMode === "server") body.rewrite = true;
-  else if (rewriteMode === "auto" && !options.localCompressorAvailable) body.rewrite = "auto";
-  const rewriteMaxBullets = Math.max(
-    1,
-    Math.floor(Number(cfg.recallCompressMaxBullets || DEFAULT_REWRITE_MAX_BULLETS)),
-  );
-  const rewriteMaxBulletsConfigured = cfg.recallCompressMaxBulletsConfigured === true;
-  if (body.rewrite !== undefined && rewriteMaxBulletsConfigured) {
-    body.rewrite_max_bullets = rewriteMaxBullets;
-  }
   return body;
 }
 
@@ -145,43 +128,26 @@ export function buildContextSearchBody(cfg = {}, options = {}) {
 //
 //   session_id  -> query expansion   (retrieval.recall_intent_timeout_s,  5s)
 //   always      -> retrieval, body reads, budget planning
-//   rewrite     -> digest            (retrieval.recall_rewrite_timeout_s, 30s)
 //
-// Both budgets stay inside the 60s prompt-hook allowance, the rewrite one with
-// a quarter to spare.
+// The budget stays inside the 60s prompt-hook allowance.
 const EXPANSION_REQUEST_TIMEOUT_MS = 15000;
-const SERVER_REWRITE_REQUEST_TIMEOUT_MS = 45000;
 
 /**
  * HTTP deadline for one context request, or undefined to keep the caller's own.
  *
  * Derived from the request body, because the body is what states which server
  * stages will run: reading `cfg` alone cannot tell a bare retrieval from one
- * that also spends the expansion or rewrite fuse.
+ * that also spends the expansion fuse.
  */
 export function contextRequestTimeoutMs(cfg = {}, body = {}) {
-  const wantsRewrite = body.rewrite !== undefined;
   // `query_expansion` defaults to "auto" server-side, so only an explicit "off"
   // takes the expansion fuse back out of the budget.
   const wantsExpansion = Boolean(body.session_id) && body.query_expansion !== "off";
-  if (!wantsRewrite && !wantsExpansion) return undefined;
+  if (!wantsExpansion) return undefined;
 
   const configured = Number(cfg.recallContextTimeoutMs);
   if (Number.isFinite(configured) && configured > 0) return Math.max(1000, Math.floor(configured));
-  const floor = wantsRewrite ? SERVER_REWRITE_REQUEST_TIMEOUT_MS : EXPANSION_REQUEST_TIMEOUT_MS;
-  return Math.max(Number(cfg.timeoutMs) || 0, floor);
-}
-
-/**
- * Strip the context-face fields a pre-context server rejects, converting the
- * token budget back to v1's character budget.
- */
-export function downgradeToRecallBody(contextBody = {}, cfg = {}) {
-  const body = buildRecallEndpointBody(cfg);
-  body.query = contextBody.query || "";
-  body.max_chars = Math.max(1000, Math.floor(Number(contextBody.max_tokens || 1600) * 4));
-  if (contextBody.peer_scope) body.peer_scope = contextBody.peer_scope;
-  return body;
+  return Math.max(Number(cfg.timeoutMs) || 0, EXPANSION_REQUEST_TIMEOUT_MS);
 }
 
 function clampScore(v) {
@@ -241,36 +207,13 @@ function dedupeItems(items) {
   return out;
 }
 
-async function resolveUserSpace(fetchJSON, actorPeerId = "") {
-  if (userSpaceCache) return userSpaceCache;
-
-  let fallbackSpace = "default";
-  const status = await fetchJSON("/api/v1/system/status");
-  if (status.ok && typeof status.result?.user === "string" && status.result.user.trim()) {
-    fallbackSpace = status.result.user.trim();
-  }
-
-  const lsRes = await fetchJSON(
-    `/api/v1/fs/ls?uri=${encodeURIComponent("viking://user")}&output=original`,
-    {},
-    { actorPeerId },
-  );
-  if (lsRes.ok && Array.isArray(lsRes.result)) {
-    const spaces = lsRes.result
-      .filter((e) => e?.isDir)
-      .map((e) => (typeof e.name === "string" ? e.name.trim() : ""))
-      .filter((n) => n && !n.startsWith(".") && !USER_RESERVED_DIRS.has(n));
-    if (spaces.length > 0) {
-      if (spaces.includes(fallbackSpace)) { userSpaceCache = fallbackSpace; return fallbackSpace; }
-      if (spaces.includes("default")) { userSpaceCache = "default"; return "default"; }
-      if (spaces.length === 1) { userSpaceCache = spaces[0]; return spaces[0]; }
-    }
-  }
-  userSpaceCache = fallbackSpace;
-  return fallbackSpace;
-}
-
-async function resolveTargetUri(fetchJSON, targetUri, actorPeerId = "") {
+/**
+ * 把 `viking://user/<reserved>/...` 展开到已绑定的记忆空间。
+ *
+ * `userSpace` 必须由调用方从 client 身份派生。空值时保持原 URI 不展开，
+ * 使请求落在无效路径而不是落到别人的 space。
+ */
+function resolveTargetUri(targetUri, userSpace) {
   const trimmed = targetUri.trim().replace(/\/+$/, "");
   const m = trimmed.match(/^viking:\/\/user(?:\/(.*))?$/);
   if (!m) return trimmed;
@@ -279,12 +222,13 @@ async function resolveTargetUri(fetchJSON, targetUri, actorPeerId = "") {
   const parts = rawRest.split("/").filter(Boolean);
   if (parts.length === 0) return trimmed;
   if (!USER_RESERVED_DIRS.has(parts[0])) return trimmed;
-  const space = await resolveUserSpace(fetchJSON, actorPeerId);
+  const space = String(userSpace || "").trim();
+  if (!space) return trimmed;
   return `viking://user/${space}/${parts.join("/")}`;
 }
 
-async function searchOneSource(fetchJSON, query, source, limit, actorPeerId = "") {
-  const resolvedUri = await resolveTargetUri(fetchJSON, source.uri, actorPeerId);
+async function searchOneSource(fetchJSON, query, source, limit, actorPeerId = "", userSpace = "") {
+  const resolvedUri = resolveTargetUri(source.uri, userSpace);
   const body = { query, target_uri: resolvedUri, limit, score_threshold: 0 };
   const res = await fetchJSON("/api/v1/search/find", {
     method: "POST",
@@ -295,9 +239,9 @@ async function searchOneSource(fetchJSON, query, source, limit, actorPeerId = ""
   return items.map((item) => ({ ...item, _sourceType: source.type }));
 }
 
-async function searchAllSources(fetchJSON, query, perSourceLimit, actorPeerId = "", log = () => {}) {
+async function searchAllSources(fetchJSON, query, perSourceLimit, actorPeerId = "", log = () => {}, userSpace = "") {
   const results = await Promise.all(
-    SOURCES.map((src) => searchOneSource(fetchJSON, query, src, perSourceLimit, actorPeerId)),
+    SOURCES.map((src) => searchOneSource(fetchJSON, query, src, perSourceLimit, actorPeerId, userSpace)),
   );
   const all = results.flat();
   log("recall_search_summary", {
@@ -486,51 +430,15 @@ export async function fetchAssembledContext(fetchJSON, cfg, query, options = {})
   };
 }
 
-/**
- * Entry field compatibility: the context face returns `category`/`text`, while
- * the deprecated /recall v1 shape used `type` plus `content`/`summary`.
- */
-export function normalizeContextEntry(entry = {}) {
-  return {
-    uri: String(entry.uri || "").trim(),
-    category: String(entry.category || entry.type || "memory").trim() || "memory",
-    detail: String(entry.detail || entry.mode || "").trim(),
-    score: Number(entry.score) || 0,
-    text: String(
-      entry.text || entry.content || entry.summary || entry.abstract || entry.uri || "",
-    ).trim(),
-  };
-}
-
 async function recallViaContextFace(fetchJSON, cfg, query, options, log) {
   const assembled = await fetchAssembledContext(fetchJSON, cfg, query, { ...options, log });
   if (assembled === null) return null;
 
-  const { rendered, entries } = assembled;
-  let digest = assembled.digest;
-  const mode = String(cfg.recallRewrite || "off").toLowerCase();
+  const { rendered } = assembled;
+  const digest = assembled.digest;
   if (String(assembled.stats?.rewrite || "").toLowerCase() === "no_relevant") {
     log("recall_server_compression", { status: "empty" });
     return "";
-  }
-  const wantsLocal = mode === "client" || (mode === "auto" && !digest);
-  if (wantsLocal && rendered && typeof options.runCompressor === "function") {
-    try {
-      const compression = await compressRecallContext({
-        query,
-        rendered,
-        entries,
-        cfg,
-        runCompressor: options.runCompressor,
-        cachePath: options.digestCachePath || stateFile("recall-digest.json"),
-        now: Date.now(),
-      });
-      log("recall_local_compression", { status: compression.status });
-      if (compression.status === "ok") digest = compression.context;
-      if (compression.status === "empty") return "";
-    } catch (err) {
-      log("recall_local_compression_failed", { error: String(err?.message || err) });
-    }
   }
 
   const injected = digest || rendered;
@@ -589,7 +497,7 @@ export async function buildRecallBlock(fetchJSON, cfg, query, options = {}) {
 
   const recallLimit = Math.max(1, Number(cfg.recallLimit || DEFAULT_CONTEXT_LIMIT));
   const perSourceLimit = Math.max(recallLimit * 2, 8);
-  const raw = await searchAllSources(fetchJSON, trimmed, perSourceLimit, actorPeerId, log);
+  const raw = await searchAllSources(fetchJSON, trimmed, perSourceLimit, actorPeerId, log, options.userSpace);
   if (raw.length === 0) return null;
 
   const profile = buildQueryProfile(trimmed);

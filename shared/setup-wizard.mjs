@@ -1,11 +1,10 @@
-// GENERATED FROM examples/memory-plugin-shared/lib. DO NOT EDIT.
 /**
- * Interactive ovcli.conf setup wizard shared by the OpenViking memory plugins.
+ * Interactive ~/.pi/openviking/ovcli.conf setup wizard.
  *
- * Lets a pure-marketplace install (no installer script) configure the server
- * URL and API key that both the lifecycle hooks and the stdio MCP proxy read:
+ * Lets an install without the full setup chain configure the server URL and API
+ * key that the extension reads through shared/credentials.mjs:
  *
- *   node <plugin>/scripts/setup.mjs
+ *   npx pi-openviking@latest credentials      (scripts/cli.mjs)
  *
  * Conventions: show current values, keep existing secrets on empty input,
  * merge-write (never drop unknown fields), back up the previous file, 0600.
@@ -45,7 +44,7 @@ export async function runSetupWizard({
   const say = (line = "") => output.write(`${line}\n`);
 
   try {
-    say("OpenViking memory plugin setup");
+    say("pi-openviking credentials setup");
     say(`Config file: ${cliPath}`);
     say("");
     say("Current values:");
@@ -103,7 +102,7 @@ export async function runSetupWizard({
       /* best effort on platforms without chmod semantics */
     }
     say(`Written: ${cliPath}`);
-    say("The stdio MCP proxy and hooks pick this up on the next harness start.");
+    say("The extension picks this up on the next Pi start.");
     return { written: true, path: cliPath };
   } finally {
     rl.close();

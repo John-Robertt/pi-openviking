@@ -3,29 +3,49 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { OVClient } from "./client.js";
 import type { SyncManager } from "./sync.js";
 
-export function registerTools(pi: any, client: OVClient, sync?: SyncManager): void {
+/** 已注册的工具名，供系统提示引用；集合的事实源在本模块。 */
+export const VIKING_TOOL_NAMES = [
+  "viking_search",
+  "viking_read",
+  "viking_browse",
+  "viking_remember",
+  "viking_forget",
+  "viking_add_resource",
+  "viking_archive_expand",
+] as const;
 
+export function registerTools(pi: any, client: OVClient, sync: SyncManager): void {
   // Session-scoped memory confines the model to its own namespace. The server
   // applies the user header to memory-semantic calls only, so every tool that
   // takes or returns a viking:// URI is clamped here as well.
   const scoped = (): string =>
     client.cfg.sessionScopedMemory ? client.userRoot : "";
 
+  /**
+   * 唯一的归属判定：URI 必须是绑定根本身或其子路径。
+   *
+   * 前缀比较不足以表达归属——`<root>-other` 也以 root 开头却是另一个命名空间，
+   * 因此子路径必须显式带分隔符。所有进出工具的 URI 都经过这里，边界规则只有一处。
+   */
+  const inside = (uri: string): boolean => {
+    const root = scoped();
+    if (!root) return true;
+    const want = String(uri || "").trim();
+    return want === root || want.startsWith(`${root}/`);
+  };
+
+  /** Reject URIs outside the bound namespace instead of silently rewriting. */
+  const denyOutside = (uri: string): string | null =>
+    inside(uri)
+      ? null
+      : `Refused: ${String(uri || "").trim()} is outside this session's memory namespace (${scoped()}).`;
+
   /** Search scope: never wider than the bound namespace. */
   const scopeSearch = (requested?: string): string | undefined => {
     const root = scoped();
     if (!root) return requested;
     const want = String(requested || "").trim();
-    return want.startsWith(root) ? want : root;
-  };
-
-  /** Reject URIs outside the bound namespace instead of silently rewriting. */
-  const denyOutside = (uri: string): string | null => {
-    const root = scoped();
-    if (!root) return null;
-    const want = String(uri || "").trim();
-    if (want === root || want.startsWith(`${root}/`)) return null;
-    return `Refused: ${want} is outside this session's memory namespace (${root}).`;
+    return want && inside(want) ? want : root;
   };
 
   // --- viking_search ---
@@ -50,10 +70,12 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       if (!client.connected) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
-      const results = await client.find(params.query, {
+      // 请求范围与回读核验都做：范围表达意图，核验保证返回给模型的 URI 确实
+      // 落在绑定命名空间内，不依赖服务端对 target_uri 的执行。
+      const results = (await client.find(params.query, {
         targetUri: scopeSearch(params.scope),
         topK: params.limit ?? 10,
-      });
+      })).filter((r) => inside(r.uri));
       if (results.length === 0) {
         return { content: [{ type: "text", text: "No results found." }] };
       }
@@ -205,8 +227,12 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
         };
       }
       if (params.query) {
-        const results = await client.find(params.query, { topK: 1 });
+        // 搜索限定在绑定命名空间内，命中结果在删除前仍逐条复核归属：
+        // 删除不可逆，不能只依赖搜索范围。
+        const results = await client.find(params.query, { targetUri: scopeSearch(), topK: 1 });
         if (results.length > 0 && results[0].score > 0.8) {
+          const matchDenied = denyOutside(results[0].uri);
+          if (matchDenied) return { content: [{ type: "text", text: matchDenied }] };
           const ok = await client.delete(results[0].uri);
           return {
             content: [{ type: "text", text: ok ? `Deleted: ${results[0].uri}` : `Failed: ${results[0].uri}` }],
@@ -263,22 +289,30 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       if (!client.connected) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
-      const sid = params.session_id ?? params.archive_id;
+      const sid = String(params.session_id ?? params.archive_id ?? "").trim();
       if (!sid) {
         return { content: [{ type: "text", text: "Provide session_id or archive_id." }] };
       }
-      // Read the session's overview — sessions are at viking://session/{sid}
+      // `viking://session` 是独立于 viking://user 的顶层作用域，denyOutside 表达不了
+      // 它的归属。会话边界在这里的含义是本次会话自己的 OV session：展开其他 session
+      // 就是跨会话读取。精确相等同时排除了 `../` 拼接出的穿越路径。
+      if (scoped() && sid !== sync.sessionId) {
+        return {
+          content: [{ type: "text", text: `Refused: this session may only expand its own archive (${sync.sessionId ?? "unavailable"}).` }],
+        };
+      }
+      if (!/^[A-Za-z0-9._-]+$/.test(sid)) {
+        return { content: [{ type: "text", text: `Refused: ${sid} is not a valid session id.` }] };
+      }
       const uri = `viking://session/${sid}`;
       const content = await client.overview(uri);
-      if (!content) {
-        // Try reading the history subdirectory
-        const history = await client.overview(`${uri}/history`);
-        if (!history) {
-          return { content: [{ type: "text", text: `Archive not found: ${sid}` }] };
-        }
-        return { content: [{ type: "text", text: history }] };
+      if (content) return { content: [{ type: "text", text: content }] };
+      // Archive 正文可能只在 history 子目录下可读。
+      const history = await client.overview(`${uri}/history`);
+      if (!history) {
+        return { content: [{ type: "text", text: `Archive not found: ${sid}` }] };
       }
-      return { content: [{ type: "text", text: content }] };
+      return { content: [{ type: "text", text: history }] };
     },
   });
 }

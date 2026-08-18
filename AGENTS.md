@@ -14,19 +14,19 @@
 
 ## 权威事实路径
 
-| 事实 | 维护位置 | 验证位置 |
-| --- | --- | --- |
-| 产品职责、目标架构、协议、配置语义、阶段顺序、实施状态、验收标准 | [`SPEC.md`](./SPEC.md) | `SPEC.md` 指定的 deterministic checks 与阶段 gate |
-| 当前模块职责和数据流 | [`DESIGN.md`](./DESIGN.md) | 生产代码及对应测试 |
-| 开发环境、隔离服务、凭证桥接、调试和安全清理 | [`DEVELOPMENT.md`](./DEVELOPMENT.md) | `test/dev-*.test.mjs` 与 `npm run dev -- <command>` |
-| 最终用户安装、配置、命令和故障排查 | [`USAGE.md`](./USAGE.md) | CLI、配置和服务管理测试 |
-| 项目简介和文档入口 | [`README.md`](./README.md) | 本地链接检查与 `npm pack --dry-run` |
-| npm 命令、发布文件、Node 和 peer 边界 | [`package.json`](./package.json) | `package-lock.json`、npm 命令和打包检查 |
-| Node/Pi 依赖解析 | [`package-lock.json`](./package-lock.json) | `npm ci` |
-| OpenViking/uv/Python 安装 pin | [`shared/toolchain.mjs`](./shared/toolchain.mjs) | `test/toolchain.test.mjs` 与开发 bootstrap |
-| 配置默认值和运行时接受字段 | [`config.json`](./config.json)、[`shared/config-schema.mjs`](./shared/config-schema.mjs) | `test/config-schema.test.mjs` |
-| 开发模型身份 | [`dev/model-profile.json`](./dev/model-profile.json) | `test/dev-bootstrap.test.mjs` |
-| 可执行行为 | 生产代码 | 对应测试与真实运行证据 |
+| 事实                                                             | 维护位置                                                                                 | 验证位置                                            |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| 产品职责、目标架构、协议、配置语义、阶段顺序、实施状态、验收标准 | [`SPEC.md`](./SPEC.md)                                                                   | `SPEC.md` 指定的 deterministic checks 与阶段 gate   |
+| 当前模块职责和数据流                                             | [`DESIGN.md`](./DESIGN.md)                                                               | 生产代码及对应测试                                  |
+| 开发环境、隔离服务、凭证桥接、调试和安全清理                     | [`DEVELOPMENT.md`](./DEVELOPMENT.md)                                                     | `test/dev-*.test.mjs` 与 `npm run dev -- <command>` |
+| 最终用户安装、配置、命令和故障排查                               | [`USAGE.md`](./USAGE.md)                                                                 | CLI、配置和服务管理测试                             |
+| 项目简介和文档入口                                               | [`README.md`](./README.md)                                                               | 本地链接检查与 `npm pack --dry-run`                 |
+| npm 命令、发布文件、Node 和 peer 边界                            | [`package.json`](./package.json)                                                         | `package-lock.json`、npm 命令和打包检查             |
+| Node/Pi 依赖解析                                                 | [`package-lock.json`](./package-lock.json)                                               | `npm ci`                                            |
+| OpenViking/uv/Python 安装 pin                                    | [`shared/toolchain.mjs`](./shared/toolchain.mjs)                                         | `test/toolchain.test.mjs` 与开发 bootstrap          |
+| 配置默认值和运行时接受字段                                       | [`config.json`](./config.json)、[`shared/config-schema.mjs`](./shared/config-schema.mjs) | `test/config-schema.test.mjs`                       |
+| 开发模型身份                                                     | [`dev/model-profile.json`](./dev/model-profile.json)                                     | `test/dev-bootstrap.test.mjs`                       |
+| 可执行行为                                                       | 生产代码                                                                                 | 对应测试与真实运行证据                              |
 
 本文持续维护指向上述来源的导航。版本、阶段状态、已完成工作和下一实施入口随各自权威来源更新，使
 每项当前事实始终具有一条明确的维护与验证路径。
@@ -72,23 +72,24 @@ gate 共同证明；配置字段只表达其权威文档定义的策略。
 
 ## 任务定位
 
-| 任务 | 先读 | 主要代码 | 聚焦验证 |
-| --- | --- | --- | --- |
-| Pi 生命周期、启动、shutdown、状态或命令 | `DESIGN.md`、Pi 相关接口 | `index.ts`、`shared/status-refresh.mjs`、`shared/viking-status.mjs` | `test/status-refresh.test.mjs`、`test/viking-status.test.mjs`、相关 live gate |
-| JSONL、分支或 session 恢复 | `SPEC.md`“完整记录事件/可靠增量同步” | `shared/pi-session-source.mjs`、`sync.ts` | `test/pi-session-runtime.test.mjs`、`test/session-source-ack.test.mjs` |
-| 事件身份、payload、turn/step | `SPEC.md`“完整记录事件” | `shared/canonical-json.mjs`、`shared/recorded-event.mjs` | `test/recorded-event.test.mjs`、`test/generated-session-invariants.test.mjs` |
-| ACK、重放、并发或 fail-open | `SPEC.md`“可靠增量同步” | `sync.ts`、`shared/sync-ack.mjs` | `test/sync-manager.test.mjs`、`test/session-source-ack.test.mjs` |
-| Content API、批次、大对象或冲突 | `SPEC.md` 存储契约 | `client.ts`、`shared/recorded-event-adapter.mjs` | `test/client-content.test.mjs`、`test/recorded-event-adapter.test.mjs` |
-| recall、profile 或 provider context | `SPEC.md` 检索/上下文边界 | `recall.ts`、`shared/recall-core.mjs`、`shared/profile-inject.mjs` | `test/recall.test.mjs`、阶段 provider payload gate |
-| `viking_*` 工具及 URI 权限 | `USAGE.md`“工具”、session 隔离契约 | `tools.ts`、`lib/uri-guard-adapter.mjs`、`shared/uri-guard.mjs` | 相关工具/集成测试；缺口需先补可执行验证 |
-| 配置、用户空间、peer 或凭证解析 | `SPEC.md`“目标配置”、`USAGE.md` | `config.ts`、`shared/config-schema.mjs`、`shared/credentials.mjs`、`shared/workspace-peer.mjs` | `test/config-schema.test.mjs` 及对应新增测试 |
-| 最终用户安装和服务管理 | `USAGE.md` | `scripts/cli.mjs`、`shared/toolchain.mjs`、`shared/managed-server-*.mjs` | `test/server-status-cli.test.mjs`、`test/toolchain.test.mjs`、相关 server 测试 |
-| 仓库开发环境和隔离 Pi | `DEVELOPMENT.md` | `scripts/dev.mjs`、`dev/model-profile.json` | `test/dev-bootstrap.test.mjs`、`test/dev-lifecycle.test.mjs` |
-| 阶段 gate、workload 或 artifact | `SPEC.md`“验证策略/真实验收门禁”、`DEVELOPMENT.md` | `test/live/` 与 `package.json` 中实际存在的 gate | 对应 `verify:<phase>:live` 结果；建设中的 gate 以“真实边界待验证”记录阶段状态 |
-| 文档 | 本表“权威事实路径” | 对应维护位置中的文档 | 链接检查、`git diff --check`、从新维护者视角复核 |
+| 任务                                    | 先读                                               | 主要代码                                                                                       | 聚焦验证                                                                       |
+| --------------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Pi 生命周期、启动、shutdown、状态或命令 | `DESIGN.md`、Pi 相关接口                           | `index.ts`、`shared/status-refresh.mjs`、`shared/viking-status.mjs`                            | `test/status-refresh.test.mjs`、`test/viking-status.test.mjs`、相关 live gate  |
+| JSONL、分支或 session 恢复              | `SPEC.md`“完整记录事件/可靠增量同步”               | `shared/pi-session-source.mjs`、`sync.ts`                                                      | `test/pi-session-runtime.test.mjs`、`test/session-source-ack.test.mjs`         |
+| 事件身份、payload、turn/step            | `SPEC.md`“完整记录事件”                            | `shared/canonical-json.mjs`、`shared/recorded-event.mjs`                                       | `test/recorded-event.test.mjs`、`test/generated-session-invariants.test.mjs`   |
+| ACK、重放、并发或 fail-open             | `SPEC.md`“可靠增量同步”                            | `sync.ts`、`shared/sync-ack.mjs`                                                               | `test/sync-manager.test.mjs`、`test/session-source-ack.test.mjs`               |
+| Content API、批次、大对象或冲突         | `SPEC.md` 存储契约                                 | `client.ts`、`shared/recorded-event-adapter.mjs`                                               | `test/client-content.test.mjs`、`test/recorded-event-adapter.test.mjs`         |
+| recall、profile 或 provider context     | `SPEC.md` 检索/上下文边界                          | `recall.ts`、`shared/recall-core.mjs`、`shared/profile-inject.mjs`                             | `test/recall.test.mjs`、阶段 provider payload gate                             |
+| `viking_*` 工具及 URI 权限              | `USAGE.md`“会话隔离与数据位置”、“工具”             | `tools.ts`、`lib/uri-guard-adapter.mjs`、`shared/uri-guard.mjs`                                | `test/tools-boundary.test.mjs`                                                 |
+| 配置、用户空间、peer 或凭证解析         | `SPEC.md`“目标配置”、`USAGE.md`                    | `config.ts`、`shared/config-schema.mjs`、`shared/credentials.mjs`、`shared/workspace-peer.mjs` | `test/config-schema.test.mjs` 及对应新增测试                                   |
+| 最终用户安装和服务管理                  | `USAGE.md`                                         | `scripts/cli.mjs`、`shared/toolchain.mjs`、`shared/managed-server-*.mjs`                       | `test/server-status-cli.test.mjs`、`test/toolchain.test.mjs`、相关 server 测试 |
+| 仓库开发环境和隔离 Pi                   | `DEVELOPMENT.md`                                   | `scripts/dev.mjs`、`dev/model-profile.json`                                                    | `test/dev-bootstrap.test.mjs`、`test/dev-lifecycle.test.mjs`                   |
+| 阶段 gate、workload 或 artifact         | `SPEC.md`“验证策略/真实验收门禁”、`DEVELOPMENT.md` | `test/live/` 与 `package.json` 中实际存在的 gate                                               | 对应 `verify:<phase>:live` 结果；建设中的 gate 以“真实边界待验证”记录阶段状态  |
+| 文档                                    | 本表“权威事实路径”                                 | 对应维护位置中的文档                                                                           | 链接检查、`git diff --check`、从新维护者视角复核                               |
 
-带有 `GENERATED ... DO NOT EDIT` 头的 `shared/` 文件通过其生成源维护。修改此类行为时，先定位并运行
-可验证的生成链，再检查生成结果和对应测试；生成链尚待恢复时，将补齐生成源和生成命令作为前置工作。
+`shared/` 由本仓库维护，没有外部生成源：直接修改文件并用对应测试验证。其中一部分文件早期来自
+OpenViking 多宿主 memory plugin 的 vendored 快照，现已按本仓库的单一 Pi 宿主边界收敛，只保留有当前
+消费者的职责。
 
 ## 验证入口
 
@@ -116,7 +117,7 @@ npm run dev -- down
 ```
 
 - `.dev/` 保存可重建运行态并由 Git 忽略；`dev/` 只保存已声明和验证的机器事实。
-- 仓库测试使用 `.dev/` 隔离环境；`scripts/cli.mjs setup` 与用户的 `~/.pi/openviking` 服务于最终用户安装。
+- 仓库测试使用 `.dev/` 隔离环境。
 - `dev pi` 使用持久 session 提供 JSONL、分支和重启证据；`--no-session` 适用于进程内 best-effort 场景。
 - live verifier 最后加载 `scripts/e2e-probe.ts` 并通过私有 FD 采集 payload；普通交互开发保持常规扩展链路。
 

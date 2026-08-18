@@ -1,4 +1,3 @@
-// GENERATED FROM examples/memory-plugin-shared/lib. DO NOT EDIT.
 export function deriveWorkspacePeerId(cwd) {
   return String(cwd || "").replace(/[^A-Za-z0-9]/g, "-");
 }
