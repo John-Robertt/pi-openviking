@@ -3,22 +3,25 @@
  * pi-openviking CLI — one-command setup and cross-platform server lifecycle
  * for the OpenViking context database. Zero runtime dependencies.
  *
- *   npx pi-openviking@latest setup        full chain: venv → pinned install → init → doctor → start → pi install
+ *   npx pi-openviking@latest setup        full chain: uv → managed python → venv → pinned install → init → doctor → start → pi install
  *   npx pi-openviking@latest server start|stop|restart|status|doctor
  *   npx pi-openviking@latest credentials  configure server URL / API key (~/.openviking/ovcli.conf)
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, platform } from "node:os";
+import { arch, homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -38,8 +41,6 @@ import {
 const OV_VERSION = "0.4.13";
 const OV_SPEC = `openviking[local-embed]==${OV_VERSION}`;
 const XXHASH_SPEC = "xxhash<4";
-const MIN_PYTHON = [3, 10];
-
 const IS_WIN = platform() === "win32";
 // Everything this CLI manages lives under ~/.pi/openviking so that one
 // uninstall command can clean it all. (~/.openviking is the upstream default,
@@ -108,34 +109,114 @@ function hasCommand(cmd, args = ["--version"]) {
 }
 
 // ---------------------------------------------------------------------------
-// Python / venv / pinned install
+// Managed toolchain: uv → managed Python → venv → pinned install.
+// Everything lives under OV_HOME so uninstall stays a single rmSync(OV_HOME).
 // ---------------------------------------------------------------------------
 
-function findPython() {
-  const candidates = IS_WIN ? [["py", ["-3"]], ["python", []], ["python3", []]] : [["python3", []], ["python", []]];
-  for (const [cmd, prefix] of candidates) {
-    const res = run(cmd, [...prefix, "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"], {
-      capture: true,
-    });
-    if (!res.ok) continue;
-    const [major, minor] = res.out.trim().split(".").map(Number);
-    if (major === MIN_PYTHON[0] && minor >= MIN_PYTHON[1]) {
-      return { cmd, args: prefix, version: res.out.trim() };
-    }
-  }
-  return null;
+const UV_VERSION = "0.12.5";
+const PY_VERSION = "3.12";
+const TOOLS_BIN = join(OV_HOME, "bin");
+const UV_BIN = join(TOOLS_BIN, IS_WIN ? "uv.exe" : "uv");
+const PY_DIR = join(OV_HOME, "python");
+const UV_CACHE = join(OV_HOME, "cache", "uv");
+
+const UV_TARGETS = {
+  "darwin-arm64": "aarch64-apple-darwin",
+  "darwin-x64": "x86_64-apple-darwin",
+  "linux-arm64": "aarch64-unknown-linux-gnu",
+  "linux-x64": "x86_64-unknown-linux-gnu",
+  "win32-arm64": "aarch64-pc-windows-msvc",
+  "win32-x64": "x86_64-pc-windows-msvc",
+};
+
+// uv 的托管 Python 与缓存全部收敛进 OV_HOME；UV_PYTHON_INSTALL_MIRROR 不由
+// 本函数设置，用户在网络受限环境下可自行导出，会随 process.env 透传给 uv。
+function uvEnv() {
+  return { ...process.env, UV_PYTHON_INSTALL_DIR: PY_DIR, UV_CACHE_DIR: UV_CACHE };
 }
 
-function createVenv(python) {
+async function download(url, dest) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+  if (!res.ok) throw new Error(`下载失败 ${url}: HTTP ${res.status}`);
+  writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+}
+
+async function ensureUv() {
+  const current = run(UV_BIN, ["--version"], { capture: true });
+  if (current.ok && current.out.trim().startsWith(`uv ${UV_VERSION}`)) return;
+
+  const target = UV_TARGETS[`${platform()}-${arch()}`];
+  if (!target) {
+    fail(`没有适配 ${platform()}-${arch()} 的 uv 预置二进制。请手动安装 uv (https://docs.astral.sh/uv/) 后重试。`);
+  }
+  const name = `uv-${target}.${IS_WIN ? "zip" : "tar.gz"}`;
+  const base =
+    process.env.PI_OPENVIKING_UV_MIRROR?.replace(/\/$/, "") ||
+    `https://github.com/astral-sh/uv/releases/download/${UV_VERSION}`;
+
+  say(`安装 uv ${UV_VERSION} → ${UV_BIN}`);
+  const tmp = join(OV_HOME, ".uv-tmp");
+  const cleanup = () => rmSync(tmp, { recursive: true, force: true });
+  cleanup();
+  mkdirSync(tmp, { recursive: true });
+  try {
+    await download(`${base}/${name}`, join(tmp, name));
+    await download(`${base}/${name}.sha256`, join(tmp, `${name}.sha256`));
+  } catch (e) {
+    cleanup();
+    fail(`uv 下载失败：${e?.message || e}。网络受限时可设置 PI_OPENVIKING_UV_MIRROR（指向 release 资产目录）后重试。`);
+  }
+  const expected = readFileSync(join(tmp, `${name}.sha256`), "utf8").trim().split(/\s+/)[0];
+  const actual = createHash("sha256").update(readFileSync(join(tmp, name))).digest("hex");
+  if (actual !== expected) {
+    cleanup();
+    fail(`uv 下载校验和不匹配（期望 ${expected}，实际 ${actual}）。如使用镜像，请检查 PI_OPENVIKING_UV_MIRROR 指向的版本是否为 ${UV_VERSION}。`);
+  }
+  // macOS/Linux 必有 tar；Windows 10+ 自带的 bsdtar 可直接解 zip。
+  if (!run("tar", ["-xf", join(tmp, name), "-C", tmp]).ok) {
+    cleanup();
+    fail("解压 uv 失败（需要系统 tar）。");
+  }
+  // unix tarball 内含 uv-<target>/ 子目录；Windows zip 是扁平结构。
+  const binName = IS_WIN ? "uv.exe" : "uv";
+  const extracted = join(tmp, existsSync(join(tmp, `uv-${target}`)) ? `uv-${target}` : "", binName);
+  if (!existsSync(extracted)) {
+    cleanup();
+    fail(`解压后未找到 ${binName}。`);
+  }
+  mkdirSync(TOOLS_BIN, { recursive: true });
+  renameSync(extracted, UV_BIN);
+  if (!IS_WIN) chmodSync(UV_BIN, 0o755);
+  cleanup();
+  // 自校验：立即暴露 libc/平台不匹配（如 musl 系统上 gnu 二进制无法执行），
+  // 避免错误延迟到 uv python install 才以误导性信息出现。
+  const check = run(UV_BIN, ["--version"], { capture: true });
+  if (!check.ok || !check.out.trim().startsWith(`uv ${UV_VERSION}`)) {
+    fail(`uv 安装后无法执行（当前平台 libc 可能不兼容，如 Alpine/musl）。请手动安装 uv (https://docs.astral.sh/uv/) 后重试。`);
+  }
+}
+
+function ensurePython() {
+  const found = run(UV_BIN, ["python", "find", "--managed-python", PY_VERSION], { capture: true, env: uvEnv() });
+  // Windows 上 uv 输出与 homedir() 的盘符大小写/分隔符可能不一致，归一化后再比较。
+  const norm = (p) => p.replace(/\\/g, "/").toLowerCase();
+  if (found.ok && norm(found.out.trim()).startsWith(norm(PY_DIR))) {
+    say(`托管 Python ${PY_VERSION} 已就绪（跳过安装）`);
+    return;
+  }
+  say(`安装托管 Python ${PY_VERSION} → ${PY_DIR}`);
+  // --no-bin：阻止 uv 向 ~/.local/bin 写 python3.x 链接，保证全部产物收敛在 OV_HOME。
+  if (!run(UV_BIN, ["python", "install", "--no-bin", PY_VERSION], { env: uvEnv() }).ok) {
+    fail(`托管 Python 安装失败。网络受限时可设置 UV_PYTHON_INSTALL_MIRROR（见 USAGE.md）后重试。`);
+  }
+}
+
+function createVenv() {
   say(`创建虚拟环境: ${VENV_DIR}`);
-  if (run(python.cmd, [...python.args, "-m", "venv", VENV_DIR]).ok && existsSync(VENV_PYTHON)) return;
-  // A failed venv run (e.g. missing ensurepip) leaves a partial directory behind; clear it.
+  rmSync(VENV_DIR, { recursive: true, force: true }); // 清理可能的半成品目录
+  if (run(UV_BIN, ["venv", VENV_DIR, "--managed-python", "--python", PY_VERSION], { env: uvEnv() }).ok && existsSync(VENV_PYTHON)) return;
   rmSync(VENV_DIR, { recursive: true, force: true });
-  // Debian/Ubuntu without python3-venv end up here; uv is the fallback.
-  if (hasCommand("uv") && run("uv", ["venv", VENV_DIR, "--python", python.cmd]).ok && existsSync(VENV_PYTHON)) return;
-  fail(
-    "创建 venv 失败。Debian/Ubuntu 请先 `sudo apt install python3-venv`，或安装 uv (https://docs.astral.sh/uv/) 后重试。",
-  );
+  fail("创建 venv 失败（uv managed python），见上方输出。");
 }
 
 function installedVersion(pkg) {
@@ -145,8 +226,8 @@ function installedVersion(pkg) {
   return res.ok ? res.out.trim() : "";
 }
 
-function ensureServerInstalled(python) {
-  if (!existsSync(VENV_PYTHON)) createVenv(python);
+function ensureServerInstalled() {
+  if (!existsSync(VENV_PYTHON)) createVenv();
 
   const ov = installedVersion("openviking");
   const xxhash = installedVersion("xxhash");
@@ -156,11 +237,9 @@ function ensureServerInstalled(python) {
   }
 
   say(`安装/修正服务端: ${OV_SPEC} ${XXHASH_SPEC}（当前 openviking=${ov || "未安装"}, xxhash=${xxhash || "未安装"}）`);
-  // Prefer uv for speed when available; plain pip otherwise.
-  const useUv = hasCommand("uv");
-  const install = useUv
-    ? run("uv", ["pip", "install", "--python", VENV_PYTHON, OV_SPEC, XXHASH_SPEC])
-    : run(VENV_PYTHON, ["-m", "pip", "install", "--upgrade", OV_SPEC, XXHASH_SPEC]);
+  const install = run(UV_BIN, ["pip", "install", "--python", VENV_PYTHON, "--upgrade", OV_SPEC, XXHASH_SPEC], {
+    env: uvEnv(),
+  });
   if (!install.ok) fail("服务端依赖安装失败，见上方输出。");
   if (!existsSync(SERVER_BIN)) fail(`安装完成但找不到 ${SERVER_BIN}`);
 }
@@ -228,6 +307,20 @@ async function ensureServerConfig() {
 // Ollama (optional, local-model route)
 // ---------------------------------------------------------------------------
 
+// ollama install.sh 仅以 `zstd -d`（stdin→stdout 管道）调用 zstd；用服务端
+// venv 里的 zstandard wheel 生成等价用户级 shim，避免 sudo 安装系统包。
+const ZSTD_SHIM = join(TOOLS_BIN, "zstd");
+
+function ensureZstdShim() {
+  if (!run(UV_BIN, ["pip", "install", "--python", VENV_PYTHON, "zstandard==0.25.0"], { env: uvEnv() }).ok) return false;
+  mkdirSync(TOOLS_BIN, { recursive: true });
+  writeFileSync(
+    ZSTD_SHIM,
+    `#!/bin/sh\nexec "${VENV_PYTHON}" -c 'import shutil,sys,zstandard; shutil.copyfileobj(zstandard.ZstdDecompressor().stream_reader(sys.stdin.buffer), sys.stdout.buffer)' "$@"\n`,
+    { mode: 0o755 },
+  );
+  return true;
+}
 /**
  * The upstream wizard's built-in Ollama installer is fragile (it shells out to
  * install.sh, which currently needs zstd and has broken fallbacks), so we offer
@@ -252,21 +345,16 @@ async function ensureOllama() {
   } else {
     // Linux: current Ollama releases ship .tar.zst assets, so the official
     // installer hard-requires zstd. Install it first when missing.
+    let env = process.env;
     if (!hasCommand("zstd")) {
-      say("安装前置依赖 zstd（Ollama 安装包现为 .tar.zst 格式）…");
-      const pm = ["apt-get", "dnf", "yum", "pacman", "zypper"].find((c) => hasCommand(c));
-      const args = {
-        "apt-get": ["install", "-y", "zstd"],
-        dnf: ["install", "-y", "zstd"],
-        yum: ["install", "-y", "zstd"],
-        pacman: ["-S", "--noconfirm", "zstd"],
-        zypper: ["install", "-y", "zstd"],
-      }[pm];
-      if (!args || !run("sudo", [pm, ...args]).ok) {
-        err("zstd 安装失败，Ollama 安装可能会继续失败。");
+      say("未检测到 zstd，安装用户级 zstd（zstandard，仅写入 ~/.pi/openviking，不改动系统）…");
+      if (ensureZstdShim()) {
+        env = { ...process.env, PATH: `${TOOLS_BIN}:${process.env.PATH}` };
+      } else {
+        err("用户级 zstd 安装失败，Ollama 安装可能会继续失败。");
       }
     }
-    ok = run("bash", ["-c", "curl -fsSL https://ollama.com/install.sh | sh"]).ok;
+    ok = run("bash", ["-c", "curl -fsSL https://ollama.com/install.sh | sh"], { env }).ok;
   }
 
   if (ok && hasCommand("ollama")) {
@@ -516,7 +604,7 @@ function installPiExtension() {
 
 async function uninstall() {
   say("将删除以下内容：");
-  say(`  · ${OV_HOME}（服务端 venv、配置、日志、全部长期记忆数据）`);
+  say(`  · ${OV_HOME}（uv、托管 Python、zstd shim、服务端 venv、配置、日志、全部长期记忆数据）`);
   say(`  · ${USER_CONFIG}（扩展用户配置）`);
   say("  · pi 包注册（pi remove npm:pi-openviking）");
   if (existsSync(LEGACY_OV_HOME)) {
@@ -546,11 +634,9 @@ async function setup() {
   say(`pi-openviking setup (v${CLI_VERSION}) — 目标服务端: ${OV_SPEC}, ${XXHASH_SPEC}`);
   say("");
 
-  const python = findPython();
-  if (!python) fail(`未找到 Python >= ${MIN_PYTHON.join(".")}。请先安装 Python: https://www.python.org/downloads/`);
-  say(`Python ${python.version} (${python.cmd})`);
-
-  ensureServerInstalled(python);
+  await ensureUv();
+  ensurePython();
+  ensureServerInstalled();
   await ensureOllama();
   await ensureServerConfig();
   runDoctor();

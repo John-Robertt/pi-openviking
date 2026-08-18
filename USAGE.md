@@ -19,7 +19,6 @@ thinking、tool call/result、真实错误和 aborted 状态、未知 part、cus
 - Pi Coding Agent；
 - Node.js 22.19.0 或更高版本（与当前 Pi 运行时要求一致）；
 - OpenViking `0.4.13` 或通过相同 Content API 行为验收的服务；
-- Python 3.10 或更高版本（仅本地服务需要）。
 
 受管安装固定使用：
 
@@ -85,17 +84,17 @@ npx pi-openviking@latest credentials
 
 常用环境变量：
 
-| 环境变量 | 作用 |
-|---|---|
-| `OPENVIKING_URL` | 服务地址 |
-| `OPENVIKING_API_KEY` / `OPENVIKING_BEARER_TOKEN` | Bearer token |
-| `OPENVIKING_ACCOUNT` | account header |
-| `OPENVIKING_USER` | 基础用户标识 |
-| `OPENVIKING_PEER_ID` | actor peer |
-| `OPENVIKING_WORKSPACE_PEER` | 是否按工作目录派生 peer |
-| `OPENVIKING_RECALL_PEER_SCOPE` | `actor` 或 `all` |
-| `OPENVIKING_RECALL_LIMIT` | 召回条数覆盖 |
-| `OPENVIKING_RECALL_QUERY_EXPANSION` | `auto` 或 `off` |
+| 环境变量                                         | 作用                    |
+| ------------------------------------------------ | ----------------------- |
+| `OPENVIKING_URL`                                 | 服务地址                |
+| `OPENVIKING_API_KEY` / `OPENVIKING_BEARER_TOKEN` | Bearer token            |
+| `OPENVIKING_ACCOUNT`                             | account header          |
+| `OPENVIKING_USER`                                | 基础用户标识            |
+| `OPENVIKING_PEER_ID`                             | actor peer              |
+| `OPENVIKING_WORKSPACE_PEER`                      | 是否按工作目录派生 peer |
+| `OPENVIKING_RECALL_PEER_SCOPE`                   | `actor` 或 `all`        |
+| `OPENVIKING_RECALL_LIMIT`                        | 召回条数覆盖            |
+| `OPENVIKING_RECALL_QUERY_EXPANSION`              | `auto` 或 `off`         |
 
 ## 5. 扩展配置
 
@@ -115,7 +114,7 @@ npx pi-openviking@latest credentials
   "syncTurns": true,
   "recallTokenBudget": 3000,
   "bypassPatterns": ["/workspace/generated"],
-  "logLevel": "error"
+  "logLevel": "error",
 }
 ```
 
@@ -132,9 +131,9 @@ npx pi-openviking@latest credentials
     "proxy": {
       "http": "http://127.0.0.1:7890",
       "https": "http://127.0.0.1:7890",
-      "noProxy": "127.0.0.1,localhost,::1"
-    }
-  }
+      "noProxy": "127.0.0.1,localhost,::1",
+    },
+  },
 }
 ```
 
@@ -191,15 +190,15 @@ ACK 文件不包含 transcript。删除 ACK 只会使下一次从 Pi JSONL 幂�
 
 ## 8. 工具
 
-| 工具 | 作用 |
-|---|---|
-| `viking_search` | 语义搜索 |
-| `viking_read` | 按 abstract、overview 或 full 读取 |
-| `viking_browse` | 浏览 URI 或查看元数据 |
-| `viking_remember` | 显式提交一条待抽取记忆 |
-| `viking_forget` | 删除 URI 或高置信匹配 |
-| `viking_add_resource` | 导入 HTTP URL |
-| `viking_archive_expand` | 展开服务中已有的 session Archive |
+| 工具                    | 作用                               |
+| ----------------------- | ---------------------------------- |
+| `viking_search`         | 语义搜索                           |
+| `viking_read`           | 按 abstract、overview 或 full 读取 |
+| `viking_browse`         | 浏览 URI 或查看元数据              |
+| `viking_remember`       | 显式提交一条待抽取记忆             |
+| `viking_forget`         | 删除 URI 或高置信匹配              |
+| `viking_add_resource`   | 导入 HTTP URL                      |
+| `viking_archive_expand` | 展开服务中已有的 session Archive   |
 
 原始事件同步不经过这些工具。
 

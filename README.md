@@ -28,7 +28,6 @@ Archive 和 `ActiveContext` 前不会替换 Pi 上下文。
 - Pi Coding Agent
 - Node.js 22.19.0 或更高版本（与当前 Pi 运行时要求一致）
 - OpenViking `0.4.13` 或通过相同 Content API 行为验收的服务
-- Python 3.10 或更高版本（仅本地安装服务时需要）
 
 ## 快速开始
 
@@ -74,7 +73,7 @@ npx pi-openviking@latest server doctor
 ```jsonc
 {
   "syncTurns": true,
-  "bypassPatterns": []
+  "bypassPatterns": [],
 }
 ```
 
