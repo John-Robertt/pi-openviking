@@ -32,7 +32,7 @@
     "lib/",
     "shared/",
     "scripts/",
-    "HANDOFF.md",
+    "SPEC.md",
     "README.md",
     "DESIGN.md",
     "USAGE.md"

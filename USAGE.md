@@ -1,7 +1,7 @@
 # Pi OpenViking 使用说明
 
 本文描述当前版本的安装、配置、运行边界和故障排查。目标架构和阶段验收以
-[`HANDOFF.md`](./HANDOFF.md) 为唯一权威来源；当前代码职责见 [`DESIGN.md`](./DESIGN.md)。
+[`SPEC.md`](./SPEC.md) 为唯一权威来源；当前代码职责见 [`DESIGN.md`](./DESIGN.md)。
 
 ## 1. 当前行为
 
@@ -106,7 +106,7 @@ npx pi-openviking@latest credentials
 ```
 
 只写需要覆盖的字段。出厂默认值以包内 [`config.json`](./config.json) 为可执行来源；字段语义以
-`HANDOFF.md` 的“目标配置”为准。损坏 JSONC、错误类型和未知字段都会报错，错误包含完整路径。
+`SPEC.md` 的“目标配置”为准。损坏 JSONC、错误类型和未知字段都会报错，错误包含完整路径。
 
 示例：
 

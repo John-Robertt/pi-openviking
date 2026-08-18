@@ -69,7 +69,7 @@ npx pi-openviking@latest server doctor
 ```
 
 包内 `config.json` 是经过 schema 测试的出厂默认值，生成的 JSONC 模板列出可覆盖字段；
-`HANDOFF.md` 定义策略语义。配置加载器拒绝未知字段并报告完整路径。用户文件只需写覆盖项，例如：
+`SPEC.md` 定义策略语义。配置加载器拒绝未知字段并报告完整路径。用户文件只需写覆盖项，例如：
 
 ```jsonc
 {
@@ -128,7 +128,7 @@ scripts/cli.mjs              安装与服务管理 CLI
 
 ## 文档
 
-- [`HANDOFF.md`](./HANDOFF.md)：目标架构、阶段边界和验收标准的唯一权威规范；
+- [`SPEC.md`](./SPEC.md)：目标架构、阶段边界和验收标准的唯一权威规范；
 - [`DESIGN.md`](./DESIGN.md)：当前 Phase 0 实现的职责与数据流；
 - [`USAGE.md`](./USAGE.md)：安装、配置和故障排查。
 
