@@ -21,6 +21,7 @@ import {
   sha256Hex,
 } from "./live/phase0-live.mjs";
 import { canonicalJsonBytes } from "../shared/canonical-json.mjs";
+import { TOOLCHAIN } from "../shared/toolchain.mjs";
 
 const REPO = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const manifestBytes = readFileSync(join(REPO, "test/live/phase0.workloads.json"));
@@ -43,6 +44,14 @@ test("manifest 引用的路径与身份在当前仓库存在", () => {
   assert.equal(piPkg.version, manifest.identities.pi.version);
   const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
   assert.equal(pkg.scripts["verify:phase0:live"], "node test/live/phase0-live.mjs");
+  // manifest 声明的服务身份必须与安装 pin 一致。gate 的 preflight 会用真实 /health 再核一次，
+  // 这里把同一事实提前到 npm test，使升级 pin 后立即知道 manifest 需要随基线一并重做。
+  assert.equal(
+    manifest.identities.openviking.version,
+    TOOLCHAIN.openvikingVersion,
+    "manifest 的 OpenViking 版本与 shared/toolchain.mjs 的安装 pin 不一致",
+  );
+  assert.equal(manifest.identities.node.engines, pkg.engines.node);
 });
 
 test("manifest workload 结构完整：成功标准、证伪条件与阈值决策规则齐备", () => {

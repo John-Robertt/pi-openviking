@@ -2,14 +2,14 @@
 
 ## 文档职责
 
-本文是本仓库开发环境的权威手册：安装依赖、运行隔离服务、进入开发循环、安全清理。
+**架构定位**：本仓库开发环境的权威手册。
 
-- 产品职责、目标架构、阶段顺序和验收标准以 [`SPEC.md`](./SPEC.md) 为唯一权威来源；
-- 当前代码职责和数据流见 [`DESIGN.md`](./DESIGN.md)；
-- 最终用户的安装、配置和故障排查见 [`USAGE.md`](./USAGE.md)。
+**核心目标**：在任意一台机器上克隆仓库后，能安装依赖、运行隔离服务、进入开发循环并安全清理。
 
-本文只定义环境本身，不复制协议字段、存储规则或阶段验收标准。精确依赖版本由机器可验证的
-lock 和安装常量维护，不在本文建立第二份版本清单。
+**职责边界**：本文只定义环境本身。产品职责、目标架构和配置语义以 [`docs/spec.md`](./spec.md) 为准，
+阶段顺序与验收以 [`docs/roadmap.md`](./roadmap.md) 为准，当前代码职责见
+[`docs/design.md`](./design.md)，最终用户操作见 [`docs/usage.md`](./usage.md)。本文不复制协议字段、
+存储规则或阶段验收标准；精确依赖版本由机器可验证的 lock 与安装常量维护，不在此建立第二份版本清单。
 
 ## 环境边界
 
@@ -19,7 +19,8 @@ lock 和安装常量维护，不在本文建立第二份版本清单。
 2. **起得来**：启动与用户服务完全隔离的 OpenViking 开发服务；
 3. **调得通**：进入隔离 Pi，加载仓库扩展，模型凭证可用。
 
-探针、workload manifest、live verifier、summary 和阶段清理断言的契约由 [`SPEC.md`](./SPEC.md) 的“真实验收门禁”定义，其实现消费本文的服务生命周期能力。
+探针、workload manifest、live verifier、summary 和阶段清理断言的契约由
+[`docs/verification.md`](./verification.md) 定义，其实现消费本文的服务生命周期能力。
 
 ## 标准流程概览
 
@@ -40,6 +41,40 @@ npm run dev -- pi
 ```
 
 完整参数以 `npm run dev -- help` 为准；本文只保留工作流和安全边界，不复制全部 CLI flags。
+
+## 升级固定版本
+
+OpenViking、uv 和托管 Python 的版本由 `shared/toolchain.mjs` 的 `TOOLCHAIN` 常量唯一确定，Node 由
+`package.json` 的 `engines` 确定。文档正文中的版本号是这两处的副本，由 `npm test` 保证不脱节；因此
+升级只需修改唯一权威源，再让检查指出其余待改位置。
+
+```bash
+# 1. 修改唯一权威源
+#    OpenViking / uv / Python → shared/toolchain.mjs 的 TOOLCHAIN
+#    Node                     → package.json 的 engines
+
+# 2. 由检查列出全部待同步位置（文档正文、live manifest 身份）
+npm test
+
+# 3. 按报告逐条更新，直到 npm test 通过
+#    manifest 变更后重新固定 test/live/<gate>.workloads.sha256
+
+# 4. 重建隔离环境并验证服务身份
+npm run dev -- bootstrap
+npm run dev -- up
+npm run dev -- status
+
+# 5. 重跑受影响阶段的 live gate
+npm run verify:phase0:live
+```
+
+第 3 步的 manifest 更新不是形式手续。manifest 声明的是“该阶段的结论在哪一组真实身份上成立”，
+gate 的 preflight 会用真实 `/health` 逐字核对；服务版本变化意味着该阶段的基线需要按
+[`docs/roadmap.md`](./roadmap.md)“实施顺序”的调查闭环重新建立，其规则见
+[`docs/verification.md`](./verification.md)。固定 hash 使这一步必须是有意识的动作。
+
+`shared/toolchain.mjs` 中记录特定版本缺陷的注释（如 `xxhash<4` 的约束）需要人工判断该缺陷在新版本
+是否仍然存在，不由检查覆盖。
 
 ## 目录与数据边界
 
@@ -69,10 +104,11 @@ wheel 安装与 fingerprint 校验），各自独立演化；任何脚本级参�
 1. 校验 Git、OS、arch、Node（对照 `package.json#engines`）和 npm；
 2. 验证本地依赖已按 lock 安装（否则提示先运行 `npm ci`）；
 3. 校验 `dev/model-profile.json`（快速失败，避免无效下载）；
-4. 下载并校验固定 uv（环境存在 HTTP(S)_PROXY 时自动经代理下载），安装托管 Python，创建 wheel venv；
+4. 下载并校验固定 uv（环境存在 HTTP(S)\_PROXY 时自动经代理下载），安装托管 Python，创建 wheel venv；
 5. 安装固定 OpenViking wheel 与 `xxhash<4`，并验证服务二进制可执行且版本与 pin 一致；
 6. 本地 embedding 模型由 OpenViking 在首次 `dev up` 时自动下载，bootstrap 不预取；
 7. 以不输出凭证的 `pi auth check` 报告开发模型凭证是否就绪，不发起模型推理，不就绪不失败。
+
 ## 服务生命周期合同
 
 每个隔离服务必须具有：
@@ -121,7 +157,7 @@ key 本身也构成授权。以下任一变化必须重新取得用户决定：
 
 - `taskVlm` 的 provider、model 或 API base 改变；
 - 本地 embedding 的 provider、model 或 dimension 改变；
-- 调用超出本仓库开发与 `SPEC.md` 阶段 gate。
+- 调用超出本仓库开发与 `docs/roadmap.md` 阶段 gate。
 
 ## Pi 扩展开发循环
 
@@ -158,14 +194,14 @@ pid 与 `server.pid` 一致、进程命令行包含本 run 目录的 `ov.conf`�
 
 任何删除数据的操作（如 namespace 清理）必须满足：路径位于允许根目录、状态
 文件根路径与实际路径完全一致、远端 ownership marker 逐字节回读匹配。阶段 gate 的远端 namespace、
-逐字节回读和 cleanup 断言以 `SPEC.md` 为权威，本文不复制。
+逐字节回读和 cleanup 断言以 `docs/verification.md` 为权威，本文不复制。
 
 ## 维护规则
 
 - 开发命令变化时，同一变更更新本文；
-- 架构、阶段或验收标准变化时先更新 `SPEC.md`，本文只调整执行方式和引用；
-- 当前代码职责变化时更新 `DESIGN.md`；
-- 最终用户安装、配置或排障变化时更新 `USAGE.md`；
+- 架构变化先更新 `docs/spec.md`，阶段或验收变化先更新 `docs/roadmap.md`，本文只调整执行方式和引用；
+- 当前代码职责变化时更新 `docs/design.md`；
+- 最终用户安装、配置或排障变化时更新 `docs/usage.md`；
 - 本文不保留版本历史、已完成任务流水或单次运行结果；
 - 精确版本只在 manifest、lock、源码身份和安装元数据中维护；
 - 不存在的命令必须标为“待实现”，实现后删除缺口说明，直接描述当前标准流程；

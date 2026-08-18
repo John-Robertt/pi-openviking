@@ -34,12 +34,14 @@
     "lib/",
     "shared/",
     "scripts/cli.mjs",
-    "SPEC.md",
     "README.md",
-    "DESIGN.md",
-    "DEVELOPMENT.md",
-    "USAGE.md",
-    "AGENTS.md"
+    "AGENTS.md",
+    "docs/spec.md",
+    "docs/roadmap.md",
+    "docs/verification.md",
+    "docs/design.md",
+    "docs/development.md",
+    "docs/usage.md"
   ],
   "dependencies": {
     "undici": "^7"

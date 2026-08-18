@@ -1,7 +1,15 @@
 # Pi OpenViking 使用说明
 
-本文描述当前版本的安装、配置、运行边界和故障排查。目标架构和阶段验收以
-[`SPEC.md`](./SPEC.md) 为唯一权威来源；当前代码职责见 [`DESIGN.md`](./DESIGN.md)。
+## 文档职责
+
+**架构定位**：面向最终用户的唯一说明。
+
+**核心目标**：安装、配置、运行和排查故障所需的全部信息，读者不必了解内部实现即可完成这些事。
+
+**职责边界**：本文只描述用户可见的行为与操作，不描述目标架构、阶段路径、内部数据流和验证方法——
+那些分别由 [`docs/spec.md`](./spec.md)、[`docs/roadmap.md`](./roadmap.md)、
+[`docs/design.md`](./design.md) 和 [`docs/verification.md`](./verification.md) 维护。
+本文随用户可见行为的变化更新。
 
 ## 1. 当前行为
 
@@ -105,7 +113,7 @@ npx pi-openviking@latest credentials
 ```
 
 只写需要覆盖的字段。出厂默认值以包内 [`config.json`](./config.json) 为可执行来源；字段语义以
-`SPEC.md` 的“目标配置”为准。损坏 JSONC、错误类型和未知字段都会报错，错误包含完整路径。
+`docs/spec.md` 的“目标配置”为准。损坏 JSONC、错误类型和未知字段都会报错，错误包含完整路径。
 
 示例：
 

@@ -6,7 +6,7 @@
  * are predetermined by shared/toolchain.mjs pins and dev/model-profile.json;
  * no user config is read and nothing outside the repository is touched.
  * Credentials are bridged from the user's Pi login into child process env at
- * spawn time only — never persisted. See DEVELOPMENT.md.
+ * spawn time only — never persisted. See docs/development.md.
  *
  *   npm run dev -- bootstrap|up|down|status|pi [args...]
  */

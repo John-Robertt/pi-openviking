@@ -105,12 +105,12 @@ async function confirm(question) {
 
 /**
  * Starter ov.conf. The server config loader is strict JSON (no comments), so
- * per-field documentation lives in USAGE.md「服务端配置」instead of the file.
+ * per-field documentation lives in docs/usage.md「服务端配置」instead of the file.
  *
  * Defaults chosen for zero-friction first run: local-only server, and the
  * ~24 MB llama.cpp embedding preset (auto-downloads on first server start).
  * Only the vlm section requires user input — there is no zero-config memory
- * model, and without it extraction/takeover never work (USAGE.md §2.3).
+ * model, and without it extraction/takeover never work (docs/usage.md「服务端配置」).
  */
 function ovConfTemplate() {
   return {
@@ -132,7 +132,7 @@ function ovConfTemplate() {
 
 async function ensureServerConfig() {
   if (existsSync(OV_CONF)) {
-    say(`服务端配置已存在: ${OV_CONF}（如需修改直接编辑该文件；配置项说明见 USAGE.md「服务端配置」）`);
+    say(`服务端配置已存在: ${OV_CONF}（如需修改直接编辑该文件；配置项说明见 docs/usage.md「服务端配置」）`);
     return;
   }
   mkdirSync(OV_HOME, { recursive: true });
@@ -142,7 +142,7 @@ async function ensureServerConfig() {
   say("该文件是严格 JSON（不支持注释），请用任意编辑器打开并完成：");
   say("  · vlm 段必填：api_key（以及对应 provider 的 model/api_base）——记忆模型，不配置则记忆抽取与上下文接管不生效");
   say("  · embedding 段已预填零依赖本地模型（bge-small-zh，约 24MB，首次启动自动下载），通常无需改动");
-  say("  · 全部 provider 示例（云端 API / Codex 订阅复用 / Kimi / GLM / Ollama 本地等）见 USAGE.md「服务端配置」一节");
+  say("  · 全部 provider 示例（云端 API / Codex 订阅复用 / Kimi / GLM / Ollama 本地等）见 docs/usage.md「服务端配置」一节");
   say("");
   if (!(await confirm("已完成编辑，继续运行 doctor 验证? [y/N] "))) {
     fail(`请先编辑 ${OV_CONF}（至少填写 vlm.api_key），然后重新运行 \`npx pi-openviking@latest setup\`。`);
@@ -504,7 +504,7 @@ async function setup() {
   say("完成。下一步：");
   say("  · 本地模式（默认 127.0.0.1:1933 无认证）无需再配置，直接启动 pi 即可。");
   say("  · 连接远端或需要 API key 时运行: npx pi-openviking@latest credentials");
-  say("  · 验证扩展生效见 USAGE.md §7（OV_DEBUG_LOG 三行日志）。");
+  say("  · 验证扩展生效见 docs/usage.md「状态与手动重放」。");
 }
 
 async function main() {

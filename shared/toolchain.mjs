@@ -8,7 +8,7 @@
  *
  * xxhash<4 is NOT optional: openviking 0.4.13 passes str into xxhash.xxh64(),
  * and xxhash 4 removed implicit encoding, which silently drops every vector
- * record (see USAGE.md §2.2).
+ * record (see docs/usage.md「前置条件」).
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -175,7 +175,7 @@ export function ensurePython({ home, log = () => {} }) {
   log(`安装托管 Python ${TOOLCHAIN.pythonVersion} → ${paths.pythonDir}`);
   // --no-bin：阻止 uv 向 ~/.local/bin 写 python3.x 链接，保证全部产物收敛在 home。
   if (!runProcess(paths.uvBin, ["python", "install", "--no-bin", TOOLCHAIN.pythonVersion], { env: uvEnv(paths) }).ok) {
-    throw new Error(`托管 Python 安装失败。网络受限时可设置 UV_PYTHON_INSTALL_MIRROR（见 USAGE.md）后重试。`);
+    throw new Error(`托管 Python 安装失败。网络受限时可设置 UV_PYTHON_INSTALL_MIRROR（见 docs/usage.md）后重试。`);
   }
   return paths;
 }

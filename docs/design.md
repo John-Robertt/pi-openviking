@@ -1,7 +1,14 @@
 # 当前 Phase 0 实现设计
 
-本文只描述当前代码的职责边界和数据流。目标架构、版本化契约、阶段顺序和验收标准以
-[`SPEC.md`](./SPEC.md) 为唯一权威来源；本文不复制 wire/storage 协议。
+## 文档职责
+
+**架构定位**：当前代码实际形态的说明。
+
+**核心目标**：修改代码前先知道“现在的职责边界和数据流是什么”，据此判断改动落在哪个模块。
+
+**职责边界**：本文只描述已经存在的实现，不描述目标形态、阶段路径和验收标准——那些分别由
+[`docs/spec.md`](./spec.md)、[`docs/roadmap.md`](./roadmap.md) 和
+[`docs/verification.md`](./verification.md) 维护。本文不复制 wire/storage 协议，随代码变化更新。
 
 ## 责任边界
 
@@ -106,13 +113,13 @@ sync-ack
 
 ## 失败语义
 
-失败、冲突、重放和可用性边界由 [`SPEC.md`](./SPEC.md) 的“准确性与可用性边界”统一定义；
+失败、冲突、重放和可用性边界由 [`docs/spec.md`](./spec.md) 的“准确性与可用性边界”统一定义；
 当前实现不建立第二份规则。
 
 ## 验证
 
-验证证据分类、live gate 契约与阶段出口由 [`SPEC.md`](./SPEC.md) 的“验证策略”和“真实验收门禁”
-统一定义；开发环境的安装、运行和清理见 [`DEVELOPMENT.md`](./DEVELOPMENT.md)。
+验证证据分类、live gate 契约与阶段出口由 [`docs/verification.md`](./verification.md)
+统一定义；开发环境的安装、运行和清理见 [`docs/development.md`](./development.md)。
 当前 deterministic 自动化入口为：
 
 - `test/recorded-event.test.mjs`：规范字节、投影、身份和合成 100k+ golden 基线；
