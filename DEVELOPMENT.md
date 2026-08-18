@@ -19,28 +19,9 @@ lock 和安装常量维护，不在本文建立第二份版本清单。
 2. **起得来**：启动与用户服务完全隔离的 OpenViking 开发服务；
 3. **调得通**：进入隔离 Pi，加载仓库扩展，模型凭证可用。
 
-探针、workload manifest、live verifier、summary 和阶段清理断言是开发工作，不是环境依赖；
-其契约由 [`SPEC.md`](./SPEC.md) 的“真实验收门禁”定义，实现时消费本文的服务生命周期能力。
-
-## 当前可执行基线
-
-```bash
-npm ci
-npm test
-npm exec -- pi -e ./index.ts
-node scripts/cli.mjs server status
-```
-
-`npm test` 是当前 deterministic 自动化入口。`npm exec -- pi -e ./index.ts` 使用 lock 中的 Pi
-快速加载仓库扩展，但没有隔离开发服务，不能替代 SPEC 定义的 live gate。`server status`
-只读检查当前用户服务，不属于隔离开发流程。
-
-`scripts/cli.mjs setup` 面向最终用户安装，会管理 `~/.pi/openviking`、默认服务端口和 Pi 包注册。
-它不是仓库开发 bootstrap；活动的 `~/.pi/openviking/data` 不能用于破坏性测试或阶段门禁。
+探针、workload manifest、live verifier、summary 和阶段清理断言的契约由 [`SPEC.md`](./SPEC.md) 的“真实验收门禁”定义，其实现消费本文的服务生命周期能力。
 
 ## 标准流程概览
-
-标记为“待实现”的入口当前不可执行，实现后删除该标记并直接描述现行流程。
 
 ```bash
 clone
@@ -49,16 +30,13 @@ clone
 # 建立仓库内开发环境：安装 uv/Python/OpenViking 到 .dev/，幂等，不启动服务
 npm run dev -- bootstrap
 
-# 启动、检查和停止隔离开发服务（固定 127.0.0.1:19331，identity account/user=dev）
+# 启动、检查和停止隔离开发服务
 npm run dev -- up
 npm run dev -- status
 npm run dev -- down
 
 # 进入隔离 Pi（自动加载仓库扩展，支持 /reload；追加参数透传给 pi）
 npm run dev -- pi
-
-# 当前唯一 deterministic 检查
-npm test
 ```
 
 完整参数以 `npm run dev -- help` 为准；本文只保留工作流和安全边界，不复制全部 CLI flags。
@@ -76,19 +54,6 @@ dev/                         # tracked：机器事实
 ```
 
 `dev/` 只提交机器事实文件；`.dev/` 可整体删除，由 bootstrap 重建。凭证不进入上述目录或 Git。
-
-## 权威来源与版本管理
-
-| 事实 | 权威来源 |
-|---|---|
-| 最低 Node 版本 | `package.json#engines` |
-| Node/Pi 依赖解析 | `package-lock.json` |
-| 发布时 Pi 兼容边界 | `package.json#peerDependencies` |
-| OpenViking/uv/Python 安装版本 | `shared/toolchain.mjs` 的 pin；Content API 协议值由 `test/recorded-event-adapter.test.mjs` 固定 |
-| 开发 task/VLM 与本地 embedding 身份 | `dev/model-profile.json` |
-| 阶段 workload 与成功标准 | `SPEC.md` 和对应 `test/live/*.workloads.json` |
-
-版本号变化时更新其权威机器文件，并让静态检查验证需要保持一致的副本；不手工维护版本表。
 
 ## Bootstrap 合同
 
@@ -158,9 +123,6 @@ key 本身也构成授权。以下任一变化必须重新取得用户决定：
 - 本地 embedding 的 provider、model 或 dimension 改变；
 - 调用超出本仓库开发与 `SPEC.md` 阶段 gate。
 
-`node scripts/cli.mjs server doctor` 会真实探测 embedding/VLM，只能作为上述授权边界内的显式诊断；
-它不是无副作用 bootstrap。
-
 ## Pi 扩展开发循环
 
 `dev pi` 使用本地锁定的 Pi CLI，并显式隔离：
@@ -188,40 +150,15 @@ wrapper，使 Pi `/reload` 可用。reload 会先触发 `session_shutdown`，再
 `scripts/e2e-probe.ts` 是供 live verifier 使用的 payload 采集扩展，必须最后加载，只向 verifier
 预开的私有 FD 写入；普通交互开发不启用 payload 采集。
 
-## 验证分层
-
-| 层级 | 入口 | 证明范围 |
-|---|---|---|
-| 静态与 deterministic | `npm test` | 配置、事件、树、ACK、边界和模拟故障 |
-| 阶段 live gate | 按 `SPEC.md` 顺序增加（待实现） | `SPEC.md` 定义的阶段出口 |
-
-提交前的检查序列是：
-
-```bash
-npm test
-npm run verify:phase0:live   # 待实现
-
-git diff --check
-npm pack --dry-run
-```
-
-在 live gate 尚未实现期间，只能报告 deterministic 结果和未闭合的真实证据，不能宣称 Phase 0 已通过。
-
 ## 安全清理
 
 `dev down` 只停止进程、不删除数据，停止前必须同时满足：marker 与状态文件 nonce 一致、状态文件
 pid 与 `server.pid` 一致、进程命令行包含本 run 目录的 `ov.conf`（win32 无法核对命令行，存在 PID
 复用时误杀无关进程树的残余风险，操作前留意 status 输出）。
 
-未来任何删除数据的操作（如 live verifier 的 namespace 清理）还必须满足：路径位于允许根目录、状态
+任何删除数据的操作（如 namespace 清理）必须满足：路径位于允许根目录、状态
 文件根路径与实际路径完全一致、远端 ownership marker 逐字节回读匹配。阶段 gate 的远端 namespace、
 逐字节回读和 cleanup 断言以 `SPEC.md` 为权威，本文不复制。
-## 当前缺口与下一执行入口
-
-开发环境最小集（bootstrap、up/down/status、pi）已完成。下一实施入口以 `SPEC.md` 为准：固定 Phase 0
-manifest/reference baseline（`test/live/phase0.workloads.json`），并补建统一 live verifier
-（`verify:phase0:live`）。live verifier 消费本文的服务生命周期与凭证桥接能力，其契约与清理断言
-不在本文复制。
 
 ## 维护规则
 
