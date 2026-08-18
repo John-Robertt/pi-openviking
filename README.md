@@ -128,6 +128,7 @@ scripts/cli.mjs              安装与服务管理 CLI
 ## 文档
 
 - [`SPEC.md`](./SPEC.md)：目标架构、阶段边界和验收标准的唯一权威规范；
+- [`DEVELOPMENT.md`](./DEVELOPMENT.md)：开发环境的安装、运行、开发循环和清理；
 - [`DESIGN.md`](./DESIGN.md)：当前 Phase 0 实现的职责与数据流；
 - [`USAGE.md`](./USAGE.md)：安装、配置和故障排查。
 

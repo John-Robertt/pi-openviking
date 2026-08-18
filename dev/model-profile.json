@@ -1,0 +1,16 @@
+{
+  "taskVlm": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "apiBase": "https://api.deepseek.com",
+    "credentialKind": "api_key",
+    "apiKeyEnv": "DEEPSEEK_API_KEY"
+  },
+  "embedding": {
+    "dense": {
+      "provider": "local",
+      "model": "bge-small-zh-v1.5-f16",
+      "dimension": 512
+    }
+  }
+}

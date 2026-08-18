@@ -112,7 +112,8 @@ sync-ack
 ## 验证
 
 验证证据分类、live gate 契约与阶段出口由 [`SPEC.md`](./SPEC.md) 的“验证策略”和“真实验收门禁”
-统一定义；当前 deterministic 自动化入口为：
+统一定义；开发环境的安装、运行和清理见 [`DEVELOPMENT.md`](./DEVELOPMENT.md)。
+当前 deterministic 自动化入口为：
 
 - `test/recorded-event.test.mjs`：规范字节、投影、身份和合成 100k+ golden 基线；
 - `test/generated-session-invariants.test.mjs`：版本化 seed、源 entry 重建、树/上下文/ACK 不变量和长工具循环；

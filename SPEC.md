@@ -3,7 +3,8 @@
 ## 文档职责
 
 本文档是 OpenViking 上下文管理的权威实施规范，定义产品职责、目标架构、配置、实施顺序和
-验收标准。实施进展只更新“实施状态”和“下一实施入口”，其余章节始终描述目标系统。
+验收标准。实施进展只更新“实施状态”和“下一实施入口”，其余章节始终描述目标系统。开发环境、
+调试、真实验证执行和安全清理流程由 [`DEVELOPMENT.md`](./DEVELOPMENT.md) 统一说明，不在本文复制。
 
 ## 产品定位
 
@@ -376,13 +377,16 @@ VLM request 和明确失败是追加式 `RecordedEvent`。summary、索引、通
 - `takeover.enabled` 控制任务模型上下文替换，事件记录和 Archive 独立持续运行。
 
 Archive 与 takeover 预算是 Phase 3 的候选值。预算根据 Archive step 边界、raw-tail 完整性和
-接管后上下文大小验证；VLM 消费能力通过候选模型选型解决。
+接管后上下文大小验证。开发和真实验收统一使用 [`DEVELOPMENT.md`](./DEVELOPMENT.md#开发模型身份与凭证桥接)
+定义的开发模型身份；凭证桥接和持续调用授权边界也以该处为准。
+VLM 消费能力必须针对该固定模型形成真实证据，不能在运行时静默选择其他模型。
 
 `contextTokenThreshold=0` 使用“任务模型上下文容量减去 system、工具、provider 安全余量、
 checkpoint 和 raw tail”计算高水位。高水位必须为正且能够容纳目标上下文；容量不匹配时
-保持 takeover inactive，并由 `/viking` 报告。解决方式是选择更大上下文窗口的任务模型，
-或调整候选预算并重新通过 Phase 3 验证。可外置的大型 payload 使用完整存储和可追溯引用；
-非外置原子输入的支持上限由任务模型剩余容量决定，超出时需要更大模型或更小的源输入。
+保持 takeover inactive，并由 `/viking` 报告。先调整候选预算并重新通过 Phase 3 验证；如果固定模型仍
+无法提供安全余量，则保持 inactive。改变 provider 或 model 属于新的战略决定，必须重新获得用户决定并重跑
+相关阶段。可外置的大型 payload 使用完整存储和可追溯引用；非外置原子输入的支持上限由固定任务模型的
+剩余容量决定，超出时拒绝接管或缩小源输入。
 Pi compaction 仍由 Pi 的运行时条件触发。
 
 上述对象是扩展配置的完整 schema。配置加载器对未知字段返回包含字段路径的校验错误；开发
@@ -450,10 +454,10 @@ sibling branches、entry `SyncAck`、确认顺序、ACK 丢失/持久化失败�
 和时序预算使用确定不变量验收。每个阶段只有在其四类适用证据共同通过后才完成；实践结果改变理解时，
 先更新当前约束与验收场景，再继续实施。
 
-Phase 3 使用多个彼此独立的真实 100k+ 工作负载完成模型级端到端验收，至少覆盖：多轮长工具循环与
-并行成功/失败、单轮超长原子输入及大型 payload、分支/重启/Pi compaction，并覆盖多个真实
-provider/VLM 组合。各工作负载均走 Archive、checkpoint 和 takeover 链路；固定 golden 回放只提供
-结果对照。
+Phase 3 使用多个彼此独立的真实 100k+ 工作负载完成固定模型组合的端到端验收，至少覆盖：多轮长工具循环与
+并行成功/失败、单轮超长原子输入及大型 payload、分支/重启/Pi compaction。任务模型和 VLM 均使用
+开发模型身份，每个 workload 至少独立重复三次。各工作负载均走 Archive、checkpoint 和
+takeover 链路；固定 golden 回放只提供结果对照。
 
 ## 真实验收门禁
 
@@ -498,12 +502,12 @@ live verifier 是阶段实现的一部分，mock、内存 transport、合成模�
 
 | Gate | 真实边界 | 必须由机器断言的结果 |
 | --- | --- | --- |
-| Phase 0 | 当前 Pi CLI/lifecycle、真实 `SessionManager`、受支持 OpenViking Content API；模型输出可受控 | Pi JSONL → 全部 `RecordedEvent` → direct/chunked 对象 → entry ACK 逐项对应；重放、409、断线、shutdown 和清理成立 |
+| Phase 0 | 当前 Pi CLI/lifecycle、真实 `SessionManager`、受支持 OpenViking Content API；涉及模型调用时使用开发模型身份 | Pi JSONL → 全部 `RecordedEvent` → direct/chunked 对象 → entry ACK 逐项对应；重放、409、断线、shutdown 和清理成立 |
 | Phase 1 | 受管 OpenViking 的 Archive 发布中断/客户端重启，以及多个真实 Pi workload 形成的 Archive | 原子可见、幂等恢复、确定 expand、event/step 边界和每种真实样本的 Archive 完整性成立 |
-| Phase 2A | Phase 1 的各真实 Archive 与候选 VLM | checkpoint 来源/hash、失败重试、重启恢复和积压派生正确；实际 VLM 吞吐满足 manifest 阈值 |
-| Phase 2B | 真实 Pi session、候选 checkpoint/raw tail 和拟进入 Phase 3 的 task-model 元数据；takeover 保持 inactive | 候选 payload 可由源事件逐项重算，step/anchor 完整；Pi 报告容量在边界两侧分别 fit/mismatch |
-| Phase 2C | 真实 Pi `context` hook、全部 Phase 3 候选 task provider、可控 OpenViking/VLM 降级及 Pi compaction | 实际 provider 请求与 Phase 2B 候选 payload 一致；每个高水位只切换一次；分支/重启成立；降级时使用完整 Pi 上下文 |
-| Phase 3 | 多个拟出厂 provider/VLM 组合和多个彼此独立的真实 100k+ workload；每个拟出厂组合至少重复三次 | 源事件到实际 provider 请求全链一致；实际 token、吞吐、延迟和容量安全余量满足 manifest 阈值，重复运行结论一致 |
+| Phase 2A | Phase 1 的各真实 Archive 与开发模型身份中的 VLM | checkpoint 来源/hash、失败重试、重启恢复和积压派生正确；实际 VLM 吞吐满足 manifest 阈值 |
+| Phase 2B | 真实 Pi session、候选 checkpoint/raw tail 和开发模型身份中的 task-model 元数据；takeover 保持 inactive | 候选 payload 可由源事件逐项重算，step/anchor 完整；Pi 报告容量在边界两侧分别 fit/mismatch |
+| Phase 2C | 真实 Pi `context` hook、开发模型身份中的 task provider、可控 OpenViking/VLM 降级及 Pi compaction | 实际 provider 请求与 Phase 2B 候选 payload 一致；每个高水位只切换一次；分支/重启成立；降级时使用完整 Pi 上下文 |
+| Phase 3 | 固定 task/VLM 组合和多个彼此独立的真实 100k+ workload；每个 workload 至少重复三次 | 源事件到实际 provider 请求全链一致；实际 token、吞吐、延迟和容量安全余量满足 manifest 阈值，重复运行结论一致 |
 | Phase 4 | 同一 release run 的 Phase 3 summary，以及在本次 namespace 重建的对应 events/Archive/checkpoint | summary/manifest hash 匹配；索引就绪及重启后 search/browse/expand 返回预期身份和来源链；过滤、隐藏 raw event 隔离及清理成立 |
 
 ## 实施顺序
@@ -616,7 +620,7 @@ Pi/OpenViking 探针建立 reference baseline 并固定 manifest，再实现 ver
 - `/viking` 展示 VLM 积压、失败、checkpoint ID 和来源 Archive；
 - 校验 checkpoint 身份、hash、重试和跨重启恢复，并将有效 checkpoint 作为 Phase 2B 输入；
 - 用 golden 固定输出回归身份，以独立生成的重试/失败/积压场景验证状态不变量，并让 Phase 1 的多种
-  真实 Archive 工作负载分别经过候选 VLM。
+  真实 Archive 工作负载分别经过固定 VLM。
 
 **验收**：
 
@@ -626,7 +630,7 @@ Pi/OpenViking 探针建立 reference baseline 并固定 manifest，再实现 ver
   通知一次；
 - Archive、request、checkpoint 和失败事件能够完整派生 VLM 状态、失败原因及积压 token；
 - VLM 失败不改变已经持久化的事件和 raw Archive；
-- Phase 1 的各真实 Archive 工作负载均产生来源和 hash 可核验的 checkpoint，并分别满足候选 VLM
+- Phase 1 的各真实 Archive 工作负载均产生来源和 hash 可核验的 checkpoint，并分别满足固定 VLM
   吞吐要求。
 
 #### Phase 2B：活动上下文构造
@@ -656,8 +660,8 @@ Pi/OpenViking 探针建立 reference baseline 并固定 manifest，再实现 ver
 - 每次高水位只替换一次 `ActiveContext`，后续事件追加在稳定前缀之后；
 - 无有效 `ActiveContext`、OpenViking/VLM 降级或容量不匹配时继续使用完整 Pi 上下文；
 - Pi 原生 compaction 提供运行时 fail-open，扩展只提供生命周期钩子结果；
-- 用 golden 回归和独立生成场景验证切换不变量；用全部 Phase 3 候选 task provider 的真实请求验证
-  高水位、分支、重启、compaction 和 fail-open payload。
+- 用 golden 回归和独立生成场景验证切换不变量；用开发模型身份中的 task provider 真实请求验证高水位、
+  分支、重启、compaction 和 fail-open payload。
 
 **验收**：
 
@@ -668,24 +672,25 @@ Pi/OpenViking 探针建立 reference baseline 并固定 manifest，再实现 ver
 - Pi 是 compaction 的唯一触发方；`ActiveContext` 不可用时执行原生 split-turn compaction，扩展
   仅返回生命周期钩子结果并保持运行中的 agent 可用。
 
-### Phase 3：端到端预算校准与模型定型
+### Phase 3：固定模型端到端预算校准
 
-- 在 Phase 0–2 逐阶段通过后，于真实 provider 和 VLM 环境中运行“验证策略”定义的多个独立 100k+
-  工作负载；token 数取自 Pi/provider 实际计量；
+- 在 Phase 0–2 逐阶段通过后，使用开发模型身份中的任务模型和 VLM 运行“验证策略”
+  定义的多个独立 100k+ 工作负载，每个 workload 至少独立重复三次；token 数取自 Pi/provider 实际计量；
 - 对照原始事件检查 Archive 边界、raw tail、checkpoint 和接管上下文；
-- 使用 Pi 报告的任务模型容量验证高水位公式两侧的 fit 与 capacity mismatch 行为；
+- 使用 Pi 报告的固定任务模型容量验证高水位公式两侧的 fit 与 capacity mismatch 行为；
 - 根据 step 原子性、raw-tail 完整性和上下文容量调整候选预算并重跑；
-- 确认所选 VLM 能在下一个 Archive 产生前完成前一个 checkpoint；
-- 预算和 VLM 通过端到端验证后确认为出厂默认值，容量边界确认为 takeover eligibility 规则。
+- 确认固定 VLM 能在下一个 Archive 产生前完成前一个 checkpoint；
+- 固定模型身份、预算和 eligibility 规则通过端到端验证后写入发布配置。
 
 **验收**：
 
 - 各真实 100k+ 工作负载中的 Archive、raw tail、checkpoint 和 provider payload 与各自源事件逐项对应，
   没有遗漏、重复或破坏 step 原子性；
-- 候选 Archive、checkpoint 和 raw-tail 预算满足完整性及任务模型安全余量；
-- 所选 VLM 能在下一个 Archive 产生前完成前一个 checkpoint；
-- 任务模型容量在 eligibility 边界两侧分别得到 active 和 capacity mismatch 结果；
-- 通过上述验收的预算、VLM 和 eligibility 规则写入出厂配置。
+- 每个 workload 至少三次重复运行均保持身份、不变量和阈值结论一致；
+- 候选 Archive、checkpoint 和 raw-tail 预算满足完整性及固定任务模型的安全余量；
+- 固定 VLM 能在下一个 Archive 产生前完成前一个 checkpoint；
+- 固定任务模型容量在 eligibility 边界两侧分别得到 active 和 capacity mismatch 结果；
+- 通过上述验收的固定模型身份、预算和 eligibility 规则写入发布配置。
 
 ### Phase 4：检索与诊断体验
 
