@@ -14,8 +14,9 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test",
-    "dev": "node scripts/dev.mjs"
+    "test": "node --test 'test/*.test.mjs'",
+    "dev": "node scripts/dev.mjs",
+    "verify:phase0:live": "node test/live/phase0-live.mjs"
   },
   "pi": {
     "extensions": [
@@ -32,7 +33,7 @@
     "config.json",
     "lib/",
     "shared/",
-    "scripts/",
+    "scripts/cli.mjs",
     "SPEC.md",
     "README.md",
     "DESIGN.md",

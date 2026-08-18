@@ -397,8 +397,7 @@ Pi compaction 仍由 Pi 的运行时条件触发。
 受管服务固定使用已通过集成探针的 OpenViking `0.4.13`。远端服务在首次真实 Content 操作中探测
 batch-write、raw download、mkdir 和严格响应语义；路由缺失、请求 schema 不兼容或响应结构不匹配
 标记 capability mismatch，网络不可用保持 unknown。隐藏文件不进入普通语义处理是支持版本的安装/
-集成验收项，不在每次启动创建额外探针对象。两类失败都保持事件待重放和 Pi 主任务 fail-open，并由
-`/viking` 报告。
+集成验收项，不在每次启动创建额外探针对象。0.4.13 在 namespace 删除后会由目录语义管线物化空目录骨架（不含任何文件）；live gate 的清理以逐 URI 持久 404 为准，骨架再现只是服务端行为观察。两类失败都保持事件待重放和 Pi 主任务 fail-open，并由 `/viking` 报告。
 
 ## 准确性与可用性边界
 
@@ -432,8 +431,7 @@ Pi entry/树拓扑与 forward-compatible part、三个独立长工具循环、�
 sibling branches、entry `SyncAck`、确认顺序、ACK 丢失/持久化失败、并发调度、127/128/129 项、
 8/16 MiB 前一值/边界值/后一值、chunk/commit、capability 和 fail-open。OpenViking 0.4.13 兼容验收
 覆盖 created、unchanged、409、byte-exact、direct/chunked、dot-file 与语义隔离；
-`scripts/e2e-probe.ts` 提供真实 provider payload 采集；统一的 `verify:phase0:live` 入口、JSON summary
-和隔离清理断言是 Phase 0 当前剩余的阶段出口。Phase 1 尚未开始。
+`scripts/e2e-probe.ts` 提供真实 provider payload 采集。统一阶段门禁 `verify:phase0:live` 已在真实 Pi 0.84.2 RPC lifecycle、真实 SessionManager、受管 OpenViking 0.4.13 与开发模型身份上连续通过：机器断言逐事件 direct/chunked 字节对应、entry ACK 覆盖、provider 捕获计数与 extension-error 通道、shutdown 最终同步、ACK 丢失幂等重放、409 完整性停止、断线 fail-open 与重启追平、ownership marker 双重核对与远端/本地清理；workload manifest 及其 hash 固定于 `test/live/`。Phase 0 阶段出口关闭。Phase 1 尚未开始。
 
 ## 验证策略
 
@@ -527,10 +525,7 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
    主导约束；
 5. deterministic checks、live gate、完整 `npm test`、`git diff --check` 和文档自检共同通过后关闭阶段出口。
 
-Phase 0 的 production 实现先于统一 live gate 存在，因此当前按补建门禁处理：先用独立协议向量和真实
-Pi/OpenViking 探针建立 reference baseline 并固定 manifest，再实现 verifier；verifier 失败即重新打开
-对应的 Phase 0 实现约束。Phase 1 起完整按上述 1–5 顺序执行。
-
+若某阶段的实现先于其 live gate 存在，则按补建处理：先用独立协议向量和真实探针建立 reference baseline 并固定 manifest，再实现 verifier；verifier 失败即重新打开对应的实现约束。
 ### Phase 0：完整记录与最小可靠同步
 
 #### Phase 0A：事件投影与身份
@@ -710,9 +705,4 @@ Pi/OpenViking 探针建立 reference baseline 并固定 manifest，再实现 ver
 
 ## 下一实施入口
 
-当前入口是补建并运行 `verify:phase0:live`：先固定 Phase 0 manifest/reference baseline，再在真实 Pi 和
-OpenViking 0.4.13 上建立统一 summary、ownership namespace、逐事件/ACK 和清理断言。
-`scripts/e2e-probe.ts` 作为最后加载的扩展向 verifier 预开的 segment FD 写最终 payload；verifier 必须
-核对预期捕获数量/hash 和 extension-error 通道。该门禁通过后，Phase 1 从 Archive 原子绑定与崩溃语义的
-真实基线探针开始；获得
-原子可见性、幂等恢复和确定性读取证据后再实现 Archive。
+当前入口是 Phase 1 的基线调查：按“实施顺序”的调查闭环先建立 `test/live/phase1.workloads.json` manifest，再对真实 OpenViking 0.4.13 运行 Archive 原子绑定与崩溃语义的最小基线探针；获得原子可见性、幂等恢复和确定性读取证据后才实现 Archive。

@@ -7,7 +7,7 @@
  *
  *   npx pi-openviking@latest setup        full chain: uv → managed python → venv → pinned install → init → doctor → start → pi install
  *   npx pi-openviking@latest server start|stop|restart|status|doctor
- *   npx pi-openviking@latest credentials  configure server URL / API key (~/.openviking/ovcli.conf)
+ *   npx pi-openviking@latest credentials  configure server URL / API key (~/.pi/openviking/ovcli.conf)
  */
 
 import { spawn } from "node:child_process";

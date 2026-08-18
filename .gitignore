@@ -1,5 +1,4 @@
 node_modules/
 *.tgz
-data/
 .dev/
 test/.artifacts/
