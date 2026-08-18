@@ -37,7 +37,8 @@
     "README.md",
     "DESIGN.md",
     "DEVELOPMENT.md",
-    "USAGE.md"
+    "USAGE.md",
+    "AGENTS.md"
   ],
   "dependencies": {
     "undici": "^7"
