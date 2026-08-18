@@ -49,12 +49,12 @@ clone
 # 建立仓库内开发环境：安装 uv/Python/OpenViking 到 .dev/，幂等，不启动服务
 npm run dev -- bootstrap
 
-# 待实现：启动、检查和停止隔离开发服务
+# 启动、检查和停止隔离开发服务（固定 127.0.0.1:19331，identity account/user=dev）
 npm run dev -- up
 npm run dev -- status
 npm run dev -- down
 
-# 待实现：进入隔离 Pi，加载仓库扩展
+# 进入隔离 Pi（自动加载仓库扩展，支持 /reload；追加参数透传给 pi）
 npm run dev -- pi
 
 # 当前唯一 deterministic 检查
@@ -71,7 +71,7 @@ dev/                         # tracked：机器事实
 
 .dev/                        # gitignored：全部运行时产物
 ├── toolchain/               # 固定 uv、托管 Python、wheel venv
-├── runs/openviking/         # 开发服务的 workspace、ov.conf、PID、日志、状态
+├── runs/openviking/         # 开发服务的 workspace、ov.conf、PID、日志、状态、embedding 模型缓存
 └── pi/                      # 隔离 PI_CODING_AGENT_DIR 与扩展 wrapper
 ```
 
@@ -114,13 +114,14 @@ wheel 安装与 fingerprint 校验），各自独立演化；任何脚本级参�
 
 - loopback 地址和无竞争端口，不复用 `~/.pi/openviking` 的活动进程、端口或数据目录；
 - 独立 `ov.conf`、workspace、PID、日志和状态文件；
-- 包含 run ID、配置身份和随机 nonce 的 ownership marker；
+- ownership marker（随机 nonce）与状态文件（pid、endpoint、启动时间、配置指纹），两者 nonce 一致；
 - 启动后的 `/health` 版本与进程身份检查。
 
-`up` 不接管身份不匹配的残留进程；`down` 不能只依赖 PID，终止前必须同时核对 PID 启动时间、
-命令、状态文件和 marker，跨平台停止完整进程树。无 marker 的递归删除或“强制清理兜底”不属于
-支持行为。`down` 只停止并确认所属进程，不删除 workspace 或 toolchain；环境损坏时由 bootstrap
-修复或重建，不提供 `restart`/`clean` 子命令。
+`up` 不接管身份不匹配的残留进程；`down` 在终止前同时核对进程命令行（Linux `/proc`、macOS `ps`；
+win32 退化为 marker/状态核对）、状态文件和 marker，并停止完整进程树（POSIX 进程组 / Windows
+`taskkill /T`）。无 marker 的递归删除或“强制清理兜底”不属于支持行为。`down` 只停止并确认所属
+进程，不删除 workspace 或 toolchain；环境损坏时由 bootstrap 修复或重建，不提供 `restart`/`clean`
+子命令。
 
 ## 开发模型身份与凭证桥接
 
@@ -162,18 +163,16 @@ key 本身也构成授权。以下任一变化必须重新取得用户决定：
 
 ## Pi 扩展开发循环
 
-计划中的 `dev pi` 使用本地锁定的 Pi CLI，并显式隔离：
+`dev pi` 使用本地锁定的 Pi CLI，并显式隔离：
 
-- `PI_CODING_AGENT_DIR`；
-- `PI_CODING_AGENT_SESSION_DIR`；
-- OpenViking endpoint、user 和 peer；
-- 自动发现的其他扩展与包；
-- 使用[开发模型身份](#开发模型身份与凭证桥接)。
+- `PI_CODING_AGENT_DIR=.dev/pi`（auth、settings、sessions、extensions 全部由它派生隔离）；
+- OpenViking endpoint（`OPENVIKING_BASE_URL=http://127.0.0.1:19331`）、account/user（`dev`）；
+- 自动发现的其他扩展与包（隔离 agent dir 只含下述 wrapper）；
+- 使用[开发模型身份](#开发模型身份与凭证桥接)（`apiKeyEnv` 经环境注入，不落盘）。
 
-开发 runner 可在 `.dev/pi/extensions/` 生成只负责加载仓库 `index.ts` 的 wrapper，以支持 Pi
-`/reload`。reload 会先触发 `session_shutdown`，再重载扩展并触发 `session_start`，因此它同时是
-连接释放、同步尾部、ACK 恢复和状态重建的实时观察点。
-
+`dev pi` 在 `.dev/pi/extensions/pi-openviking-dev/index.ts` 生成只负责加载仓库 `index.ts` 的
+wrapper，使 Pi `/reload` 可用。reload 会先触发 `session_shutdown`，再重载扩展并触发
+`session_start`，因此它同时是连接释放、同步尾部、ACK 恢复和状态重建的实时观察点。
 推荐循环：
 
 ```text
@@ -210,23 +209,19 @@ npm pack --dry-run
 
 ## 安全清理
 
-开发环境内只有以下条件全部成立才能停止进程或删除数据：
+`dev down` 只停止进程、不删除数据，停止前必须同时满足：marker 与状态文件 nonce 一致、状态文件
+pid 与 `server.pid` 一致、进程命令行包含本 run 目录的 `ov.conf`（win32 无法核对命令行，存在 PID
+复用时误杀无关进程树的残余风险，操作前留意 status 输出）。
 
-1. 路径位于 `.dev/runs` 允许根目录；
-2. 状态文件中的根路径与实际路径完全一致；
-3. 本地 marker 的 run ID、配置身份和 nonce 逐字节匹配；
-4. PID 的启动身份、命令和状态记录匹配。
-
-阶段 gate 的远端 namespace、逐字节回读和 cleanup 断言以 `SPEC.md` 为权威，本文不复制。
-
+未来任何删除数据的操作（如 live verifier 的 namespace 清理）还必须满足：路径位于允许根目录、状态
+文件根路径与实际路径完全一致、远端 ownership marker 逐字节回读匹配。阶段 gate 的远端 namespace、
+逐字节回读和 cleanup 断言以 `SPEC.md` 为权威，本文不复制。
 ## 当前缺口与下一执行入口
 
-当前尚未实现：
-
-- `scripts/dev.mjs` 的 up/down/status/pi（隔离服务生命周期与 Pi runner）。
-
-下一执行入口是实现上述环境最小集；live verifier 及 `test/live/phase0.workloads.json` 是随后的
-开发工作，契约见 `SPEC.md`。环境实现不提前包含 probe 矩阵、source 模式或 Archive 相关能力。
+开发环境最小集（bootstrap、up/down/status、pi）已完成。下一实施入口以 `SPEC.md` 为准：固定 Phase 0
+manifest/reference baseline（`test/live/phase0.workloads.json`），并补建统一 live verifier
+（`verify:phase0:live`）。live verifier 消费本文的服务生命周期与凭证桥接能力，其契约与清理断言
+不在本文复制。
 
 ## 维护规则
 

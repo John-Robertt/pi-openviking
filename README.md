@@ -131,6 +131,7 @@ scripts/cli.mjs              安装与服务管理 CLI
 - [`DEVELOPMENT.md`](./DEVELOPMENT.md)：开发环境的安装、运行、开发循环和清理；
 - [`DESIGN.md`](./DESIGN.md)：当前 Phase 0 实现的职责与数据流；
 - [`USAGE.md`](./USAGE.md)：安装、配置和故障排查。
+- [`AGENTS.md`](./AGENTS.md)：给编码代理的地图——需要答案时去哪里找。
 
 ## 许可证
 
