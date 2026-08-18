@@ -20,7 +20,7 @@
 | 阶段划分、每阶段范围与验收、实施状态、下一实施入口     | [`docs/roadmap.md`](./docs/roadmap.md)                                                   | 对应阶段的 deterministic checks 与 live gate        |
 | 证据种类、live verifier 契约、各阶段门禁必须断言的结果 | [`docs/verification.md`](./docs/verification.md)                                         | `test/live/` 的 verifier 与其 summary               |
 | 当前模块职责和数据流                                   | [`docs/design.md`](./docs/design.md)                                                     | 生产代码及对应测试                                  |
-| 观察点契约、记录形状、关联字段、脱敏边界、完成门       | [`docs/observability.md`](./docs/observability.md)                                       | `docs/observability.md`“验证”一节列出的检查         |
+| 观察点契约、记录形状、关联字段、脱敏边界、完成门       | [`docs/observability.md`](./docs/observability.md)                                       | `docs/verification.md`“观察证据”定义的检查          |
 | 开发环境、隔离服务、凭证桥接、调试和安全清理           | [`docs/development.md`](./docs/development.md)                                           | `test/dev-*.test.mjs` 与 `npm run dev -- <command>` |
 | 最终用户安装、配置、命令和故障排查                     | [`docs/usage.md`](./docs/usage.md)                                                       | CLI、配置和服务管理测试                             |
 | 项目简介和文档入口                                     | [`README.md`](./README.md)                                                               | 本地链接检查与 `npm pack --dry-run`                 |

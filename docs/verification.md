@@ -35,16 +35,39 @@ Phase 3 使用多个彼此独立的真实 100k+ 工作负载完成固定模型�
 开发模型身份，每个 workload 至少独立重复三次。各工作负载均走 Archive、checkpoint 和
 takeover 链路；固定 golden 回放只提供结果对照。
 
+## 观察证据
+
+观察记录支持上述四类证据，但不构成新的产品事实。其完整性与安全性按 `docs/observability.md` 判定，验证方法
+固定如下：
+
+- deterministic checks 以固定时钟、run/session/op 和输入向量逐条校验版本化 record 与 stage schema；未知字段、
+  原始 URI/path/error message、凭证和会话正文必须使记录被拒绝且不得出现在输出或错误状态；
+- 两个观察变量均未设置时，以文件系统、序列化和 hash 依赖的调用计数证明只执行启用判断；配置冲突、非法 FD、
+  队列满、部分写和关闭错误不得抛出或改变产品结果，只能产生 `incomplete` 状态；
+- 同一组固定记录分别通过新文件和继承 FD 写出，规范 JSONL 字节必须一致；文件创建、FD owner/mode/size 与路径
+  不可复用条件分别验证；
+- live manifest 为成功和受控失败 workload 声明预期 stage、branch、outcome 与状态快照。verifier 逐 run 校验
+  start/end、连续 seq、boundary op 配对、观察状态和原始记录 hash；子进程退出后由父进程同步并关闭其保留的 artifact
+  FD，再读取最终字节。缺失、丢弃、写入、同步或关闭错误都使 gate 失败；
+- verifier 同时断言观察记录未进入 Pi JSONL 和 OpenViking 事件命名空间，且仓库运行路径没有第二套观察点。
+
+原始观察 JSONL 只存在于 `test/.artifacts/live/{runId}`。summary 的 `observationRuns` 仅保留每个观察 run 的
+schema version、run、seq 范围、stage/kind/outcome 计数、accepted/dropped、完整性结论与原始文件 hash，不保留
+完整记录、URI、错误正文或会话内容；成功后原始文件随 verifier run 目录删除，失败诊断遵守下文相同的白名单与
+清理规则。`scripts/e2e-probe.ts` 的原始 provider payload 是另一类验证输入，沿用自己的受限采集与清理契约，
+不作为观察记录。
+
 ## 真实验收门禁
 
-每个实施阶段交付一个由 `package.json` 暴露的 live verifier：`verify:phase0:live`、
-`verify:phase1:live`、`verify:phase2a:live`、`verify:phase2b:live`、`verify:phase2c:live`、
-`verify:phase3:live` 和 `verify:phase4:live`。一个入口可以组合多个聚焦脚本，但阶段出口只引用该入口。
-live verifier 是阶段实现的一部分，mock、内存 transport、合成模型输出和人工检查不构成该门禁的替代品。
+每个实施阶段交付一个由 `package.json` 暴露的 live verifier：`verify:phase0:live`、`verify:phase1:live`、
+`verify:phase2a:live`、`verify:phase2b:live`、`verify:phase2c:live`、`verify:phase3:live` 和
+`verify:phase4:live`；横切可观测性基线独立使用 `verify:observability:live`，不改变已关闭阶段的 manifest。一个入口
+可以组合多个聚焦脚本，但每个出口只引用自己的入口。live verifier 是相应实现的一部分，mock、内存 transport、
+合成模型输出和人工检查不构成门禁替代品。
 
 所有 live verifier 使用同一契约：
 
-- 每个阶段先提交 `test/live/{gate}.workloads.json` manifest，固定 workload/seed、适用版本与真实进程/
+- 每个阶段和横切基线先提交 `test/live/{gate}.workloads.json` manifest，固定 workload/seed、适用版本与真实进程/
   端点身份、成功标准、证伪条件、证据提取方式和阈值决策规则；基线探针完成后，将 baseline、数值阈值
   与预期变化写入 manifest 并在实现前固定其 hash，运行时不能临时改变；
 - 启动前连接并校验 manifest 声明的真实 Pi、OpenViking、provider/model、VLM、prompt 和协议身份；
@@ -71,13 +94,14 @@ live verifier 是阶段实现的一部分，mock、内存 transport、合成模�
 - 完成测量后，成功时删除整个本地 run 目录；失败时删除全部 raw payload，只保留字段白名单式脱敏诊断。
   任一本地删除失败同样使 gate 失败。仓库长期保留 verifier、workload manifest 和断言，不提交单次运行日志；
   需要跨阶段消费的 summary 作为同一 release run 的 CI artifact；
-- 任一必要断言、观察点或清理失败即保持阶段出口未通过，并由 expected/actual/delta 重新定位主导约束。
-  各阶段先实现自己的入口；出现第二个真实消费者后才提取共享 verifier 代码。
+- 任一必要断言、观察点或清理失败即保持对应出口未通过，并由 expected/actual/delta 重新定位主导约束。
+  各出口先实现自己的入口；出现第二个真实消费者后才提取共享 verifier 代码。
 
 阶段 live gate 的职责如下：
 
 | Gate     | 真实边界                                                                                                    | 必须由机器断言的结果                                                                                                        |
 | -------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Observe  | 当前 Pi lifecycle、真实同步、受支持 OpenViking，以及受控断线、拒绝和冲突                                  | run 完整、op 配对、分支/状态/失败可还原、无敏感值和丢弃、记录不进入事实源且清理成立                                         |
 | Phase 0  | 当前 Pi CLI/lifecycle、真实 `SessionManager`、受支持 OpenViking Content API；涉及模型调用时使用开发模型身份 | Pi JSONL → 全部 `RecordedEvent` → direct/chunked 对象 → entry ACK 逐项对应；重放、409、断线、shutdown 和清理成立            |
 | Phase 1  | 受管 OpenViking 的 Archive 发布中断/客户端重启，以及多个真实 Pi workload 形成的 Archive                     | 原子可见、幂等恢复、确定 expand、event/step 边界和每种真实样本的 Archive 完整性成立                                         |
 | Phase 2A | Phase 1 的各真实 Archive 与开发模型身份中的 VLM                                                             | checkpoint 来源/hash、失败重试、重启恢复和积压派生正确；实际 VLM 吞吐满足 manifest 阈值                                     |

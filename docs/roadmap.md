@@ -52,20 +52,21 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 收敛先于 Phase 1 的基线调查完成，因为该调查是观察记录的第一个消费者：步骤 2 要求用观察记录区分
 候选的原子机制，缺少统一记录就只能依赖一次性探针。
 
-- 建立 `shared/observe.mjs`：记录形状、单调序号、白名单脱敏、两种记录去向和启停，全部在此实现；
-- 把 `index.ts` 与 `sync.ts` 各自的 `debugLog` 收敛为该实现的调用；
-- 为 `client.ts` 的每次 HTTP 进出补 `boundary` 点位，逐条透出既有的 `traceId`；
-- 接通 `shared/recall-core.mjs` 已有的结构化点位，为 `tools.ts` 的边界判定补 `decision` 点位；
-- 按标准铺开 `transition`、`checkpoint` 与 `failure` 点位，覆盖“必须保持的系统保证”中每条降级、
-  拒绝和冲突路径；
-- 把 `scripts/e2e-probe.ts` 的 payload 采集收敛为使用同一实现的 FD 去向。
+- 建立 `shared/observe.mjs`：实现版本化 run/record、四类 stage schema、会话 hash、本地操作关联、字段白名单、
+  单一有界 writer、两种互斥去向与只读观察状态；
+- 把 `index.ts` 与 `sync.ts` 的 `OV_DEBUG_LOG` 自由文本日志收敛为职责模块内的结构化点位；
+- 为 `client.ts` 的 HTTP 请求建立成对 `boundary`，只记录 route 模板，并在实际响应存在时透出合法 `traceId`；
+- 为 Pi lifecycle 建立独立 boundary schema，接通 recall/tool/capability/ACK/fail-open 的最小 `decision`，并按实际
+  长生命周期状态和错误处置补 `state`、`failure`；
+- `/viking` 只读展示观察状态；`scripts/e2e-probe.ts` 继续承担原始 provider payload 验证，不并入观察记录。
 
 **验收**：
 
-- `docs/observability.md`“验证”一节的全部检查通过：脱敏、五类覆盖、关闭时零开销、两种去向等价、
-  记录不进入事实源；
-- 一次真实 Pi 运行产生的观察记录能够复原该次运行的 OpenViking 交互序列、分支选择与降级原因；
-- 仓库内不存在第二套观察点。
+- deterministic checks 证明版本与 stage schema、脱敏、关闭时无 I/O/序列化、固定输入下路径与 FD 字节等价，
+  sink 配置或写入失败只把 run 标为不完整，且观察记录不进入事实源；
+- `verify:observability:live` 的真实 Pi 成功与受控降级 workload 各产生一个完整 run，能够按 op 复原 OpenViking
+  交互、分支选择、状态变化和失败处置，且无非法记录、丢弃或未配对 boundary；
+- 仓库内不存在第二套运行过程观察。
 
 ### Phase 0：完整记录与最小可靠同步
 
@@ -246,9 +247,9 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 
 ## 下一实施入口
 
-当前入口是“可观测性基线（横切）”：先建立 `shared/observe.mjs` 与其脱敏、零开销和去向等价检查，
-再补 `client.ts` 的 `boundary` 点位并收敛两份 `debugLog`，随后按标准铺开其余四类点位。该基线达到
-其验收后，Phase 1 的基线调查即以统一观察记录为证据来源。
+当前入口是“可观测性基线（横切）”：先实现 `shared/observe.mjs` 的版本化记录、stage schema、关联、脱敏、
+有界 writer 和观察状态，再补成对 HTTP/lifecycle boundary 并删除两份 `OV_DEBUG_LOG`，最后按产品责任接通最小
+decision/state/failure。该基线通过成功与受控降级的真实验收后，Phase 1 的基线调查即以完整观察 run 为证据来源。
 
 其后是 Phase 1 的基线调查：按“实施顺序”的调查闭环先建立 `test/live/phase1.workloads.json`
 manifest，再对真实 OpenViking 0.4.13 运行 Archive 原子绑定与崩溃语义的最小基线探针；获得原子
