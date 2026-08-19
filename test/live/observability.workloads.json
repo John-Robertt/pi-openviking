@@ -23,7 +23,7 @@
     },
     "registry": {
       "schemaVersion": 1,
-      "sha256": "4c7349f181c392511fe43c4b3c04d974acfc40110bd93ed399fef534a957a275"
+      "sha256": "04f5023ca8911e7d44ca40c65137fd06d76d06a26f210519b46b165332a55b28"
     },
     "extensionLoadOrder": ["index.ts"]
   },
@@ -32,7 +32,7 @@
     "isolation": "HOME、PI_CODING_AGENT_DIR、session 与 observation artifact 全部位于 test/.artifacts/live/<runId>",
     "credentials": "开发模型 key 只通过子进程环境桥接，不写入 manifest、observation、session、summary 或日志"
   },
-  "deterministicStages": ["index_failure", "recall_failure", "tool_availability", "tool_scope"],
+  "deterministicStages": ["archive_commit", "archive_failure", "index_failure", "recall_failure", "tool_availability", "tool_scope"],
   "workloads": [
     {
       "id": "success-recall-sync",
@@ -53,6 +53,8 @@
         { "stage": "sync_ack", "data": { "mode": "change" } },
         { "stage": "sync_ack_advance", "data": { "branch": "advance", "capabilityVerified": true } },
         { "stage": "event_representation", "data": { "branch": "direct" } },
+        { "stage": "archive_plan", "data": { "branch": "idle", "planned": 0 } },
+        { "stage": "archive_state", "data": { "mode": "snapshot", "committed": 0, "current": null } },
         { "stage": "recall_request", "data": { "branch": "search" } },
         { "stage": "recall_source", "data": { "branch": "context_face" } },
         { "stage": "recall_result", "data": { "operation": "inject", "branch": "injected" } }

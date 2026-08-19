@@ -42,8 +42,20 @@ export function formatVikingCommand({ connected, sessionId, sync, observation })
     `观察：${observationText}`,
     `ACK frontier：${acknowledgedLeaves.length} 个 leaves`,
     `待重放：${pending} 个 entry`,
+    formatArchiveLine(sync?.archive),
   ];
   if (!connected && pending > 0) lines.push("主任务：fail-open，连接恢复后从 Pi 来源重放");
   if (sync?.lastFailure) lines.push(`最近同步失败：${sync.lastFailure}`);
+  if (sync?.archive?.lastFailure) lines.push(`最近 Archive 失败：${sync.archive.lastFailure}`);
   return lines.join("\n");
+}
+
+/** Archive 的提交状态、当前身份和待提交边界。 */
+function formatArchiveLine(archive) {
+  const committed = Math.max(0, Math.floor(Number(archive?.committed) || 0));
+  const waiting = Math.max(0, Math.floor(Number(archive?.pending) || 0));
+  const identity = typeof archive?.lastArchiveId === "string" && archive.lastArchiveId
+    ? archive.lastArchiveId
+    : "尚未形成";
+  return `Archive：已提交 ${committed} 个，待提交 ${waiting} 个（最近 ${identity}）`;
 }

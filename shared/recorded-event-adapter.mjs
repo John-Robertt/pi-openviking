@@ -1,19 +1,22 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJsonBytes } from "./canonical-json.mjs";
+import {
+  BATCH_MAX_FILE_BYTES,
+  ContentConflictError,
+  ContentWriteError,
+  ensureDirectoryChain,
+  writeContentObjects,
+} from "./content-objects.mjs";
 import { observation as processObservation } from "./observe.mjs";
-import { recordedEventBytes } from "./recorded-event.mjs";
+import { contentHash, recordedEventBytes, recordedEventId } from "./recorded-event.mjs";
 
 export const RECORDED_EVENT_STORAGE_VERSION = 1;
 const RECORDED_EVENT_STORAGE_SEGMENT = `recorded-events/v${RECORDED_EVENT_STORAGE_VERSION}`;
 
-export const BATCH_MAX_OPERATIONS = 128;
-export const BATCH_MAX_FILE_BYTES = 8 * 1024 * 1024;
-export const BATCH_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 export const EVENT_CHUNK_BYTES = 4 * 1024 * 1024;
 
 const STORAGE_DOMAIN = "pi-openviking/recorded-event-storage";
-const CREATE_IF_ABSENT = { kind: "create_if_absent" };
 
 function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -22,10 +25,6 @@ function sha256(bytes) {
 function requireEventId(eventId) {
   if (!/^evt_[0-9a-f]{64}$/.test(eventId)) throw new TypeError(`invalid RecordedEvent eventId: ${eventId}`);
   return eventId;
-}
-
-function joinUri(root, segment) {
-  return `${root.replace(/\/+$/, "")}/${segment}`;
 }
 
 function parentUri(uri) {
@@ -54,67 +53,28 @@ export function recordedEventStorageLocation(userRoot, sessionId, eventId) {
   };
 }
 
-export class RecordedEventConflictError extends Error {
-  constructor(message, uri) {
-    super(message);
-    this.name = "RecordedEventConflictError";
-    this.uri = uri;
+/**
+ * 逐项复算事件身份与内容 hash。
+ *
+ * 回读校验必须独立于写出路径：写出时的正确性不能证明读到的字节仍是同一个事件。
+ */
+export function verifyRecordedEventBytes(bytes, expectedEventId) {
+  let event;
+  try {
+    event = JSON.parse(bytes.toString("utf8"));
+  } catch (error) {
+    throw new ContentWriteError(`stored RecordedEvent is not valid JSON: ${expectedEventId}`);
   }
-}
-
-export class RecordedEventSyncError extends Error {
-  constructor(message, details = {}) {
-    super(message);
-    this.name = "RecordedEventSyncError";
-    Object.assign(this, details);
+  if (recordedEventId(event?.source) !== expectedEventId) {
+    throw new ContentConflictError("stored RecordedEvent identity does not match its location", expectedEventId);
   }
-}
-
-function strictBatchResult(response, rootUri, expectedUris) {
-  if (!response?.ok) {
-    if (response?.status === 409) {
-      const uri = response.error?.details?.resource || response.error?.resource || expectedUris[0];
-      throw new RecordedEventConflictError("RecordedEvent bytes conflict with an existing OpenViking object", uri);
-    }
-    throw new RecordedEventSyncError("OpenViking batch-write failed", {
-      status: Number(response?.status || 0),
-      error: response?.error,
-    });
+  if (event.eventId !== expectedEventId || contentHash(event.payload) !== event.contentHash) {
+    throw new ContentConflictError("stored RecordedEvent content hash does not match its payload", expectedEventId);
   }
-  const result = response.result;
-  if (!result || result.root_uri !== rootUri || !Array.isArray(result.created) ||
-      !Array.isArray(result.updated) || !Array.isArray(result.unchanged) || result.updated.length !== 0) {
-    throw new RecordedEventSyncError("OpenViking batch-write returned an invalid result");
+  if (!recordedEventBytes(event).equals(bytes)) {
+    throw new ContentConflictError("stored RecordedEvent bytes are not canonical", expectedEventId);
   }
-  const accepted = [...result.created, ...result.unchanged];
-  if (new Set(accepted).size !== accepted.length || accepted.some((uri) => typeof uri !== "string")) {
-    throw new RecordedEventSyncError("OpenViking batch-write returned duplicate or invalid URIs");
-  }
-  const expected = [...expectedUris].sort();
-  const actual = [...accepted].sort();
-  if (expected.length !== actual.length || expected.some((uri, index) => uri !== actual[index])) {
-    throw new RecordedEventSyncError("OpenViking batch-write did not confirm every requested URI");
-  }
-}
-
-function planBatches(objects) {
-  const batches = [];
-  let current = [];
-  let bytes = 0;
-  for (const object of objects) {
-    if (object.bytes.length > BATCH_MAX_FILE_BYTES) {
-      throw new RecordedEventSyncError(`OpenViking object exceeds 8 MiB: ${object.uri}`);
-    }
-    if (current.length >= BATCH_MAX_OPERATIONS || bytes + object.bytes.length > BATCH_MAX_TOTAL_BYTES) {
-      batches.push(current);
-      current = [];
-      bytes = 0;
-    }
-    current.push(object);
-    bytes += object.bytes.length;
-  }
-  if (current.length > 0) batches.push(current);
-  return batches;
+  return event;
 }
 
 export class RecordedEventAdapter {
@@ -126,62 +86,35 @@ export class RecordedEventAdapter {
     this.byteReadVerified = false;
   }
 
-  async ensureDirectory(uri) {
-    if (this.createdDirectories.has(uri)) return;
-    const status = await this.transport.statUri(uri);
-    if (status?.ok && status.exists) {
-      if (!status.isDir) throw new RecordedEventConflictError("RecordedEvent directory path is a file", uri);
-      this.createdDirectories.add(uri);
-      return;
-    }
-    const created = await this.transport.mkdirUri(uri);
-    if (!created?.ok) {
-      const raced = await this.transport.statUri(uri);
-      if (!raced?.ok || !raced.exists || !raced.isDir) {
-        throw new RecordedEventSyncError(`OpenViking mkdir failed: ${uri}`, {
-          status: Number(created?.status || 0),
-          error: created?.error,
-        });
-      }
-    }
-    this.createdDirectories.add(uri);
-  }
-
-  async ensureShard(shardRoot) {
-    const resourceRoot = `${this.userRoot.replace(/\/+$/, "")}/resources`;
-    const relative = shardRoot.slice(resourceRoot.length).split("/").filter(Boolean);
-    let current = resourceRoot;
-    for (const segment of relative) {
-      current = joinUri(current, segment);
-      await this.ensureDirectory(current);
-    }
+  get resourceRoot() {
+    return `${this.userRoot.replace(/\/+$/, "")}/resources`;
   }
 
   async assertRepresentationAbsent(uri, message) {
     const status = await this.transport.statUri(uri);
-    if (!status?.ok) throw new RecordedEventSyncError(`OpenViking stat failed: ${uri}`, { status: status?.status || 0 });
-    if (status.exists) throw new RecordedEventConflictError(message, uri);
+    if (!status?.ok) throw new ContentWriteError(`OpenViking stat failed: ${uri}`, { status: status?.status || 0 });
+    if (status.exists) throw new ContentConflictError(message, uri);
   }
 
+  /** 事件命名空间 append-only：任何 `updated` 都表示既有事件被改写。 */
   async writeObjects(rootUri, objects) {
     for (const directory of new Set(objects.map((object) => parentUri(object.uri)))) {
-      await this.ensureShard(directory);
+      await ensureDirectoryChain(this.transport, this.resourceRoot, directory, this.createdDirectories);
     }
-    for (const batch of planBatches(objects)) {
-      const operations = batch.map((object) => ({
-        uri: object.uri,
-        content_base64: object.bytes.toString("base64"),
-        precondition: CREATE_IF_ABSENT,
-      }));
-      const response = await this.transport.batchWrite({
-        root_uri: rootUri,
-        operations,
-        wait: false,
-      });
-      strictBatchResult(response, rootUri, batch.map((object) => object.uri));
+    const result = await writeContentObjects(this.transport, rootUri, objects);
+    if (result.updated.size !== 0) {
+      throw new ContentConflictError("OpenViking replaced an existing RecordedEvent object", [...result.updated][0]);
     }
   }
 
+  async downloadVerified(uri, expectedLength, expectedHash) {
+    const response = await this.transport.downloadBytes(uri);
+    if (!response?.ok || !Buffer.isBuffer(response.bytes) ||
+        response.bytes.length !== expectedLength || sha256(response.bytes) !== expectedHash) {
+      throw new ContentWriteError(`OpenViking byte verification failed: ${uri}`);
+    }
+    return response.bytes;
+  }
 
   async writeChunked(event, location, bytes) {
     await this.assertRepresentationAbsent(location.directUri, "direct representation already exists for event");
@@ -202,24 +135,17 @@ export class RecordedEventAdapter {
       eventId: event.eventId,
       eventHash: sha256(bytes),
       byteLength: bytes.length,
-      chunks: chunks.map(({ index, uri, byteLength, contentHash }) => ({ index, uri, byteLength, contentHash })),
+      chunks: chunks.map(({ index, uri, byteLength, contentHash: hash }) => ({ index, uri, byteLength, contentHash: hash })),
     };
     const claimBytes = canonicalJsonBytes(claim);
     await this.writeObjects(location.sessionRoot, [{ uri: location.claimUri, bytes: claimBytes }]);
     await this.writeObjects(location.sessionRoot, chunks.map((chunk) => ({ uri: chunk.uri, bytes: chunk.bytes })));
 
     const downloaded = [];
-    for (const chunk of chunks) {
-      const response = await this.transport.downloadBytes(chunk.uri);
-      if (!response?.ok || !Buffer.isBuffer(response.bytes) ||
-          response.bytes.length !== chunk.byteLength || sha256(response.bytes) !== chunk.contentHash) {
-        throw new RecordedEventSyncError(`OpenViking chunk verification failed: ${chunk.uri}`);
-      }
-      downloaded.push(response.bytes);
-    }
+    for (const chunk of chunks) downloaded.push(await this.downloadVerified(chunk.uri, chunk.byteLength, chunk.contentHash));
     const reconstructed = Buffer.concat(downloaded);
     if (reconstructed.length !== claim.byteLength || sha256(reconstructed) !== claim.eventHash) {
-      throw new RecordedEventSyncError(`OpenViking event verification failed: ${event.eventId}`);
+      throw new ContentWriteError(`OpenViking event verification failed: ${event.eventId}`);
     }
     this.byteReadVerified = true;
 
@@ -238,7 +164,7 @@ export class RecordedEventAdapter {
     for (const event of events) {
       requireEventId(event?.eventId);
       if (event?.source?.sessionId !== sessionId) {
-        throw new RecordedEventSyncError(`RecordedEvent session mismatch: ${event?.eventId || "unknown"}`);
+        throw new ContentWriteError(`RecordedEvent session mismatch: ${event?.eventId || "unknown"}`);
       }
       const bytes = recordedEventBytes(event);
       const location = recordedEventStorageLocation(this.userRoot, sessionId, event.eventId);
@@ -259,7 +185,7 @@ export class RecordedEventAdapter {
       const sample = direct[0];
       const downloaded = await this.transport.downloadBytes(sample.location.directUri);
       if (!downloaded?.ok || !Buffer.isBuffer(downloaded.bytes) || !downloaded.bytes.equals(sample.bytes)) {
-        throw new RecordedEventSyncError(`OpenViking direct byte verification failed: ${sample.location.directUri}`);
+        throw new ContentWriteError(`OpenViking direct byte verification failed: ${sample.location.directUri}`);
       }
       this.byteReadVerified = true;
     }
@@ -269,5 +195,44 @@ export class RecordedEventAdapter {
       acceptedEventIds: events.map((event) => event.eventId),
       capabilityVerified: this.byteReadVerified,
     };
+  }
+
+  /**
+   * 按 event ID 回读已接受事件，direct 与 chunked 两种表示都复算到规范字节。
+   *
+   * 没有有效 commit marker 的 chunked 事件不是已接受事件，因此这里只承认
+   * commit marker 存在且 claim 与全部 chunk 都校验通过的结果。
+   */
+  async readEvent(sessionId, eventId) {
+    const location = recordedEventStorageLocation(this.userRoot, sessionId, requireEventId(eventId));
+    const direct = await this.transport.statUri(location.directUri);
+    if (!direct?.ok) throw new ContentWriteError(`OpenViking stat failed: ${location.directUri}`, { status: direct?.status || 0 });
+    if (direct.exists) {
+      const response = await this.transport.downloadBytes(location.directUri);
+      if (!response?.ok || !Buffer.isBuffer(response.bytes)) {
+        throw new ContentWriteError(`OpenViking download failed: ${location.directUri}`);
+      }
+      return { event: verifyRecordedEventBytes(response.bytes, eventId), bytes: response.bytes };
+    }
+
+    const commit = await this.transport.statUri(location.commitUri);
+    if (!commit?.ok) throw new ContentWriteError(`OpenViking stat failed: ${location.commitUri}`, { status: commit?.status || 0 });
+    if (!commit.exists) throw new ContentWriteError(`RecordedEvent is not stored: ${eventId}`);
+
+    const commitResponse = await this.transport.downloadBytes(location.commitUri);
+    const claimResponse = await this.transport.downloadBytes(location.claimUri);
+    if (!commitResponse?.ok || !claimResponse?.ok) throw new ContentWriteError(`OpenViking download failed: ${eventId}`);
+    const marker = JSON.parse(commitResponse.bytes.toString("utf8"));
+    const claim = JSON.parse(claimResponse.bytes.toString("utf8"));
+    if (marker?.eventId !== eventId || marker?.claimHash !== sha256(claimResponse.bytes) || claim?.eventId !== eventId) {
+      throw new ContentConflictError("stored RecordedEvent commit marker does not match its claim", location.commitUri);
+    }
+    const parts = [];
+    for (const chunk of claim.chunks) parts.push(await this.downloadVerified(chunk.uri, chunk.byteLength, chunk.contentHash));
+    const bytes = Buffer.concat(parts);
+    if (bytes.length !== claim.byteLength || sha256(bytes) !== claim.eventHash) {
+      throw new ContentConflictError("stored RecordedEvent chunks do not reassemble to the claimed event", location.claimUri);
+    }
+    return { event: verifyRecordedEventBytes(bytes, eventId), bytes };
   }
 }

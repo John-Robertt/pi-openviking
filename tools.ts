@@ -302,11 +302,10 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
   pi.registerTool({
     name: "viking_archive_expand",
     label: "Viking Archive Expand",
-    description: "Expand an archived session back into raw messages. Use when the archive summary is too coarse and you need detailed conversation history.",
-    promptSnippet: "Expand an archived session to see raw conversation messages",
+    description: "Expand an archive of this session back into its raw recorded events, verified against the archive manifest.",
+    promptSnippet: "Expand an archive of this session into its raw recorded events",
     parameters: Type.Object({
-      archive_id: Type.Optional(Type.String({ description: "Archive ID to expand" })),
-      session_id: Type.Optional(Type.String({ description: "OV session ID to expand" })),
+      archive_id: Type.String({ description: "Archive ID (arc_<64 hex>) produced by this session" }),
     }),
     async execute(
       _id: string, params: any, _signal: AbortSignal,
@@ -315,34 +314,26 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
       if (unavailable("viking_archive_expand")) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
-      const sid = String(params.session_id ?? params.archive_id ?? "").trim();
-      if (!sid) {
-        return { content: [{ type: "text", text: "Provide session_id or archive_id." }] };
+      const archiveId = String(params.archive_id ?? "").trim();
+      // Archive 位置由当前 Pi session 推导，跨会话展开在命名空间层面不可寻址；
+      // 这里只需要拒绝形状非法的标识，避免把任意字符串带进 URI 组合。
+      if (!/^arc_[0-9a-f]{64}$/.test(archiveId)) {
+        observe.emit("tool_scope", "viking_archive_expand", "archive", Boolean(scoped()), "deny", 0, 1);
+        return { content: [{ type: "text", text: `Refused: ${archiveId || "(empty)"} is not a valid archive id.` }] };
       }
-      // `viking://session` 是独立于 viking://user 的顶层作用域，denyOutside 表达不了
-      // 它的归属。会话边界在这里的含义是本次会话自己的 OV session：展开其他 session
-      // 就是跨会话读取。精确相等同时排除了 `../` 拼接出的穿越路径。
-      const root = scoped();
-      if (root && sid !== sync.sessionId) {
-        observe.emit("tool_scope", "viking_archive_expand", "archive", true, "deny", 0, 1);
-        return {
-          content: [{ type: "text", text: `Refused: this session may only expand its own archive (${sync.sessionId ?? "unavailable"}).` }],
-        };
+      observe.emit("tool_scope", "viking_archive_expand", "archive", Boolean(scoped()), "allow", 1, 0);
+      try {
+        const { manifest, events } = await sync.expandArchive(archiveId);
+        const header = [
+          `archive ${manifest.archiveId}`,
+          `events ${manifest.eventCount} (${manifest.firstEventId} → ${manifest.lastEventId})`,
+          `content ${manifest.contentHash}`,
+        ].join("\n");
+        const body = events.map((event: any) => JSON.stringify(event.payload)).join("\n");
+        return { content: [{ type: "text", text: `${header}\n\n${body}` }] };
+      } catch (error: any) {
+        return { content: [{ type: "text", text: `Archive not available: ${error?.name || "Error"}` }] };
       }
-      if (!/^[A-Za-z0-9._-]+$/.test(sid)) {
-        observe.emit("tool_scope", "viking_archive_expand", "archive", Boolean(root), "deny", 0, 1);
-        return { content: [{ type: "text", text: `Refused: ${sid} is not a valid session id.` }] };
-      }
-      observe.emit("tool_scope", "viking_archive_expand", "archive", Boolean(root), "allow", 1, 0);
-      const uri = `viking://session/${sid}`;
-      const content = await client.overview(uri);
-      if (content) return { content: [{ type: "text", text: content }] };
-      // Archive 正文可能只在 history 子目录下可读。
-      const history = await client.overview(`${uri}/history`);
-      if (!history) {
-        return { content: [{ type: "text", text: `Archive not found: ${sid}` }] };
-      }
-      return { content: [{ type: "text", text: history }] };
     },
   });
 }

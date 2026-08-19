@@ -36,6 +36,7 @@ function client() {
   return {
     connected: true,
     userRoot: "viking://user/test",
+    cfg: { archive: { chunkTokenBudget: 20000, rawTailTokenBudget: 30000 } },
     resolveUserSpace: async () => "test",
     fetchJSON: async () => ({ ok: true, result: {} }),
   };
@@ -260,6 +261,7 @@ test("未配置用户时把解析空间同时绑定到 URI、header 和 ACK targ
   const store = new MemoryEventStore();
   const resolvingClient = {
     userRoot: "",
+    cfg: { archive: { chunkTokenBudget: 20000, rawTailTokenBudget: 30000 } },
     recordedEventTarget: { endpoint: "https://example.test", account: "account", user: "" },
     resolveUserSpace: async () => "resolved-user",
     bindUser(user) {

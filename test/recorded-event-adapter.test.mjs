@@ -5,9 +5,11 @@ import {
   BATCH_MAX_FILE_BYTES,
   BATCH_MAX_OPERATIONS,
   BATCH_MAX_TOTAL_BYTES,
+  ContentConflictError,
+  ContentWriteError,
+} from "../shared/content-objects.mjs";
+import {
   RecordedEventAdapter,
-  RecordedEventConflictError,
-  RecordedEventSyncError,
   recordedEventStorageLocation,
 } from "../shared/recorded-event-adapter.mjs";
 import { contentHash, projectPiEntries, recordedEventBytes, recordedEventId } from "../shared/recorded-event.mjs";
@@ -221,12 +223,12 @@ test("同 event ID 不同规范字节返回完整性冲突且严格拒绝缺失�
   changed.contentHash = contentHash(changed.payload);
   await assert.rejects(
     () => writer.writeEvents(trace.sessionId, [changed]),
-    (error) => error instanceof RecordedEventConflictError && error.uri === location.directUri,
+    (error) => error instanceof ContentConflictError && error.uri === location.directUri,
   );
 
   const secondTransport = new MemoryContentTransport();
   secondTransport.omitConfirmation = true;
-  await assert.rejects(() => adapter(secondTransport).writeEvents(trace.sessionId, [event]), RecordedEventSyncError);
+  await assert.rejects(() => adapter(secondTransport).writeEvents(trace.sessionId, [event]), ContentWriteError);
 
   const corruptTransport = new MemoryContentTransport();
   corruptTransport.corruptDownload = true;

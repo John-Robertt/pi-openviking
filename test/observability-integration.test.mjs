@@ -6,7 +6,11 @@ import test from "node:test";
 import { OVClient } from "../client.ts";
 import { RecallManager } from "../recall.ts";
 import { SyncManager } from "../sync.ts";
+import { archiveManifestBytes, buildArchiveManifest, planArchives } from "../shared/archive.mjs";
+import { ArchiveManager, archiveStorageLocation } from "../shared/archive-store.mjs";
 import { OBSERVATION_STAGE_REGISTRY, createObservation, validateObservationRecord } from "../shared/observe.mjs";
+import { RecordedEventAdapter } from "../shared/recorded-event-adapter.mjs";
+import { ARCHIVE_USER_ROOT, MemoryContentTransport, archiveEvents } from "./fixtures/archive-fixtures.mjs";
 import { buildPhase0LongTrace } from "./fixtures/phase0-long-trace.mjs";
 import { registerTools } from "../tools.ts";
 import { guardVikingUriToolCall } from "../lib/uri-guard-adapter.mjs";
@@ -166,6 +170,7 @@ test("sync 成功推进与失败保持待重放由同一责任模块解释，产
   };
   const client = {
     userRoot: "viking://user/private",
+    cfg: { archive: { chunkTokenBudget: 20000, rawTailTokenBudget: 30000 } },
     recordedEventTarget: { endpoint: "https://private.invalid", account: "dev", user: "private" },
     resolveUserSpace: async () => "private",
     bindUser() {},
@@ -194,6 +199,56 @@ test("sync 成功推进与失败保持待重放由同一责任模块解释，产
   assert.ok(records.some((record) => record.stage === "sync_failure" && record.data.branch === "pending_replay"));
   assert.ok(records.some((record) => record.stage === "sync_capability" && record.data.to === "ready"));
   assert.equal(records.at(-1).data.dropped, 0);
+});
+
+test("Archive 提交与失败由同一责任模块解释，只记录分支、计数与协议 hash", async () => {
+  const { path, observation } = observationFor("archive");
+  const sessionId = "observability-archive-session";
+  const events = archiveEvents(sessionId);
+  const transport = new MemoryContentTransport();
+  const adapter = new RecordedEventAdapter(transport, { userRoot: ARCHIVE_USER_ROOT, observation });
+  await adapter.writeEvents(sessionId, events);
+  const manager = new ArchiveManager(transport, {
+    userRoot: ARCHIVE_USER_ROOT,
+    adapter,
+    budgets: { chunkTokenBudget: 1000, rawTailTokenBudget: 1000 },
+    observation,
+  });
+
+  const committed = await manager.formArchives(sessionId, events);
+  assert.equal(committed.committed, 3);
+
+  const conflicting = new ArchiveManager(transport, {
+    userRoot: ARCHIVE_USER_ROOT,
+    adapter,
+    budgets: { chunkTokenBudget: 1000, rawTailTokenBudget: 1000 },
+    observation,
+  });
+  const first = planArchives(events, { chunkTokenBudget: 1000, rawTailTokenBudget: 1000 })[0];
+  const range = events.slice(first.startIndex, first.endIndex + 1);
+  const location = archiveStorageLocation(ARCHIVE_USER_ROOT, sessionId, buildArchiveManifest(sessionId, range).archiveId);
+  transport.files.set(location.manifestUri, archiveManifestBytes({
+    ...buildArchiveManifest(sessionId, range),
+    contentHash: `sha256:${"c".repeat(64)}`,
+  }));
+  const failed = await conflicting.formArchives(sessionId, events);
+  assert.equal(failed.committed, 0);
+  manager.observeFinalState();
+  await observation.finish();
+
+  const { raw, records } = readRun(path);
+  assert.doesNotMatch(raw, new RegExp(sessionId));
+  assert.doesNotMatch(raw, /viking:\/\//);
+  assert.ok(records.some((record) => record.stage === "archive_plan" && record.data.branch === "form"));
+  assert.ok(records.some((record) => record.stage === "archive_commit" && record.data.branch === "created"));
+  assert.ok(records.some((record) => record.stage === "archive_state" && record.data.mode === "change"));
+  const snapshot = records.find((record) => record.stage === "archive_state" && record.data.mode === "snapshot");
+  assert.equal(snapshot.data.committed, 3);
+  assert.match(snapshot.data.current, /^[0-9a-f]{64}$/);
+  const failure = records.find((record) => record.stage === "archive_failure");
+  assert.equal(failure.data.errorCode, "manifest_integrity");
+  assert.equal(failure.data.errorClass, "integrity");
+  assert.equal(failure.data.branch, "pending_retry");
 });
 
 test("recall 只记录来源、数量与注入结果，不记录 query、内容或 URI", async () => {

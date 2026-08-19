@@ -15,7 +15,7 @@ const MY_ROOT = `viking://user/${MY_USER}`;
 const OUTSIDE = "viking://user/dev--pi-OTHER/memories/secret.md";
 
 /** 桩服务器故意忽略 target_uri 并返回越界命中，用于验证扩展自身的核验。 */
-async function harness({ sessionScopedMemory = true } = {}) {
+async function harness({ sessionScopedMemory = true, sync = { sessionId: "pi-x" } } = {}) {
   const requests = [];
   const server = createServer(async (req, res) => {
     const chunks = [];
@@ -50,7 +50,7 @@ async function harness({ sessionScopedMemory = true } = {}) {
   await client.health();
 
   const tools = new Map();
-  registerTools({ registerTool: (tool) => tools.set(tool.name, tool) }, client, { sessionId: "pi-x" });
+  registerTools({ registerTool: (tool) => tools.set(tool.name, tool) }, client, sync);
 
   const run = async (name, params) => {
     requests.length = 0;
@@ -120,21 +120,37 @@ test("越界读取与浏览被拒绝，绑定根内放行", async () => {
   }
 });
 
-test("Archive 展开只允许本会话自己的 OV session", async () => {
-  const { run, close } = await harness();
+test("Archive 展开只接受本会话命名空间内的合法 archiveId", async () => {
+  const expansions = [];
+  const { run, close } = await harness({
+    sync: {
+      sessionId: "pi-x",
+      async expandArchive(archiveId) {
+        expansions.push(archiveId);
+        return {
+          manifest: {
+            archiveId,
+            eventCount: 1,
+            firstEventId: `evt_${"1".repeat(64)}`,
+            lastEventId: `evt_${"1".repeat(64)}`,
+            contentHash: `sha256:${"2".repeat(64)}`,
+          },
+          events: [{ payload: { entry: { id: "entry-0" } } }],
+        };
+      },
+    },
+  });
   try {
-    const foreign = await run("viking_archive_expand", { session_id: "pi-someone-else" });
-    assert.match(foreign.text, /^Refused:/);
-    assert.deepEqual(foreign.requests, [], "越界 session 不得发出请求");
+    for (const rejected of ["", "pi-someone-else", "../user/dev--pi-OTHER/memories", `arc_${"z".repeat(64)}`]) {
+      const result = await run("viking_archive_expand", { archive_id: rejected });
+      assert.match(result.text, /^Refused:/);
+      assert.deepEqual(result.requests, [], "形状非法的 archiveId 不得发出请求");
+    }
+    assert.deepEqual(expansions, [], "拒绝路径不得触达 Archive 存储");
 
-    // 精确相等的要求同时排除了 `../` 拼接出的穿越路径。
-    const traversal = await run("viking_archive_expand", { session_id: "../user/dev--pi-OTHER/memories" });
-    assert.match(traversal.text, /^Refused:/);
-    assert.deepEqual(traversal.requests, []);
-
-    const own = await run("viking_archive_expand", { session_id: "pi-x" });
-    assert.equal(own.text, "content body");
-    assert.equal(own.requests[0].query, "uri=viking://session/pi-x");
+    const own = await run("viking_archive_expand", { archive_id: `arc_${"a".repeat(64)}` });
+    assert.match(own.text, new RegExp(`^archive arc_a{64}\\nevents 1 `));
+    assert.deepEqual(expansions, [`arc_${"a".repeat(64)}`]);
   } finally {
     await close();
   }
