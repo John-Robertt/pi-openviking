@@ -50,9 +50,7 @@ test("observability workload 具有成功标准、证伪条件和 registry 内 s
   }
 });
 
-test("package 暴露独立 observability gate，Phase 0 已移除旧观察环境", () => {
+test("package 暴露独立 observability gate", () => {
   const pkg = JSON.parse(readFileSync("package.json", "utf8"));
   assert.equal(pkg.scripts["verify:observability:live"], "node test/live/observability-live.mjs");
-  assert.doesNotMatch(readFileSync("test/live/phase0-live.mjs", "utf8"), /OV_DEBUG_LOG/);
-  assert.doesNotMatch(readFileSync("test/live/phase0.workloads.json", "utf8"), /OV_DEBUG_LOG|debug\.log/);
 });

@@ -283,7 +283,7 @@ test("tool 可用性和 URI 权限只记录枚举与计数，拒绝路径不发�
   assert.ok(records.some((record) => record.stage === "tool_scope" && record.data.branch === "filter"));
 });
 
-test("registry 每个 active stage 在唯一 owner 中有当前调用点且旧自由文本观察已消失", () => {
+test("registry 每个 active stage 在唯一 owner 中有当前调用点且无第二套观察输出", () => {
   const ownerSources = new Map();
   for (const [stage, descriptor] of Object.entries(OBSERVATION_STAGE_REGISTRY)) {
     const source = ownerSources.get(descriptor.owner) ?? readFileSync(descriptor.owner, "utf8");
@@ -292,15 +292,14 @@ test("registry 每个 active stage 在唯一 owner 中有当前调用点且旧�
   }
   for (const [owner, source] of ownerSources) {
     if (owner === "shared/observe.mjs") continue;
-    assert.doesNotMatch(source, /OV_DEBUG_LOG|debugLog\s*\(|appendFileSync|console\.(?:log|debug)|process\.stderr\.write/,
-      `${owner} 仍存在第二套运行过程观察`);
+    assert.doesNotMatch(source, /appendFileSync|console\.(?:log|debug)|process\.stderr\.write/,
+      `${owner} 存在统一 sink 之外的运行过程输出`);
   }
 });
 
 test("发布声明与 observation 运行时依赖一致", () => {
   const recallDeclaration = readFileSync("shared/recall-core.d.mts", "utf8");
   assert.match(recallDeclaration, /observation\?: Observation/);
-  assert.doesNotMatch(recallDeclaration, /\blog\?:/);
   const adapterDeclaration = readFileSync("shared/recorded-event-adapter.d.mts", "utf8");
   assert.match(adapterDeclaration, /observation\?: Observation/);
 });

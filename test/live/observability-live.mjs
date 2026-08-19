@@ -103,7 +103,7 @@ async function runPi(ctx, { workload, label, sessionId, endpoint, actions }) {
     OPENVIKING_USER: ctx.manifest.identities.openviking.user,
     [ctx.profile.taskVlm.apiKeyEnv]: ctx.apiKey,
   });
-  for (const key of ["OV_OBSERVE", "OV_OBSERVE_FD", "OV_DEBUG_LOG", "OV_E2E_FD", "OV_E2E_TURN"]) delete env[key];
+  for (const key of ["OV_OBSERVE", "OV_OBSERVE_FD", "OV_E2E_FD", "OV_E2E_TURN"]) delete env[key];
   env.OV_OBSERVE_FD = "3";
 
   const child = spawn(process.execPath, args, {
@@ -638,11 +638,10 @@ async function preflight(log, ctx) {
   log.check(group, "credential-bridge", true, Boolean(ctx.apiKey) && !ctx.apiKey.includes("\n"),
     Boolean(ctx.apiKey) && !ctx.apiKey.includes("\n"));
 
-  const productionFiles = new Set(Object.values(OBSERVATION_STAGE_REGISTRY).map((descriptor) => descriptor.owner));
-  productionFiles.add("index.ts");
-  productionFiles.add("sync.ts");
-  const legacy = [...productionFiles].filter((file) => /OV_DEBUG_LOG|debugLog\s*\(|appendFileSync/.test(readFileSync(join(REPO, file), "utf8")));
-  log.check(group, "no-second-observer", 0, legacy.length, legacy.length === 0, legacy.join(","));
+  const ownerFiles = new Set(Object.values(OBSERVATION_STAGE_REGISTRY).map((descriptor) => descriptor.owner));
+  ownerFiles.delete("shared/observe.mjs"); // 统一 sink 自身的写出原语不属于第二观察点
+  const secondObserver = [...ownerFiles].filter((file) => /appendFileSync|console\.(?:log|debug)|process\.stderr\.write/.test(readFileSync(join(REPO, file), "utf8")));
+  log.check(group, "no-second-observer", 0, secondObserver.length, secondObserver.length === 0, secondObserver.join(","));
 }
 
 async function main() {

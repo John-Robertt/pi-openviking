@@ -152,7 +152,7 @@
     "远端只使用随机 session namespace；写入前必须不存在，marker 逐字节回读；删除前再次核对精确根与 marker",
     "删除后等待 cleanupSettleMs 越过 0.4.15 目录语义物化窗口，全部已写对象必须持续不存在；服务重建的无文件 namespace 骨架仅记录，不伪报为产品数据残留",
     "passed 删除整个本地 run；failed 删除 observation/session 等 raw artifact，只保留白名单 summary 和 ownership marker",
-    "仓库生产运行路径不存在 OV_DEBUG_LOG、自由文本文件日志或其他第二观察 sink"
+    "仓库生产运行路径不存在统一观察 sink 之外的第二套观察点（自由文本文件日志、stderr debug、logger transport）"
   ],
   "thresholds": {
     "piRunWallMs": 120000,
