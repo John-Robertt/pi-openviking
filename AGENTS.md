@@ -46,6 +46,11 @@ Pi JSONL / in-memory entries
   → OpenViking Content API
   → minimal SyncAck frontier
 
+confirmed events on the current branch
+  → archive plan (context weight + step boundary)
+  → archive manifest commit point
+  → self-proving manifest + parentId-chain expand
+
 user prompt
   → recall search
   → profile / recall block
@@ -55,7 +60,7 @@ user prompt
 
 `index.ts` 绑定 Pi 生命周期并协调健康检查、同步、召回和工具；`sync.ts` 是来源、事件写入和 ACK 的唯一
 协调者；`client.ts` 只负责 OpenViking transport。
-Archive、Checkpoint、`ActiveContext` 和上下文接管的当前可用范围由 `docs/roadmap.md` 的实施状态及对应阶段
+Checkpoint、`ActiveContext` 和上下文接管的当前可用范围由 `docs/roadmap.md` 的实施状态及对应阶段
 gate 共同证明；配置字段只表达其权威文档定义的策略。
 
 ## 必须保持的系统保证
@@ -68,6 +73,7 @@ gate 共同证明；配置字段只表达其权威文档定义的策略。
 - 一个 Pi entry 的全部事件得到明确接受后推进 `SyncAck`；每个已确认 entry 都有可追踪的接受证据。
 - 网络、recall、VLM 或 OpenViking 降级时，Pi 主任务继续运行；完整性冲突保留原对象并返回可诊断失败。
 - Pi 独立控制 compaction；扩展通过生命周期钩子观察结果并提供上下文。
+- Archive 只在 manifest 自证成立且回读证明全部引用事件有效后存在；崩溃残留不是 Archive，同一范围只有一个逻辑对象。
 - Archive、Checkpoint 和 `ActiveContext` 依次消费前一阶段已经通过 deterministic checks 与 live gate 的状态。
 - session-scoped 模式下，所有接收或返回 `viking://` URI 的工具执行绑定用户与会话边界校验。
 - 凭证只在已授权进程的内存和环境中传递，仓库、日志、状态文件、测试输入和 artifact 保持无凭证。
@@ -81,7 +87,8 @@ gate 共同证明；配置字段只表达其权威文档定义的策略。
 | JSONL、分支或 session 恢复              | `docs/spec.md`“完整记录事件/可靠增量同步”     | `shared/pi-session-source.mjs`、`sync.ts`                                                      | `test/pi-session-runtime.test.mjs`、`test/session-source-ack.test.mjs`         |
 | 事件身份、payload、turn/step            | `docs/spec.md`“完整记录事件”                  | `shared/canonical-json.mjs`、`shared/recorded-event.mjs`                                       | `test/recorded-event.test.mjs`、`test/generated-session-invariants.test.mjs`   |
 | ACK、重放、并发或 fail-open             | `docs/spec.md`“可靠增量同步”                  | `sync.ts`、`shared/sync-ack.mjs`                                                               | `test/sync-manager.test.mjs`、`test/session-source-ack.test.mjs`               |
-| Content API、批次、大对象或冲突         | `docs/spec.md` 存储契约                       | `client.ts`、`shared/recorded-event-adapter.mjs`                                               | `test/client-content.test.mjs`、`test/recorded-event-adapter.test.mjs`         |
+| Content API、批次、大对象或冲突         | `docs/spec.md` 存储契约                       | `client.ts`、`shared/content-objects.mjs`、`shared/recorded-event-adapter.mjs`                 | `test/client-content.test.mjs`、`test/content-objects.test.mjs`、`test/recorded-event-adapter.test.mjs` |
+| Archive 身份、边界、提交或 expand       | `docs/spec.md`“Archive 是一个原子对象”         | `shared/archive.mjs`、`shared/archive-store.mjs`、`sync.ts`                                    | `test/archive.test.mjs`、`verify:phase1:live`                                  |
 | recall、profile 或 provider context     | `docs/spec.md` 检索/上下文边界                | `recall.ts`、`shared/recall-core.mjs`、`shared/profile-inject.mjs`                             | `test/recall.test.mjs`、阶段 provider payload gate                             |
 | 观察 registry、sink、脱敏或点位        | `docs/observability.md`                       | `shared/observe.mjs` 与 registry 声明的 owner                                                   | `test/observe.test.mjs`、`test/observability-integration.test.mjs`、observability gate |
 | `viking_*` 工具及 URI 权限              | `docs/usage.md`“会话隔离与数据位置”、“工具”   | `tools.ts`、`lib/uri-guard-adapter.mjs`、`shared/uri-guard.mjs`                                | `test/tools-boundary.test.mjs`                                                 |

@@ -198,31 +198,62 @@ leaf 用于恢复活动分支，但不会排除 sibling branch 的事实。ACK f
 
 ### 3. Archive 是一个原子对象
 
-Archive 由事件及其 manifest 共同组成：
+Archive 是一段已确认事件的原子绑定。事件本身已由同步层持久化为 immutable 对象，因此 Archive 只
+持久化一份 manifest：
 
 ```ts
-interface Archive {
-  manifest: {
-    archiveId: string;
-    firstEventId: string;
-    lastEventId: string;
-    eventCount: number;
-    contentHash: string;
-  };
-  events: RecordedEventV1[];
+interface ArchiveManifestV1 {
+  schemaVersion: 1;
+  type: "archive-manifest";
+  sessionId: string;
+  archiveId: string;
+  firstEventId: string;
+  lastEventId: string;
+  eventCount: number;
+  lastStepId: string | null;
+  contentHash: string;
 }
 ```
 
-Archive manifest 定义收录范围并绑定 immutable event identity、顺序和 hash。Phase 0 Content adapter
-只证明单个事件对象的字节幂等，不提供 Archive 多对象原子绑定；不得把一次 `batch-write` 或客户端
-先后写入直接当作 Archive 已提交。Phase 1 必须通过真实 OpenViking 操作调查，选择能够提供崩溃恢复、
-幂等身份和原子可见性的最小机制。只有该机制的独立验收证明 manifest 与全部引用同时有效后，Archive
-才存在并可进入 VLM 处理和上下文接管。
+`archiveId` 为 `arc_` 加规范数组
+`["pi-openviking/archive", 1, sessionId, firstEventId, lastEventId, eventCount]` 的 SHA-256 小写十六进制；
+`contentHash` 是 `sha256:<hex>`，对规范数组
+`["pi-openviking/archive", 1, "content", 逐事件完整规范字节的 sha256 列表]` 计算，因而同时绑定事件身份、
+内容和顺序。manifest 保持常数大小：事件序列不写入 manifest，读取时从 `lastEventId` 沿事件自身的
+`parentId` 回溯 `eventCount` 步得到，并以到达 `firstEventId` 和复算 `contentHash` 证明完整。
+
+manifest 位于：
+
+```text
+viking://user/{storageUser}/resources/.pi-openviking/archives/v1/
+└── {sessionKey}/
+    └── {archiveId 中 arc_ 后 digest 的前两位}/
+        └── .{archiveId}.json
+```
+
+`sessionKey` 是规范数组 `["pi-openviking/archive-storage", 1, "session", sessionId]` 的 SHA-256。
+
+OpenViking Content API 不提供多对象原子可见性，单对象写入在进程崩溃后也可能留下不完整字节，因此
+Archive 的原子性不依赖服务端写入语义，而由三条规则共同提供：
+
+1. **唯一提交点**——manifest 是 Archive 唯一持久化的对象，只在全部引用事件已被接受后写入；不得把
+   一次 `batch-write` 或客户端先后写入直接当作 Archive 已提交。
+2. **接受证明**——写入 manifest 前逐项回读被引用事件，复算 event identity、规范字节与聚合
+   `contentHash`；Phase 0 的事件 commit marker 不能代替该证明。
+3. **内容自证**——只有能解析、能复算出同一 `archiveId` 且规范字节与读到的字节完全一致的内容才是
+   Archive。崩溃残留因此等价于不存在：它从来不是已接受对象，恢复时按其实际 hash 就地替换；已自证
+   但绑定不同内容的 manifest 才是完整性冲突，保留原对象并返回可诊断失败。
+
+同一 event 范围重复提交得到同一 `archiveId` 与同一字节，不产生第二个逻辑对象。Archive 失败不改变
+已经持久化的事件和 ACK。
 
 Archive 创建由 token/step 压力驱动，支持单个超长用户轮次，并保持
-assistant/tool call/result step 边界完整。首次 Archive 的目标压力为
+assistant/tool call/result step 边界完整。压力轴是分支事件自身的上下文权重之和——度量对象是事件进入
+上下文的内容，不是一次 provider 请求的累计 usage（后者含 system prompt 与工具定义，与事件范围不同
+尺度）。首次 Archive 的目标压力为
 `archive.rawTailTokenBudget + archive.chunkTokenBudget`，之后每累计一个
-`archive.chunkTokenBudget` 形成下一 Archive，同时保留 `archive.rawTailTokenBudget`。
+`archive.chunkTokenBudget` 形成下一 Archive，同时保留 `archive.rawTailTokenBudget`。边界落在压力轴的
+绝对位置上，因而后续事件不会移动已固定的边界；候选边界若会拆开一个 step，则退回该 step 起点之前。
 
 ### 4. Checkpoint 生成与消费状态
 
@@ -414,7 +445,7 @@ batch-write、raw download、mkdir 和严格响应语义；路由缺失、请求
   marker 创建后，才属于 OpenViking 已接受事件；
 - ACK frontier 只在 OpenViking 确认接受后推进，queue status、请求已发送或本地 pending payload
   均不构成 ACK；
-- Archive 只有在 Phase 1 验证的原子机制同时证明 manifest 和全部引用有效后才可见；
+- Archive 只有在 manifest 自证成立且回读证明全部引用事件有效后才可见；
 - Archive 的事件身份、顺序和 hash 可复现；
 - 上下文接管包含完整 raw tail 和所有待归档事件；
 - 持久化 Pi session 支持崩溃恢复，未持久化 session 提供进程内 best-effort 同步。
