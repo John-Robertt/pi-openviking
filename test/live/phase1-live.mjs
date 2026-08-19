@@ -22,7 +22,7 @@ import {
   parseArchiveManifest,
   planArchives,
 } from "../../shared/archive.mjs";
-import { archiveStorageLocation } from "../../shared/archive-store.mjs";
+import { archiveSessionRoot, archiveStorageLocation } from "../../shared/archive-store.mjs";
 import { openVikingApiPath } from "../../shared/openviking-api.mjs";
 import { parsePiSessionJsonl } from "../../shared/pi-session-source.mjs";
 import { projectPiEntries, recordedEventBytes } from "../../shared/recorded-event.mjs";
@@ -39,8 +39,6 @@ import {
   sha256Hex,
   summarizeRun,
 } from "./live-support.mjs";
-
-const PROBE_ARCHIVE_ID = `arc_${"0".repeat(64)}`;
 
 // ---------------------------------------------------------------------------
 // Session setup and source correspondence
@@ -75,13 +73,13 @@ async function seedPressure(ctx, sessionFile) {
     manager.appendCustomEntry("ov-live-blob", { index, blob: blob.slice(0, blobChars) });
   }
 }
-const archiveSessionRoot = (ctx) => archiveStorageLocation(ctx.userRoot, ctx.sessionId, PROBE_ARCHIVE_ID).sessionRoot;
+const sessionArchiveRoot = (ctx) => archiveSessionRoot(ctx.userRoot, ctx.sessionId);
 
 async function branchEvents(ctx, sessionFile) {
   const parsed = parsePiSessionJsonl(await readFile(sessionFile, "utf8"), { sessionId: ctx.sessionId });
   const events = projectPiEntries(ctx.sessionId, parsed.entries);
   const onBranch = new Set(parsed.branch.map((entry) => entry.id));
-  return { parsed, events, branch: events.filter((event) => onBranch.has(event.source.entryId)) };
+  return { parsed, branch: events.filter((event) => onBranch.has(event.source.entryId)) };
 }
 
 /**
@@ -101,7 +99,7 @@ function expectedArchives(ctx, branch) {
 /** 本会话 Archive 命名空间下的可见对象；隐藏 manifest 不得出现在普通 ls 中。 */
 async function visibleArchiveObjects(ctx) {
   const visible = [];
-  for (const shard of await ctx.client.ls(archiveSessionRoot(ctx))) {
+  for (const shard of await ctx.client.ls(sessionArchiveRoot(ctx))) {
     if (!shard.isDir) { visible.push(shard.uri); continue; }
     for (const file of await ctx.client.ls(shard.uri)) if (!file.isDir) visible.push(file.uri);
   }
@@ -185,12 +183,9 @@ async function verifyArchives(log, ctx, archiveIds, branch, label) {
       failures.push(`${archiveId}: expanded bytes differ from projected source events`);
       continue;
     }
-    if ((source.at(-1).stepId ?? null) !== manifest.lastStepId) {
-      failures.push(`${archiveId}: lastStepId does not match the boundary event`);
-      continue;
-    }
+    const boundaryStep = source.at(-1).stepId;
     const next = branch[endIndex + 1];
-    if (manifest.lastStepId && next && next.stepId === manifest.lastStepId) {
+    if (boundaryStep && next && next.stepId === boundaryStep) {
       failures.push(`${archiveId}: boundary splits step`);
       continue;
     }
@@ -213,7 +208,6 @@ async function verifyArchives(log, ctx, archiveIds, branch, label) {
   const retained = (series.at(-1) ?? 0) - (lastEnd >= 0 ? series[lastEnd] : 0);
   log.check(w, `${label}.raw-tail-retained`, `>=${budgets.rawTailTokenBudget}`, retained,
     retained >= budgets.rawTailTokenBudget, "归档必须保留配置要求的最近原始上下文预算");
-  return { ranges, failures };
 }
 
 /** /viking 输出中的 Archive 行：已提交数、最近 archiveId 与失败提示。 */
@@ -236,7 +230,7 @@ function ackPathFor(ctx) {
 async function replaceManifestBytes(ctx, archiveId, bytes, baseBytes) {
   const uri = archiveStorageLocation(ctx.userRoot, ctx.sessionId, archiveId).manifestUri;
   const response = await ctx.client.batchWrite({
-    root_uri: archiveSessionRoot(ctx),
+    root_uri: sessionArchiveRoot(ctx),
     operations: [{
       uri,
       content_base64: bytes.toString("base64"),

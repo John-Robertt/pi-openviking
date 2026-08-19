@@ -44,7 +44,6 @@ export interface SyncStatus {
 interface SyncManagerOptions {
   ackPathForSession?: (sessionId: string) => string | null;
   adapterFactory?: (client: OVClient, userRoot: string) => RecordedEventAdapter;
-  archiveFactory?: (client: OVClient, userRoot: string, adapter: RecordedEventAdapter) => ArchiveManager;
   observation?: Observation;
 }
 
@@ -127,14 +126,12 @@ export class SyncManager {
     this.adapter = this.options.adapterFactory
       ? this.options.adapterFactory(this.client, userRoot)
       : new RecordedEventAdapter(this.client, { userRoot, observation: this.observe });
-    this.archives = this.options.archiveFactory
-      ? this.options.archiveFactory(this.client, userRoot, this.adapter)
-      : new ArchiveManager(this.client, {
-          userRoot,
-          adapter: this.adapter,
-          budgets: this.client.cfg.archive,
-          observation: this.observe,
-        });
+    this.archives = new ArchiveManager(this.client, {
+      userRoot,
+      adapter: this.adapter,
+      budgets: this.client.cfg.archive,
+      observation: this.observe,
+    });
 
     this.ackPath = this.options.ackPathForSession
       ? this.options.ackPathForSession(piSessionId)

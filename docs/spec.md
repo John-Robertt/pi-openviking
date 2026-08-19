@@ -210,7 +210,6 @@ interface ArchiveManifestV1 {
   firstEventId: string;
   lastEventId: string;
   eventCount: number;
-  lastStepId: string | null;
   contentHash: string;
 }
 ```

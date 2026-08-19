@@ -22,17 +22,18 @@ workload、身份与阈值由 `test/live/phase0.workloads.json` 及其固定 has
 sink/schema fail-open、字节一致性和职责模块接点由 deterministic checks 证明，`verify:observability:live` 在固定
 manifest/hash 下覆盖成功 recall/同步、断线、409 冲突、URI 拒绝和持久清理。该 gate 此后作为每个阶段的常驻出口条件。
 
-**Phase 1 阶段出口已关闭。** Archive 的原子机制由真实 0.4.15 上的基线调查选定：Content API 既不提供
-多对象原子可见性（128 对象 batch-write 期间可见数逐步增长），单对象写入在崩溃后也会留下 0 字节内容，
-因此原子性由“唯一 manifest 提交点 + 回读接受证明 + 内容自证 + 残留替换恢复”提供，机制与被证伪的候选
-记录在 `test/live/phase1.workloads.json` 的 `mechanism`。`npm test` 提供 deterministic 证据，
-`verify:phase1:live` 在真实 Pi lifecycle 与受管 OpenViking 上覆盖 Archive 形成、崩溃残留恢复、受管重启
-幂等和完整性冲突 fail-open。
+**Phase 1 的专有证据已齐备，阶段出口在常驻 gate 恢复前保持未关闭。** Archive 的原子机制由真实 0.4.15
+上的基线调查选定，机制、实测证据与被证伪的候选记录在 `test/live/phase1.workloads.json` 的 `mechanism`。
+`npm test` 提供 deterministic 证据，`verify:phase1:live` 在真实 Pi lifecycle 与受管 OpenViking 上覆盖
+Archive 形成、崩溃残留恢复、受管重启幂等和完整性冲突 fail-open。
 
-**已知未通过项**：`verify:observability:live` 的 `tool-uri-rejection` workload 当前失败
-（`pi-read-blocked`、`tool-uri-live.expected-records`）。该失败在 Phase 1 改动前的 `ad32ef4` 上同样复现，
-属于既有问题：该 workload 依赖模型按提示逐字调用内置 `read`，模型未照做时断言退化。修复方向是让该
-workload 不依赖模型自由选择工具，或改由确定性触发 guard。
+**阻塞出口的既有项**：常驻的 `verify:observability:live` 中 `tool-uri-rejection` workload 失败
+（`pi-read-blocked`、`tool-uri-live.expected-records`）。该失败在 Phase 1 改动前的 `ad32ef4` 上同样复现：
+该 workload 依赖模型按提示逐字调用内置 `read`，模型未照做时断言退化为环境噪声。修复方向是让该 workload
+由确定性输入触发 guard，而不是依赖模型自由选择工具。
+
+**待收敛项**：`test/live/observability-live.mjs` 仍保留自己的 Pi 驱动、身份核对、ownership 与清理实现，
+未使用 `test/live/live-support.mjs` 的统一骨架；修复上述 workload 时一并收敛。
 
 **当前工作是 Phase 2A 的基线调查；Phase 2A 实现尚未开始。**
 

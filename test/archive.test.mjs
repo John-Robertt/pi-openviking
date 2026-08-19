@@ -15,10 +15,12 @@ import { ArchiveManager, archiveStorageLocation } from "../shared/archive-store.
 import { ContentBusyError, ContentConflictError } from "../shared/content-objects.mjs";
 import { RecordedEventAdapter } from "../shared/recorded-event-adapter.mjs";
 import { recordedEventBytes } from "../shared/recorded-event.mjs";
+import { projectPiEntries } from "../shared/recorded-event.mjs";
 import {
   ARCHIVE_LINEAR_CHAIN,
   ARCHIVE_USER_ROOT as USER_ROOT,
   MemoryContentTransport,
+  archiveEntryChain,
   archiveEvents,
 } from "./fixtures/archive-fixtures.mjs";
 
@@ -80,10 +82,10 @@ test("事件权重度量的是进入上下文的内容，不依赖 provider 是�
   const events = eventsOf();
   for (const event of events) assert.equal(eventTokenWeight(event), 1000);
   assert.equal(eventTokenWeight({ payload: { part: { value: "x".repeat(10) } } }), 3);
-  // 没有可分 part 的事件按其完整 entry 规范字节折算，仍然确定。
-  const opaque = { payload: { entry: { type: "custom", data: "y".repeat(40) } } };
-  assert.equal(eventTokenWeight(opaque), eventTokenWeight(opaque));
-  assert.ok(eventTokenWeight(opaque) > 10);
+  // 按 UTF-8 字节折算：同样 10 个字符的 CJK 内容权重更高。
+  assert.equal(eventTokenWeight({ payload: { part: { value: "中".repeat(10) } } }), 8);
+  // 没有可分 part 的事件按其完整 entry 规范字节折算。
+  assert.equal(eventTokenWeight({ payload: { entry: { type: "custom", data: "y".repeat(40) } } }), 17);
 });
 
 test("Archive 边界落在压力轴的绝对位置，后续增长不移动既有边界", () => {
@@ -204,7 +206,6 @@ test("按 archiveId 展开得到确定且完整的源事件序列", async () => 
   assert.equal(manifest.eventCount, 3);
   assert.equal(manifest.firstEventId, range[0].eventId);
   assert.equal(manifest.lastEventId, range.at(-1).eventId);
-  assert.equal(manifest.lastStepId, range.at(-1).stepId ?? null);
 
   const expanded = await manager.expand(SESSION, id);
   assert.deepEqual(expanded.events.map((event) => event.eventId), range.map((event) => event.eventId));
@@ -213,7 +214,7 @@ test("按 archiveId 展开得到确定且完整的源事件序列", async () => 
 
 test("展开时事件被改写即失败，未提交的 archiveId 不可读", async () => {
   const events = eventsOf();
-  const { transport, manager, adapter } = await storedManager(events);
+  const { transport, manager } = await storedManager(events);
   const range = events.slice(0, 3);
   const { archiveId: id } = await manager.commit(SESSION, range);
 
@@ -225,7 +226,6 @@ test("展开时事件被改写即失败，未提交的 archiveId 不可读", asy
 
   const unknown = archiveId(SESSION, range[0].eventId, range[1].eventId, 2);
   await assert.rejects(() => manager.read(SESSION, unknown), ArchiveIntegrityError);
-  assert.ok(adapter);
 });
 
 test("formArchives 按计划提交全部到期 Archive 并保持幂等", async () => {
@@ -243,6 +243,40 @@ test("formArchives 按计划提交全部到期 Archive 并保持幂等", async (
   assert.equal(again.created, 0);
   assert.equal(again.committed, 3);
   assert.equal([...transport.files.keys()].filter((uri) => uri.includes("/archives/v1/")).length, 3);
+});
+
+test("切换分支后重算：另一条分支上的 Archive 必须全部提交，计数描述当前分支", async () => {
+  const common = [{ role: "user", chars: 4000 }, { role: "assistant", chars: 4000 }];
+  const tail = [{ role: "assistant", chars: 4000 }, { role: "assistant", chars: 4000 }, { role: "assistant", chars: 4000 }];
+  const entries = (suffix) => {
+    const chain = archiveEntryChain([...common, ...tail]);
+    return chain.map((entry, index) => (index < common.length ? entry : {
+      ...entry,
+      id: `${suffix}-${entry.id}`,
+      parentId: index === common.length ? chain[index - 1].id : `${suffix}-${chain[index - 1].id}`,
+    }));
+  };
+  const eventsA = projectPiEntries(SESSION, entries("a"));
+  const eventsB = projectPiEntries(SESSION, entries("b"));
+
+  const transport = new MemoryContentTransport();
+  const adapter = new RecordedEventAdapter(transport, { userRoot: USER_ROOT });
+  await adapter.writeEvents(SESSION, eventsA);
+  await adapter.writeEvents(SESSION, eventsB.filter((event) => !eventsA.some((other) => other.eventId === event.eventId)));
+  const manager = new ArchiveManager(transport, { userRoot: USER_ROOT, adapter, budgets: BUDGETS });
+
+  const onA = await manager.formArchives(SESSION, eventsA);
+  const onB = await manager.formArchives(SESSION, eventsB);
+  assert.ok(onA.planned > 0 && onB.planned > 0);
+
+  for (const [label, events, result] of [["A", eventsA, onA], ["B", eventsB, onB]]) {
+    const expected = planArchives(events, BUDGETS)
+      .map((plan) => buildArchiveManifest(SESSION, events.slice(plan.startIndex, plan.endIndex + 1)).archiveId);
+    const missing = expected.filter((id) => !transport.files.has(archiveStorageLocation(USER_ROOT, SESSION, id).manifestUri));
+    assert.deepEqual(missing, [], `分支 ${label} 的 Archive 未全部提交`);
+    assert.equal(result.committed, expected.length, `分支 ${label} 的已提交计数与当前分支计划不符`);
+    assert.equal(result.pending, 0);
+  }
 });
 
 test("路径占用是可重试失败：Archive 保持待提交，已确认事件不受影响", async () => {
@@ -263,11 +297,3 @@ test("路径占用是可重试失败：Archive 保持待提交，已确认事件
   assert.equal(recovered.lastFailure, null);
 });
 
-test("路径占用直接暴露为可重试错误，不冒充完整性冲突", async () => {
-  const events = eventsOf();
-  const { transport, manager } = await storedManager(events);
-  const range = events.slice(0, 3);
-  transport.busyOnce = archiveStorageLocation(USER_ROOT, SESSION, buildArchiveManifest(SESSION, range).archiveId).manifestUri;
-  await assert.rejects(() => manager.commit(SESSION, range), (error) =>
-    error instanceof ContentBusyError && !(error instanceof ArchiveIntegrityError));
-});

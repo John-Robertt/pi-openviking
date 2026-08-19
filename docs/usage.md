@@ -123,8 +123,8 @@ npx pi-openviking@latest credentials
 ```
 
 `archive.chunkTokenBudget` 控制每次 Archive 的目标增量，`archive.rawTailTokenBudget` 控制归档后保留
-的最近原始上下文；两者的当前值是候选预算，最终值由端到端校准确定。`takeover` 用于固定后续阶段的
-目标策略；在 `ActiveContext` 实现并通过验收前，不会替换上下文。
+的最近原始上下文。`takeover` 用于固定后续阶段的目标策略；在 `ActiveContext` 实现并通过验收前，不会
+替换上下文。
 
 ### 受管服务代理
 

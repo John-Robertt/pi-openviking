@@ -115,7 +115,7 @@
         "Archive 命名空间内至少 1 个 manifest 对象；对象数等于 /viking 报告的已提交数",
         "每个 manifest 字节可 parseArchiveManifest 自证（复算 archiveId 与规范字节一致）",
         "按 archiveId expand：沿 parentId 回溯 eventCount 步到达 firstEventId，逐事件规范字节与本地投影一致，聚合 contentHash 与 manifest 相等",
-        "每个 Archive 的 lastStepId 与其末事件一致，且分支中下一事件不属于该 step",
+        "每个 Archive 的末事件所属 step 不延续到分支中的下一事件（边界不拆 step）",
         "各 Archive 范围在分支事件序列上连续且互不重叠"
       ],
       "falsification": [

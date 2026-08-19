@@ -184,6 +184,7 @@ archive ──► archive-store ───► content-objects ───► OpenVi
 - `test/observation-evidence.test.mjs`、`test/observability-live-verifier.test.mjs`：完整 run 与 manifest 契约；
 - `test/viking-status.test.mjs`：运行诊断。
 
-真实边界由 `npm run verify:observability:live` 覆盖成功 recall/同步、断线、409 冲突、URI 拒绝与持久清理，
-由 `npm run verify:phase1:live` 覆盖真实 Archive 形成、崩溃残留恢复、受管重启幂等与完整性冲突 fail-open。
-阶段 gate 的 Pi 驱动、身份核对、ownership、清理与 summary 骨架由 `test/live/live-support.mjs` 统一承担。
+真实边界由 `npm run verify:observability:live` 与 `npm run verify:phase1:live` 覆盖；各 gate 的断言范围见
+[`docs/verification.md`](./verification.md)。`verify:phase0:live` 与 `verify:phase1:live` 共用
+`test/live/live-support.mjs` 的 Pi 驱动、身份核对、ownership、清理与 summary 骨架；
+`test/live/observability-live.mjs` 仍保留自己的同职能实现，尚未收敛到该骨架。

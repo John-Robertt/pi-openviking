@@ -9,14 +9,13 @@ import { createHash } from "node:crypto";
 import { canonicalJsonBytes } from "./canonical-json.mjs";
 import { recordedEventBytes } from "./recorded-event.mjs";
 
-export const ARCHIVE_SCHEMA_VERSION = 1;
-export const ARCHIVE_IDENTITY_VERSION = 1;
+const ARCHIVE_SCHEMA_VERSION = 1;
+const ARCHIVE_IDENTITY_VERSION = 1;
 
 const ARCHIVE_DOMAIN = "pi-openviking/archive";
 const ARCHIVE_ID_PATTERN = /^arc_[0-9a-f]{64}$/;
 const EVENT_ID_PATTERN = /^evt_[0-9a-f]{64}$/;
 const CONTENT_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
-const STEP_ID_PATTERN = /^step_[0-9a-f]{64}$/;
 
 /** manifest 无法复算出自己声明的身份或内容：该字节不是一个 Archive。 */
 export class ArchiveIntegrityError extends Error {
@@ -66,7 +65,6 @@ export function buildArchiveManifest(sessionId, events) {
     firstEventId: first.eventId,
     lastEventId: last.eventId,
     eventCount: events.length,
-    lastStepId: typeof last.stepId === "string" ? last.stepId : null,
     contentHash: archiveContentHash(events),
   };
 }
@@ -92,15 +90,14 @@ export function parseArchiveManifest(bytes) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new ArchiveIntegrityError("Archive manifest is not an object");
   }
-  const { schemaVersion, type, sessionId, firstEventId, lastEventId, eventCount, lastStepId, contentHash } = manifest;
+  const { schemaVersion, type, sessionId, firstEventId, lastEventId, eventCount, contentHash } = manifest;
   if (schemaVersion !== ARCHIVE_SCHEMA_VERSION || type !== "archive-manifest") {
     throw new ArchiveIntegrityError("Archive manifest schema is not supported", manifest.archiveId);
   }
   if (typeof sessionId !== "string" || sessionId.length === 0 ||
       !EVENT_ID_PATTERN.test(firstEventId) || !EVENT_ID_PATTERN.test(lastEventId) ||
       !Number.isSafeInteger(eventCount) || eventCount <= 0 ||
-      !CONTENT_HASH_PATTERN.test(contentHash) ||
-      !(lastStepId === null || STEP_ID_PATTERN.test(lastStepId))) {
+      !CONTENT_HASH_PATTERN.test(contentHash)) {
     throw new ArchiveIntegrityError("Archive manifest fields are not well formed", manifest.archiveId);
   }
   if (!ARCHIVE_ID_PATTERN.test(manifest.archiveId) ||
@@ -116,7 +113,6 @@ export function parseArchiveManifest(bytes) {
     firstEventId,
     lastEventId,
     eventCount,
-    lastStepId,
     contentHash,
   };
   if (!archiveManifestBytes(normalized).equals(Buffer.from(bytes))) {
@@ -130,8 +126,11 @@ export function parseArchiveManifest(bytes) {
  *
  * 度量对象是事件实际进入上下文的内容，不是一次请求的累计 usage：`chunkTokenBudget`
  * 与 `rawTailTokenBudget` 约束的是“这段事件占多少上下文”，而 provider 的 usage 是
- * 含 system prompt 与工具定义的请求总量，两者不同尺度。折算沿用 Pi 自身的保守估算
- * （每 4 字节约 1 token），因此不依赖 provider 是否报告计量，同一事件恒得同一权重。
+ * 含 system prompt 与工具定义的请求总量，两者不同尺度。
+ *
+ * 折算按 UTF-8 字节数除以 4，而不是字符数除以 4：后者对 CJK 会低估约三倍，使同一预算
+ * 在不同语种下表达完全不同的上下文量。这个常数是策略量，最终值由端到端校准确定；同一
+ * 事件恒得同一权重，因此不依赖 provider 是否报告计量。
  */
 export function eventTokenWeight(event) {
   const part = event?.payload?.part;

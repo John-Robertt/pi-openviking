@@ -250,7 +250,6 @@ test("生成的长工具循环在单个用户轮次内形成连续、原子且�
       const manifest = buildArchiveManifest(sample.sessionId, range);
       assert.deepEqual(parseArchiveManifest(archiveManifestBytes(manifest)), manifest, `seed=${seed}`);
       assert.equal(manifest.contentHash, archiveContentHash(range));
-      assert.equal(manifest.lastStepId, range.at(-1).stepId ?? null);
       assert.equal(identities.has(manifest.archiveId), false, `seed=${seed} 重复 archiveId`);
       identities.add(manifest.archiveId);
     }

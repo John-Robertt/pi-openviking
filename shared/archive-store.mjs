@@ -1,19 +1,16 @@
 // Archive 在 OpenViking 上的提交点。
 //
-// 实测事实：一次 batch-write 的多个对象逐个变为可见，进程崩溃还会在目标 URI 上留下
-// 0 字节内容。因此 Archive 的原子性不能来自服务端写入语义，而由三条规则共同提供：
-//
-// 1. 唯一提交点——事件已经是同步层确认过的 immutable 对象，Archive 只写一个 manifest；
-// 2. 内容自证——manifest 必须能复算出自己的 `archiveId` 与规范字节，崩溃残留因此
-//    等价于“不存在”；
-// 3. 残留替换——未通过自证的字节从来不是 Archive，恢复时按其实际 hash 替换它，
-//    已自证但范围不同的 manifest 才是真正的完整性冲突。
+// 规则本身见 `docs/spec.md` 的“Archive 是一个原子对象”。这里只记录它们为什么不能更简单：
+// 实测中一次 batch-write 的多个对象逐个变为可见，进程崩溃还会在目标 URI 上留下 0 字节
+// 内容，因此“写成功”与“对象存在”都不能作为接受证明，原子性只能由唯一提交点加内容自证
+// 提供，而不能依赖服务端写入语义。
 
 import { createHash } from "node:crypto";
 
 import {
   ArchiveIntegrityError,
   archiveContentHash,
+  archiveId,
   archiveManifestBytes,
   buildArchiveManifest,
   parseArchiveManifest,
@@ -30,7 +27,7 @@ import {
 import { observation as processObservation } from "./observe.mjs";
 import { recordedEventBytes } from "./recorded-event.mjs";
 
-export const ARCHIVE_STORAGE_VERSION = 1;
+const ARCHIVE_STORAGE_VERSION = 1;
 const ARCHIVE_STORAGE_SEGMENT = `archives/v${ARCHIVE_STORAGE_VERSION}`;
 const ARCHIVE_STORAGE_DOMAIN = "pi-openviking/archive-storage";
 const ARCHIVE_ID_PATTERN = /^arc_[0-9a-f]{64}$/;
@@ -39,23 +36,22 @@ function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
-export function archiveStorageLocation(userRoot, sessionId, archiveId) {
+/** 一个会话的 Archive 命名空间根。 */
+export function archiveSessionRoot(userRoot, sessionId) {
   const root = String(userRoot || "").replace(/\/+$/, "");
   if (!/^viking:\/\/user\/[^/]+$/.test(root)) throw new TypeError("Archive storage requires a bound user root");
   if (typeof sessionId !== "string" || sessionId.length === 0) throw new TypeError("sessionId must be a non-empty string");
-  if (!ARCHIVE_ID_PATTERN.test(archiveId)) throw new TypeError(`invalid archiveId: ${archiveId}`);
   const sessionKey = createHash("sha256")
     .update(canonicalJsonBytes([ARCHIVE_STORAGE_DOMAIN, ARCHIVE_STORAGE_VERSION, "session", sessionId]))
     .digest("hex");
-  const digest = archiveId.slice(4);
-  const sessionRoot = `${root}/resources/.pi-openviking/${ARCHIVE_STORAGE_SEGMENT}/${sessionKey}`;
-  const shardRoot = `${sessionRoot}/${digest.slice(0, 2)}`;
-  return {
-    sessionKey,
-    sessionRoot,
-    shardRoot,
-    manifestUri: `${shardRoot}/.${archiveId}.json`,
-  };
+  return `${root}/resources/.pi-openviking/${ARCHIVE_STORAGE_SEGMENT}/${sessionKey}`;
+}
+
+export function archiveStorageLocation(userRoot, sessionId, id) {
+  if (!ARCHIVE_ID_PATTERN.test(id)) throw new TypeError(`invalid archiveId: ${id}`);
+  const sessionRoot = archiveSessionRoot(userRoot, sessionId);
+  const shardRoot = `${sessionRoot}/${id.slice(4, 6)}`;
+  return { sessionRoot, shardRoot, manifestUri: `${shardRoot}/.${id}.json` };
 }
 
 export class ArchiveManager {
@@ -66,7 +62,9 @@ export class ArchiveManager {
     this.budgets = budgets;
     this.observe = observation;
     this.createdDirectories = new Set();
-    this.committed = new Map();
+    // 已在本进程确认提交的 archiveId。键必须是身份而不是位置：分支切换后同一下标
+    // 指向不同事件，按位置缓存会让另一条分支上的 Archive 被静默跳过。
+    this.confirmed = new Set();
     this.state = { committed: 0, lastArchiveId: null, pending: 0, lastFailure: null };
   }
 
@@ -81,25 +79,35 @@ export class ArchiveManager {
   /**
    * 在一条已确认事件链上形成全部到期的 Archive。
    *
-   * 计划只由事件自身携带的实测 token 决定，因此重复调用得到同一组 Archive；提交是
-   * 幂等的，已提交的 Archive 只做一次读回自证。
+   * 计划只由事件自身的上下文权重决定，因此重复调用得到同一组 Archive；提交是幂等的，
+   * 已确认的 Archive 只做一次读回自证。计数取自当前来源重算出的计划，不是进程内累加，
+   * 因此换分支或重启后仍然描述当前分支的真实进度。
    */
   async formArchives(sessionId, events) {
     const previous = { ...this.state };
     let planned = 0;
     let created = 0;
     try {
-      const plans = planArchives(events, this.budgets);
+      const plans = planArchives(events, this.budgets).map((plan) => ({
+        ...plan,
+        archiveId: archiveId(
+          sessionId,
+          events[plan.startIndex].eventId,
+          events[plan.endIndex].eventId,
+          plan.endIndex - plan.startIndex + 1,
+        ),
+      }));
       planned = plans.length;
-      this.state.pending = plans.filter((plan) => !this.committed.has(plan.endIndex)).length;
-      this.observe.emit("archive_plan", plans.length, this.state.pending, events.length);
+      this.state.committed = plans.filter((plan) => this.confirmed.has(plan.archiveId)).length;
+      this.state.pending = planned - this.state.committed;
+      this.observe.emit("archive_plan", planned, this.state.pending, events.length);
       for (const plan of plans) {
-        if (this.committed.has(plan.endIndex)) continue;
+        if (this.confirmed.has(plan.archiveId)) continue;
         const result = await this.commit(sessionId, events.slice(plan.startIndex, plan.endIndex + 1));
-        this.committed.set(plan.endIndex, result.archiveId);
-        this.state.committed = this.committed.size;
-        this.state.lastArchiveId = result.archiveId;
+        this.confirmed.add(result.archiveId);
+        this.state.committed += 1;
         this.state.pending = Math.max(0, this.state.pending - 1);
+        this.state.lastArchiveId = result.archiveId;
         this.state.lastFailure = null;
         if (result.branch !== "already_committed") created++;
       }
@@ -129,7 +137,6 @@ export class ArchiveManager {
 
     const existing = await this.readManifestBytes(location.manifestUri);
     if (existing && existing.equals(bytes)) {
-      parseArchiveManifest(existing);
       this.observe.emit("archive_commit", "already_committed", manifest.eventCount);
       return { archiveId: manifest.archiveId, branch: "already_committed", manifest };
     }
@@ -167,7 +174,6 @@ export class ArchiveManager {
     if (!stored || !stored.equals(bytes)) {
       throw new ArchiveIntegrityError("Archive manifest read-back does not match the committed bytes", manifest.archiveId);
     }
-    parseArchiveManifest(stored);
     const branch = existing ? "repaired_residue" : "created";
     this.observe.emit("archive_commit", branch, manifest.eventCount);
     return { archiveId: manifest.archiveId, branch, manifest };
@@ -188,10 +194,9 @@ export class ArchiveManager {
       }
       stored.push(readBack.event);
     }
+    // 逐项字节相等已经蕴含聚合 hash 相等；这里只需再证明被收录的范围本身是一条连续链，
+    // 因为 manifest 的构造不检查连续性。
     assertEventChain(stored, manifest);
-    if (archiveContentHash(stored) !== manifest.contentHash) {
-      throw new ArchiveIntegrityError("archived events do not recompute the manifest content hash", manifest.archiveId);
-    }
   }
 
   async readManifestBytes(uri) {
@@ -251,9 +256,6 @@ function assertEventChain(events, manifest) {
   }
   if (events[0].eventId !== manifest.firstEventId || events.at(-1).eventId !== manifest.lastEventId) {
     throw new ArchiveIntegrityError("archived event boundaries do not match the manifest", manifest.archiveId);
-  }
-  if ((events.at(-1).stepId ?? null) !== manifest.lastStepId) {
-    throw new ArchiveIntegrityError("archived step boundary does not match the manifest", manifest.archiveId);
   }
   for (let index = 1; index < events.length; index++) {
     if (events[index].parentId !== events[index - 1].eventId) {
