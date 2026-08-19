@@ -60,8 +60,7 @@
       "OPENVIKING_USER": "dev",
       "<profile.taskVlm.apiKeyEnv>": "spawn 时从用户 pi 登录态桥接（pi auth print-api-key），不持久化、不写入任何 artifact",
       "OV_E2E_FD": "3（verifier 以 wx/0600 预开的 segment 文件，继承给子进程）",
-      "OV_E2E_TURN": "<该 workload 内第几次 Pi 启动，从 0 开始>",
-      "OV_DEBUG_LOG": "<run>/debug.log"
+      "OV_E2E_TURN": "<该 workload 内第几次 Pi 启动，从 0 开始>"
     },
     "storageUserDerivation": "dev--pi-<sessionId>（config sessionScopedMemory 默认值与 OPENVIKING_USER=dev 的既有语义）",
     "sessionIdDerivation": "每个 workload 一个 randomUUID；启动前以此预计算 namespace 并做存在性检查",
@@ -185,7 +184,7 @@
     "本地 ownership：run 目录 <repo>/test/.artifacts/live/<runId> 以 wx/0600 建立 owner.marker（runId、manifest hash、随机 nonce）；每次重启 Pi 前重新核对 marker 字节与权限",
     "远端 ownership：每个 workload 写入前 stat viking://user/<storageUser> 不存在；以 create_if_absent 在其 resources/.pi-openviking 下写入 owner marker（runId、manifest hash、nonce），逐字节回读",
     "清理：先记录脱敏测量与证据 hash；逐 workload 复核 marker 字节与精确根路径后 DELETE recursive；stat 确认 404；等待 cleanupSettleMs 越过服务端目录骨架物化窗口后，逐 URI 断言全部已写对象（marker、direct、claim/chunks/commit、冲突注入）仍为 404；任何远端清理失败使 gate 失败。0.4.13 兼容性事实：namespace 删除后服务端目录语义管线会物化空目录骨架（不含任何文件），骨架再现作为观察记录，不构成失败",
-    "本地清理：删除前逐 segment 重算 hash 并与捕获时记录比对（payload 写出后不可变）；passed 时删除整个 run 目录；失败时删除全部 segment（raw provider payload）与会话 JSONL，仅保留白名单脱敏诊断（summary.json、debug.log、owner.marker、ACK 文件）；任一删除失败使 gate 失败",
+    "本地清理：删除前逐 segment 重算 hash 并与捕获时记录比对（payload 写出后不可变）；passed 时删除整个 run 目录；失败时删除全部 segment（raw provider payload）与会话 JSONL，仅保留白名单脱敏诊断（summary.json、owner.marker、ACK 文件）；任一删除失败使 gate 失败",
     "summary：版本化 JSON 输出到 stdout 并写入 run 目录，含 phase、runId、manifestSha256、逐项 expected/actual/delta、证据文件 hash、实际 token/时长、cleanup；passed 只由全部必要断言与清理派生，退出码一致"
   ],
 

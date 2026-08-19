@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJsonBytes } from "./canonical-json.mjs";
+import { observation as processObservation } from "./observe.mjs";
 import { recordedEventBytes } from "./recorded-event.mjs";
 
 export const BATCH_MAX_OPERATIONS = 128;
@@ -114,9 +115,10 @@ function planBatches(objects) {
 }
 
 export class RecordedEventAdapter {
-  constructor(transport, { userRoot }) {
+  constructor(transport, { userRoot, observation = processObservation }) {
     this.transport = transport;
     this.userRoot = userRoot;
+    this.observation = observation;
     this.createdDirectories = new Set();
     this.byteReadVerified = false;
   }
@@ -240,7 +242,7 @@ export class RecordedEventAdapter {
       if (bytes.length <= BATCH_MAX_FILE_BYTES) direct.push({ event, location, bytes });
       else chunked.push({ event, location, bytes });
     }
-
+    this.observation.emit("event_representation", direct, chunked);
     for (const item of direct) {
       await this.assertRepresentationAbsent(item.location.claimUri, "chunked representation already exists for event");
     }

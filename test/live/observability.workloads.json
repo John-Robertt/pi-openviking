@@ -1,0 +1,179 @@
+{
+  "schemaVersion": 1,
+  "gate": "verify:observability:live",
+  "phase": "observability",
+  "purpose": "在真实 Pi lifecycle、真实同步、受支持 OpenViking 以及受控断线、URI 拒绝和 409 冲突上，证明统一观察 run 完整、安全、只观察且能够复原当前全链路。",
+  "identities": {
+    "pi": {
+      "package": "@earendil-works/pi-coding-agent",
+      "version": "0.84.2",
+      "binPath": "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+    },
+    "node": { "engines": ">=22.19.0" },
+    "openviking": {
+      "version": "0.4.13",
+      "endpoint": "http://127.0.0.1:19331",
+      "authMode": "dev",
+      "account": "dev",
+      "user": "dev"
+    },
+    "modelProfile": {
+      "path": "dev/model-profile.json",
+      "sha256": "bd7af403f86113ddc796a6d91fc6c2dbd03fa8d0520adfc866471e222e1d7355"
+    },
+    "registry": {
+      "schemaVersion": 1,
+      "sha256": "4c7349f181c392511fe43c4b3c04d974acfc40110bd93ed399fef534a957a275"
+    },
+    "extensionLoadOrder": ["index.ts"]
+  },
+  "environment": {
+    "observationSink": "父进程以 wx/0600 预开空常规文件并作为 FD 3 继承；子进程仅接收 OV_OBSERVE_FD=3，不接触 artifact 路径",
+    "isolation": "HOME、PI_CODING_AGENT_DIR、session 与 observation artifact 全部位于 test/.artifacts/live/<runId>",
+    "credentials": "开发模型 key 只通过子进程环境桥接，不写入 manifest、observation、session、summary 或日志"
+  },
+  "deterministicStages": ["index_failure", "recall_failure", "tool_availability", "tool_scope"],
+  "workloads": [
+    {
+      "id": "success-recall-sync",
+      "summary": "随机 session namespace 写入所属 marker 与 wait=true 的可检索 resource；真实 Pi prompt 触发 recall 产品 entry，再由 /viking sync 证明 Content 写入和 ACK 推进。",
+      "prompt": "请只回复 OK 两个字母，不要调用任何工具。",
+      "expectedRecords": [
+        { "stage": "pi_lifecycle", "data": { "phase": "end", "hook": "session_shutdown", "outcome": "success" } },
+        { "stage": "pi_entry_append", "data": { "phase": "end", "operation": "recall_injection", "outcome": "appended" } },
+        { "stage": "memory_namespace", "data": { "branch": "session" } },
+        { "stage": "sync_schedule", "data": { "branch": "sync" } },
+        { "stage": "profile_result", "data": { "branch": "omit" } },
+        { "stage": "client_http", "data": { "phase": "end", "outcome": "success" } },
+        { "stage": "client_connection", "data": { "mode": "change", "to": true } },
+        { "stage": "client_namespace", "data": { "mode": "change", "bound": true } },
+        { "stage": "sync_source", "data": { "branch": "persistent_jsonl" } },
+        { "stage": "shutdown_grace", "data": { "branch": "drained" } },
+        { "stage": "sync_capability", "data": { "mode": "change", "to": "ready" } },
+        { "stage": "sync_ack", "data": { "mode": "change" } },
+        { "stage": "sync_ack_advance", "data": { "branch": "advance", "capabilityVerified": true } },
+        { "stage": "event_representation", "data": { "branch": "direct" } },
+        { "stage": "recall_request", "data": { "branch": "search" } },
+        { "stage": "recall_source", "data": { "branch": "context_face" } },
+        { "stage": "recall_result", "data": { "operation": "inject", "branch": "injected" } }
+      ],
+      "successCriteria": [
+        "Pi exitCode=0、extension_error=0、/viking sync notify=info",
+        "observation run 完整、seq 连续、boundary op 全部配对、accepted=end.seq、dropped=0",
+        "recall 注入通过 pi_entry_append 记录且观察 artifact 不含 recall 内容、prompt、session/user/URI、凭证",
+        "ACK frontier 推进且观察记录未进入 Pi JSONL 或 OpenViking event namespace"
+      ],
+      "falsification": [
+        "任一 expected stage 缺失或出现未配对 boundary",
+        "观察 sink 改变 Pi 返回、ACK、HTTP 顺序或 shutdown 结果",
+        "原始敏感值出现在观察 artifact、summary 或错误诊断"
+      ]
+    },
+    {
+      "id": "disconnect-fail-open",
+      "summary": "真实 Pi 使用固定死端口完成 prompt，事件保持待重放且观察完整记录 network_error、未连接状态与 observe 分派。",
+      "endpoint": "http://127.0.0.1:9",
+      "prompt": "请只回复 OK 两个字母，不要调用任何工具。",
+      "expectedRecords": [
+        { "stage": "pi_lifecycle", "data": { "phase": "end", "hook": "session_shutdown", "outcome": "success" } },
+        { "stage": "memory_namespace", "data": { "branch": "session" } },
+        { "stage": "sync_schedule", "data": { "branch": "observe", "connected": false } },
+        { "stage": "profile_result", "data": { "branch": "omit" } },
+        { "stage": "client_http", "data": { "phase": "end", "outcome": "network_error" } },
+        { "stage": "client_connection", "data": { "mode": "snapshot", "current": false } },
+        { "stage": "client_namespace", "data": { "mode": "change", "bound": true } },
+        { "stage": "sync_source", "data": { "branch": "persistent_jsonl" } },
+        { "stage": "shutdown_grace", "data": { "branch": "drained" } },
+        { "stage": "sync_capability", "data": { "mode": "snapshot", "current": "unknown" } },
+        { "stage": "sync_ack", "data": { "mode": "snapshot" } }
+      ],
+      "successCriteria": [
+        "Pi exitCode=0 且 agent_settled 到达，观察 run 完整",
+        "至少一个 client_http:network_error，sync_schedule 分支为 observe，ACK 不推进",
+        "产品 session JSONL 保留输入/输出且不包含 observation record"
+      ],
+      "falsification": [
+        "断线使 Pi 主任务失败或观察 run 缺少 end",
+        "断线期间 ACK 推进或产生远端 namespace"
+      ]
+    },
+    {
+      "id": "conflict-409",
+      "summary": "先在死端口真实 Pi run 形成待同步 entry，再在所属随机 namespace 注入不同字节；真实端点重放得到 409、保持 ACK 且不覆盖冲突对象。",
+      "prompt": "请只回复 OK 两个字母，不要调用任何工具。",
+      "expectedRecords": [
+        { "stage": "pi_lifecycle", "data": { "phase": "end", "hook": "session_shutdown", "outcome": "success" } },
+        { "stage": "memory_namespace", "data": { "branch": "session" } },
+        { "stage": "sync_schedule", "data": { "branch": "sync", "connected": true } },
+        { "stage": "profile_result", "data": { "branch": "omit" } },
+        { "stage": "client_http", "data": { "phase": "end", "outcome": "http_error", "status": 409 } },
+        { "stage": "client_connection", "data": { "mode": "change", "to": true } },
+        { "stage": "client_namespace", "data": { "mode": "change", "bound": true } },
+        { "stage": "sync_source", "data": { "branch": "persistent_jsonl" } },
+        { "stage": "shutdown_grace", "data": { "branch": "drained" } },
+        { "stage": "sync_capability", "data": { "mode": "snapshot" } },
+        { "stage": "sync_ack", "data": { "mode": "snapshot" } },
+        { "stage": "sync_failure", "data": { "errorClass": "integrity", "errorCode": "delivery", "disposition": "abort_operation", "branch": "pending_replay" } },
+        { "stage": "event_representation", "data": { "branch": "direct" } }
+      ],
+      "successCriteria": [
+        "冲突同步 Pi exitCode=0、/viking sync notify=warning、ACK 不越过冲突 entry",
+        "client_http 出现 409/http_error，sync_failure 为 integrity/pending_replay，观察 run 完整",
+        "冲突对象字节保持 verifier 注入值且所属 namespace 安全清理"
+      ],
+      "falsification": [
+        "冲突对象被覆盖或 ACK 推进",
+        "同一次错误处置被 adapter、client、sync 多个责任模块重复记录为 failure"
+      ]
+    },
+    {
+      "id": "tool-uri-rejection",
+      "summary": "真实 Pi 模型调用内置 read 读取越界 viking:// URI，生产 tool_call hook 必须在工具执行前阻止，并且不向 OpenViking 发出对应 content/read。",
+      "promptTemplate": "必须立即且只调用一次内置 read 工具，path 必须逐字使用 {uri}；不要调用 viking_read 或其他工具。收到工具结果后只回复 DONE。",
+      "expectedRecords": [
+        { "stage": "pi_lifecycle", "data": { "phase": "end", "hook": "session_shutdown", "outcome": "success" } },
+        { "stage": "tool_uri_guard", "data": { "tool": "read", "branch": "block" } }
+      ],
+      "successCriteria": [
+        "真实 Pi tool_execution_end 证明内置 read 被生产 hook 阻止",
+        "guard 后没有 OpenViking content/read，越界 namespace 保持不存在",
+        "观察 run 完整且不含 URI、prompt、session/user 或工具返回内容"
+      ],
+      "falsification": [
+        "模型未调用内置 read 或 Pi 未应用 hook block",
+        "guard 后发出 OpenViking content/read 或创建越界 namespace",
+        "URI、prompt 或工具返回出现在观察 artifact"
+      ]
+    }
+  ],
+  "globalAssertions": [
+    "manifest hash、registry hash/active stage 全集、Pi/OpenViking/model profile 身份全部匹配后才运行 workload",
+    "每个观察 artifact 由父进程 fsync/close 后读取；完整性、原始 hash、stage/outcome 计数写入白名单 summary",
+    "远端只使用随机 session namespace；写入前必须不存在，marker 逐字节回读；删除前再次核对精确根与 marker",
+    "删除后等待 cleanupSettleMs 越过 0.4.13 目录语义物化窗口，全部已写对象必须持续不存在；服务重建的无文件 namespace 骨架仅记录，不伪报为产品数据残留",
+    "passed 删除整个本地 run；failed 删除 observation/session 等 raw artifact，只保留白名单 summary 和 ownership marker",
+    "仓库生产运行路径不存在 OV_DEBUG_LOG、自由文本文件日志或其他第二观察 sink"
+  ],
+  "thresholds": {
+    "piRunWallMs": 120000,
+    "agentSettledMs": 90000,
+    "syncNotifyMs": 90000,
+    "fixtureMs": 90000,
+    "cleanupMs": 30000,
+    "cleanupSettleMs": 60000,
+    "baseline": {
+      "measuredAt": "2026-08-19T04:32:22.783Z",
+      "expected": {
+        "disabled": "deterministic baseline 的产品返回值、状态与调用顺序不变，观察依赖调用为 0",
+        "enabled": "每个 run 完整、dropped=0，产品成功/ACK/fail-open/权限结果与对应 workload 断言一致"
+      },
+      "runs": [
+        { "workload": "success-recall-sync", "label": "success", "observedMs": 3434, "observedRecords": 130, "maxMs": 90000, "minRecords": 100, "maxRecords": 512 },
+        { "workload": "disconnect-fail-open", "label": "disconnect", "observedMs": 2463, "observedRecords": 36, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
+        { "workload": "conflict-409", "label": "conflict-prep", "observedMs": 2362, "observedRecords": 36, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
+        { "workload": "conflict-409", "label": "conflict-sync", "observedMs": 1175, "observedRecords": 66, "maxMs": 30000, "minRecords": 30, "maxRecords": 256 },
+        { "workload": "tool-uri-rejection", "label": "tool-uri-live", "observedMs": 4975, "observedRecords": 153, "maxMs": 90000, "minRecords": 20, "maxRecords": 256 }
+      ]
+    }
+  }
+}

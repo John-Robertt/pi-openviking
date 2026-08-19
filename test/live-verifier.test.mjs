@@ -11,15 +11,15 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { seededString } from "./live/phase0-live.mjs";
 import {
   ackFileKey,
   checkManifestHash,
   conflictBytesOf,
   createRpcLineParser,
   derivePassed,
-  seededString,
   sha256Hex,
-} from "./live/phase0-live.mjs";
+} from "./live/live-support.mjs";
 import { canonicalJsonBytes } from "../shared/canonical-json.mjs";
 import { TOOLCHAIN } from "../shared/toolchain.mjs";
 

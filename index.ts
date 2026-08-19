@@ -6,13 +6,12 @@
  * compaction or provider-context ownership.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { appendFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
 import { loadConfigFromModuleUrl, type OVConfig } from "./config.js";
 import { OVClient } from "./client.js";
 import { RecallManager } from "./recall.js";
 import { SyncManager } from "./sync.js";
 import { buildProfileBlock } from "./shared/profile-inject.mjs";
+import { observation } from "./shared/observe.mjs";
 import { createStatusRefresh } from "./shared/status-refresh.mjs";
 import { clearVikingFooter, formatVikingCommand, setVikingFooter } from "./shared/viking-status.mjs";
 import { guardVikingUriToolCall } from "./lib/uri-guard-adapter.mjs";
@@ -27,25 +26,17 @@ export default async function (pi: ExtensionAPI) {
   if (!config.enabled) return;
 
   // --- Initialize modules ---
-  const client = new OVClient(config);
-  const sync = new SyncManager(client);
-  const recall = new RecallManager(client, config, () => sync.sessionId);
-  const debugLog = (message: string) => {
-    const file = process.env.OV_DEBUG_LOG;
-    if (!file) return;
-    try {
-      mkdirSync(dirname(file), { recursive: true });
-      appendFileSync(file, `${new Date().toISOString()} ${message}\n`);
-    } catch {
-      // Best effort; logging must never affect pi.
-    }
-  };
-
+  const client = new OVClient(config, observation);
+  const sync = new SyncManager(client, { observation });
+  const recall = new RecallManager(client, config, () => sync.sessionId, observation);
   const recordObservation = (kind: string, content: string, targetEntryId: string | null): void => {
+    const op = observation.begin("pi_entry_append", kind);
     try {
       pi.appendEntry(OBSERVATION_ENTRY_TYPE, { schemaVersion: 1, kind, targetEntryId, content });
+      observation.end("pi_entry_append", op, kind, "appended");
     } catch (error: unknown) {
-      debugLog(`observation append failed: ${error instanceof Error ? error.message : String(error)}`);
+      observation.end("pi_entry_append", op, kind, "error");
+      observation.emit("index_failure", error, "observation_append", "ignore", "continue_pi");
     }
   };
 
@@ -58,6 +49,10 @@ export default async function (pi: ExtensionAPI) {
   let statusContext: any = null;
   let startupWarningShown = false;
 
+  const beginHook = (hook: string, reason = "none"): number => observation.begin("pi_lifecycle", hook, reason);
+  const endHook = (op: number, hook: string, reason = "none", outcome = "success"): void =>
+    observation.end("pi_lifecycle", op, hook, reason, outcome);
+
   // ================================================================
   // Event Handlers
   // ================================================================
@@ -67,17 +62,20 @@ export default async function (pi: ExtensionAPI) {
     if (startPromise) return startPromise;
 
     startPromise = (async () => {
+      const piSessionId = ctx.sessionManager.getSessionId();
+      observation.bindSession(piSessionId);
       // Bypass check
       const cwd = process.cwd();
       for (const pattern of config.bypassPatterns) {
         if (matchBypass(cwd, pattern)) {
           bypassed = true;
+          observation.emit("sync_schedule", "session_start", client.connected, "skip_bypassed");
           started = true;
           return;
         }
       }
 
-      const piSessionId = ctx.sessionManager.getSessionId();
+      observation.emit("memory_namespace", config.sessionScopedMemory, config.user);
       if (config.sessionScopedMemory) {
         client.bindUser(deriveMemoryNamespace(config.user, piSessionId));
       }
@@ -85,7 +83,7 @@ export default async function (pi: ExtensionAPI) {
       await sync.observeSession(ctx.sessionManager);
 
       if (!toolsRegistered) {
-        registerTools(pi, client, sync);
+        registerTools(pi, client, sync, observation);
         toolsRegistered = true;
       }
 
@@ -95,11 +93,13 @@ export default async function (pi: ExtensionAPI) {
           ctx.ui.notify("OpenViking: server not reachable", "warning");
         }
         startupWarningShown = true;
+        observation.emit("profile_result", "");
         started = true;
         return;
       }
       startupWarningShown = false;
       profileBlock = await buildSessionProfileBlock(client, config);
+      observation.emit("profile_result", profileBlock);
       scheduleSync(ctx, "session_start");
       started = true;
       if (config.logLevel === "info") {
@@ -117,17 +117,25 @@ export default async function (pi: ExtensionAPI) {
     setVikingFooter(ctx, { connected: client.connected });
   };
 
-  const scheduleSync = (ctx: any, stage: string): void => {
-    if (bypassed || !config.syncTurns) return;
+  const scheduleSync = (ctx: any, trigger: string): void => {
+    if (bypassed) {
+      observation.emit("sync_schedule", trigger, client.connected, "skip_bypassed");
+      return;
+    }
+    if (!config.syncTurns) {
+      observation.emit("sync_schedule", trigger, client.connected, "skip_disabled");
+      return;
+    }
     const source = snapshotSessionSource(ctx.sessionManager);
-    const operation = client.connected
+    const connected = client.connected;
+    observation.emit("sync_schedule", trigger, connected);
+    const operation = connected
       ? sync.syncSession(source)
       : sync.observeSession(source);
-    void operation.then((result) => {
-      debugLog(`${stage}: confirmed ${result.added} entries, pending=${result.pending}`);
+    void operation.then(() => {
       if (statusContext === ctx) renderStatus(ctx);
     }).catch((error: unknown) => {
-      debugLog(`${stage}: ${error instanceof Error ? error.message : String(error)}`);
+      observation.emit("index_failure", error, "sync_schedule", "degrade", "continue_pi");
     });
   };
 
@@ -145,7 +153,7 @@ export default async function (pi: ExtensionAPI) {
       if (statusContext) renderStatus(statusContext);
     },
     onError: (error: unknown) => {
-      debugLog(`health refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+      observation.emit("index_failure", error, "health_refresh", "degrade", "continue_pi");
     },
     intervalMs: HEALTH_REFRESH_INTERVAL_MS,
   });
@@ -168,105 +176,231 @@ export default async function (pi: ExtensionAPI) {
   };
 
   // --- session_start ---
-  pi.on("session_start", async (_event, ctx) => {
-    await refreshConnection(ctx);
-    beginHealthPolling(ctx);
+  pi.on("session_start", async (event, ctx) => {
+    const reason = event?.reason ?? "none";
+    observation.bindSession(ctx.sessionManager.getSessionId());
+    const op = beginHook("session_start", reason);
+    try {
+      await refreshConnection(ctx);
+      beginHealthPolling(ctx);
+      endHook(op, "session_start", reason);
+    } catch (error) {
+      endHook(op, "session_start", reason, "error");
+      throw error;
+    }
   });
 
   // --- before_agent_start ---
   pi.on("before_agent_start", async (event, ctx) => {
-    // Keep continuations initialized and refresh health before each user-prompt run.
-    await refreshConnection(ctx);
-    beginHealthPolling(ctx);
+    const op = beginHook("before_agent_start");
+    try {
+      // Keep continuations initialized and refresh health before each user-prompt run.
+      await refreshConnection(ctx);
+      beginHealthPolling(ctx);
 
-    if (!client.connected || bypassed) return;
+      if (!client.connected || bypassed) {
+        endHook(op, "before_agent_start", "none", "skipped");
+        return;
+      }
 
-    // Queue recall for the context hook. Pi renders the user message before
-    // that hook, so recall latency does not delay the message appearing.
-    recall.queueSearch(event.prompt);
+      // Queue recall for the context hook. Pi renders the user message before
+      // that hook, so recall latency does not delay the message appearing.
+      recall.queueSearch(event.prompt);
 
-    // Compose system prompt additions
-    const parts: string[] = [];
-    if (profileBlock) {
-      parts.push(profileBlock);
-      recordObservation("profile-injection", profileBlock, ctx.sessionManager.getLeafId());
+      // Compose system prompt additions
+      const parts: string[] = [];
+      if (profileBlock) {
+        parts.push(profileBlock);
+        recordObservation("profile-injection", profileBlock, ctx.sessionManager.getLeafId());
+      }
+      parts.push(`OpenViking tools: ${VIKING_TOOL_NAMES.join(", ")}.`);
+
+      const additions = parts.join("\n\n");
+      if (!additions) {
+        endHook(op, "before_agent_start", "none", "skipped");
+        return;
+      }
+
+      const result = { systemPrompt: event.systemPrompt + "\n\n" + additions };
+      endHook(op, "before_agent_start");
+      return result;
+    } catch (error) {
+      endHook(op, "before_agent_start", "none", "error");
+      throw error;
     }
-    parts.push(`OpenViking tools: ${VIKING_TOOL_NAMES.join(", ")}.`);
-
-    const additions = parts.join("\n\n");
-    if (!additions) return;
-
-    return {
-      systemPrompt: event.systemPrompt + "\n\n" + additions,
-    };
   });
 
   // --- context ---
   pi.on("context", async (event, ctx) => {
-    if (!client.connected || bypassed) return;
+    const op = beginHook("context");
+    try {
+      if (!client.connected || bypassed) {
+        endHook(op, "context", "none", "skipped");
+        return;
+      }
 
-    // Keep recall synchronous with the provider request so the current prompt
-    // still receives current-query memory, without blocking user-message UI.
-    await recall.searchPending();
+      // Keep recall synchronous with the provider request so the current prompt
+      // still receives current-query memory, without blocking user-message UI.
+      await recall.searchPending();
 
-    const { messages, injectedBlock } = recall.injectRecall(event.messages);
-    if (injectedBlock) {
-      recordObservation("recall-injection", injectedBlock, ctx.sessionManager.getLeafId());
+      const { messages, injectedBlock } = recall.injectRecall(event.messages);
+      if (injectedBlock) {
+        recordObservation("recall-injection", injectedBlock, ctx.sessionManager.getLeafId());
+      }
+      endHook(op, "context");
+      return { messages };
+    } catch (error) {
+      endHook(op, "context", "none", "error");
+      throw error;
     }
-    return { messages };
   });
 
   // --- tool_call ---
   pi.on("tool_call", async (event, _ctx) => {
-    const decision = guardVikingUriToolCall(event);
-    if (!decision) return;
-    return decision;
+    const op = beginHook("tool_call");
+    try {
+      const decision = guardVikingUriToolCall(event, observation);
+      if (!decision) {
+        endHook(op, "tool_call", "none", "skipped");
+        return;
+      }
+      endHook(op, "tool_call");
+      return decision;
+    } catch (error) {
+      endHook(op, "tool_call", "none", "error");
+      throw error;
+    }
   });
 
   // --- turn_end ---
   pi.on("turn_end", (_event, ctx) => {
-    if (bypassed || !config.syncTurns) return;
-    scheduleSync(ctx, "turn_end");
+    const op = beginHook("turn_end");
+    try {
+      if (bypassed || !config.syncTurns) {
+        endHook(op, "turn_end", "none", "skipped");
+        return;
+      }
+      scheduleSync(ctx, "turn_end");
+      endHook(op, "turn_end");
+    } catch (error) {
+      endHook(op, "turn_end", "none", "error");
+      throw error;
+    }
   });
 
   // Pi remains the sole compaction trigger. After it appends the compaction entry,
   // record that new source fact without altering the compaction lifecycle.
-  pi.on("session_compact", (_event, ctx) => {
-    if (bypassed || !config.syncTurns) return;
-    scheduleSync(ctx, "session_compact");
+  pi.on("session_compact", (event, ctx) => {
+    const reason = event?.reason ?? "none";
+    const op = beginHook("session_compact", reason);
+    try {
+      if (bypassed || !config.syncTurns) {
+        endHook(op, "session_compact", reason, "skipped");
+        return;
+      }
+      scheduleSync(ctx, "session_compact");
+      endHook(op, "session_compact", reason);
+    } catch (error) {
+      endHook(op, "session_compact", reason, "error");
+      throw error;
+    }
   });
 
   pi.on("session_tree", (_event, ctx) => {
-    if (!started || bypassed || !config.syncTurns) return;
-    scheduleSync(ctx, "session_tree");
+    const op = beginHook("session_tree");
+    try {
+      if (!started || bypassed || !config.syncTurns) {
+        endHook(op, "session_tree", "none", "skipped");
+        return;
+      }
+      scheduleSync(ctx, "session_tree");
+      endHook(op, "session_tree");
+    } catch (error) {
+      endHook(op, "session_tree", "none", "error");
+      throw error;
+    }
   });
 
   pi.on("session_info_changed", (_event, ctx) => {
-    if (!started || bypassed || !config.syncTurns) return;
-    scheduleSync(ctx, "session_info_changed");
+    const op = beginHook("session_info_changed");
+    try {
+      if (!started || bypassed || !config.syncTurns) {
+        endHook(op, "session_info_changed", "none", "skipped");
+        return;
+      }
+      scheduleSync(ctx, "session_info_changed");
+      endHook(op, "session_info_changed");
+    } catch (error) {
+      endHook(op, "session_info_changed", "none", "error");
+      throw error;
+    }
   });
 
   pi.on("model_select", (_event, ctx) => {
-    if (!started || bypassed || !config.syncTurns) return;
-    scheduleSync(ctx, "model_select");
+    const op = beginHook("model_select");
+    try {
+      if (!started || bypassed || !config.syncTurns) {
+        endHook(op, "model_select", "none", "skipped");
+        return;
+      }
+      scheduleSync(ctx, "model_select");
+      endHook(op, "model_select");
+    } catch (error) {
+      endHook(op, "model_select", "none", "error");
+      throw error;
+    }
   });
 
   pi.on("thinking_level_select", (_event, ctx) => {
-    if (!started || bypassed || !config.syncTurns) return;
-    scheduleSync(ctx, "thinking_level_select");
+    const op = beginHook("thinking_level_select");
+    try {
+      if (!started || bypassed || !config.syncTurns) {
+        endHook(op, "thinking_level_select", "none", "skipped");
+        return;
+      }
+      scheduleSync(ctx, "thinking_level_select");
+      endHook(op, "thinking_level_select");
+    } catch (error) {
+      endHook(op, "thinking_level_select", "none", "error");
+      throw error;
+    }
   });
 
   // --- session_shutdown ---
-  pi.on("session_shutdown", async (_event, ctx) => {
-    await stopHealthPolling(ctx);
-    scheduleSync(ctx, "session_shutdown");
-    await sync.waitForIdle(500);
-    await client.close(true);
+  pi.on("session_shutdown", async (event, ctx) => {
+    const reason = event?.reason ?? "none";
+    const op = beginHook("session_shutdown", reason);
+    let observationDeadline = 0;
+    try {
+      await stopHealthPolling(ctx);
+      observationDeadline = observation.beginDrainDeadline(500);
+      scheduleSync(ctx, "session_shutdown");
+      const drained = await sync.waitForIdle(500);
+      if (!drained) observation.abandon();
+      sync.observeFinalState();
+      await client.close(true);
+      endHook(op, "session_shutdown", reason);
+    } catch (error) {
+      endHook(op, "session_shutdown", reason, "error");
+      throw error;
+    } finally {
+      observation.bindSession(null);
+      if (reason === "quit") {
+        await observation.finishRemaining(observationDeadline);
+      }
+    }
   });
 
   // --- agent_end ---
   pi.on("agent_end", () => {
-    recall.invalidate();
+    const op = beginHook("agent_end");
+    try {
+      recall.invalidate();
+      endHook(op, "agent_end");
+    } catch (error) {
+      endHook(op, "agent_end", "none", "error");
+      throw error;
+    }
   });
 
   // ================================================================
@@ -286,6 +420,7 @@ export default async function (pi: ExtensionAPI) {
       beginHealthPolling(ctx);
 
       if (args?.trim() === "sync") {
+        observation.emit("sync_schedule", "command", currentConnected);
         if (!currentConnected) {
           await sync.observeSession(ctx.sessionManager);
           ctx.ui.notify("OpenViking：未连接，事件保留在 Pi 来源中等待重放", "warning");
@@ -307,6 +442,7 @@ export default async function (pi: ExtensionAPI) {
           connected: currentConnected,
           sessionId: sync.sessionId,
           sync: sync.status,
+          observation: observation.getStatus(),
         }),
         currentConnected ? "info" : "warning",
       );
@@ -382,7 +518,8 @@ async function buildSessionProfileBlock(
       profile.block,
       "</openviking-context>",
     ].join("\n");
-  } catch {
+  } catch (error) {
+    observation.emit("index_failure", error, "profile_load", "degrade", "omit_profile");
     return "";
   }
 }

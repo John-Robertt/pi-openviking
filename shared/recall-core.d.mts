@@ -1,3 +1,5 @@
+import type { Observation } from "./observe.mjs";
+
 export function buildRecallBlock(
   fetchJSON: (path: string, init?: any, options?: any) => Promise<{ ok: boolean; status?: number; result?: any; error?: any }>,
   cfg: Record<string, any>,
@@ -7,7 +9,7 @@ export function buildRecallBlock(
     sessionId?: string;
     /** 已绑定的记忆空间名；缺省时 viking://user/<reserved> 不展开，不做推断。 */
     userSpace?: string;
-    log?: (stage: string, data?: any) => void;
+    observation?: Observation;
   },
 ): Promise<string | null>;
 

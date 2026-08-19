@@ -1,5 +1,6 @@
 import type { OVConfig } from "./config.js";
 import { Agent, request as undiciRequest } from "undici";
+import { observation, type Observation } from "./shared/observe.mjs";
 
 // pi installs a proxying global dispatcher (undici EnvHttpProxyAgent) when
 // settings.httpProxy is set, and it only honors NO_PROXY captured at startup.
@@ -95,19 +96,23 @@ export class OVClient {
   private readonly loopback: boolean;
   private directAgent?: Agent;
   private lifecycleAbort = new AbortController();
+  private readonly observe: Observation;
   connected: boolean = false;
 
   /** Read-only access to config (for value access across modules). */
   readonly cfg: OVConfig;
 
-  constructor(config: OVConfig) {
+  constructor(config: OVConfig, observe: Observation = observation) {
     this.cfg = config;
+    this.observe = observe;
     this.baseUrl = config.endpoint.replace(/\/+$/, "");
     this.apiKey = config.apiKey;
     this.account = config.account;
     this.user = config.user;
     this.peerId = config.peerId;
     this.loopback = LOOPBACK_HOSTS.has(new URL(this.baseUrl).hostname);
+    this.observe.emit("client_connection", "snapshot", false);
+    this.observe.emit("client_namespace", "snapshot", this.user);
   }
 
   /**
@@ -118,7 +123,9 @@ export class OVClient {
    */
   bindUser(user: string): void {
     if (!user || user === this.user) return;
+    const previous = this.user;
     this.user = user;
+    this.observe.emit("client_namespace", "change", previous, user);
   }
 
   /**
@@ -165,13 +172,15 @@ export class OVClient {
 
   /** Core fetch wrapper. Returns { ok, result } after parsing OV's { status, result } envelope. */
   async fetchJSON<T>(path: string, init?: RequestInit, timeoutMs = 10000): Promise<OVResponse<T>> {
+    const method = (init?.method as string | undefined) ?? "GET";
+    const op = this.observe.begin("client_http", path, method, timeoutMs);
     try {
       const headers = { ...this.headers(), ...((init?.headers as Record<string, string>) || {}) };
       let ok: boolean, status: number, body: any;
       if (this.loopback) {
         this.directAgent ??= new Agent();
         const resp = await undiciRequest(`${this.baseUrl}${path}`, {
-          method: (init?.method as "GET" | "POST" | "PUT" | "DELETE" | undefined) ?? "GET",
+          method: method as "GET" | "POST" | "PUT" | "DELETE" | undefined,
           headers,
           body: init?.body as string | undefined,
           signal: this.requestSignal(timeoutMs),
@@ -192,6 +201,7 @@ export class OVClient {
       }
       const traceId = body?.result?.trace_id || body?.error?.trace_id || body?.trace_id || undefined;
       if (!ok || body.status === "error") {
+        this.observe.end("client_http", op, "http_error", status, traceId);
         return {
           ok: false,
           result: null,
@@ -200,8 +210,11 @@ export class OVClient {
           traceId,
         };
       }
+      this.observe.end("client_http", op, "success", status, traceId);
       return { ok: true, result: (body.result ?? body) as T, traceId };
     } catch (err: any) {
+      const outcome = this.lifecycleAbort.signal.aborted || err?.name === "AbortError" ? "aborted" : "network_error";
+      this.observe.end("client_http", op, outcome, 0, undefined);
       return { ok: false, result: null, status: 0, error: { message: err?.message || String(err) } };
     }
   }
@@ -209,8 +222,10 @@ export class OVClient {
   // ========== Health ==========
 
   async health(): Promise<boolean> {
+    const previous = this.connected;
     const res = await this.fetchJSON<any>("/health", undefined, 1000);
     this.connected = res.ok && res.result?.healthy === true;
+    if (previous !== this.connected) this.observe.emit("client_connection", "change", previous, this.connected);
     return this.connected;
   }
 
@@ -326,6 +341,7 @@ export class OVClient {
   /** GET /api/v1/content/download — raw stored bytes without JSON decoding. */
   async downloadBytes(uri: string): Promise<OVBytesResponse> {
     const path = `/api/v1/content/download?uri=${encodeURIComponent(uri)}`;
+    const op = this.observe.begin("client_http", path, "GET", 30000);
     try {
       const headers = this.headers();
       if (this.loopback) {
@@ -338,9 +354,12 @@ export class OVClient {
         });
         const status = response.statusCode;
         const bytes = Buffer.from(await response.body.arrayBuffer());
-        return status >= 200 && status < 300
-          ? { ok: true, bytes, status }
-          : { ok: false, bytes: null, status, error: { message: `HTTP ${status}` } };
+        if (status >= 200 && status < 300) {
+          this.observe.end("client_http", op, "success", status, undefined);
+          return { ok: true, bytes, status };
+        }
+        this.observe.end("client_http", op, "http_error", status, undefined);
+        return { ok: false, bytes: null, status, error: { message: `HTTP ${status}` } };
       }
 
       const response = await fetch(`${this.baseUrl}${path}`, {
@@ -350,10 +369,15 @@ export class OVClient {
       });
       const status = response.status;
       const bytes = Buffer.from(await response.arrayBuffer());
-      return response.ok
-        ? { ok: true, bytes, status }
-        : { ok: false, bytes: null, status, error: { message: `HTTP ${status}` } };
+      if (response.ok) {
+        this.observe.end("client_http", op, "success", status, undefined);
+        return { ok: true, bytes, status };
+      }
+      this.observe.end("client_http", op, "http_error", status, undefined);
+      return { ok: false, bytes: null, status, error: { message: `HTTP ${status}` } };
     } catch (error: any) {
+      const outcome = this.lifecycleAbort.signal.aborted || error?.name === "AbortError" ? "aborted" : "network_error";
+      this.observe.end("client_http", op, outcome, 0, undefined);
       return { ok: false, bytes: null, status: 0, error: { message: error?.message || String(error) } };
     }
   }
@@ -459,13 +483,17 @@ export class OVClient {
 
   async close(force = false): Promise<void> {
     this.lifecycleAbort.abort();
+    const previous = this.connected;
     this.connected = false;
+    if (previous !== this.connected) this.observe.emit("client_connection", "change", previous, this.connected);
     const agent = this.directAgent;
     this.directAgent = undefined;
     if (agent) {
       if (force) await agent.destroy();
       else await agent.close();
     }
+    this.observe.emit("client_connection", "snapshot", this.connected);
+    this.observe.emit("client_namespace", "snapshot", this.user);
   }
 }
 

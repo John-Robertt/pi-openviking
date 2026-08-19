@@ -1,6 +1,7 @@
 import type { OVClient } from "./client.js";
 import type { OVConfig } from "./config.js";
 import { buildRecallBlock } from "./shared/recall-core.mjs";
+import { observation, type Observation } from "./shared/observe.mjs";
 
 export interface RecallCache {
   block: string | null;
@@ -15,11 +16,18 @@ export class RecallManager {
   // Read lazily: the session manager that owns this id is constructed after the
   // recall manager, and the id only exists once a session has been opened.
   private sessionId: () => string | null;
+  private observe: Observation;
 
-  constructor(client: OVClient, config: OVConfig, sessionId: () => string | null = () => null) {
+  constructor(
+    client: OVClient,
+    config: OVConfig,
+    sessionId: () => string | null = () => null,
+    observe: Observation = observation,
+  ) {
     this.client = client;
     this.config = config;
     this.sessionId = sessionId;
+    this.observe = observe;
   }
 
   queueSearch(userQuery: string): void {
@@ -27,14 +35,19 @@ export class RecallManager {
   }
 
   async searchPending(): Promise<string | null> {
-    if (!this.pendingPrompt) return this.cache.block;
+    if (!this.pendingPrompt) {
+      this.observe.emit("recall_request", "cache", "");
+      return this.cache.block;
+    }
 
     const userQuery = this.pendingPrompt;
     this.pendingPrompt = "";
     if (userQuery.trim().length < this.config.minQueryLength) {
+      this.observe.emit("recall_request", "skip_short", userQuery);
       this.cache = { block: null, promptText: userQuery };
       return null;
     }
+    this.observe.emit("recall_request", "search", userQuery);
 
     const block = await buildRecallBlock(
       // 10s is this extension's own budget for a bare retrieval; when the
@@ -51,9 +64,11 @@ export class RecallManager {
         sessionId: this.sessionId() ?? "",
         // 读取边界由 client 的已绑定身份决定，recall-core 不再自行推断。
         userSpace: this.client.memorySpace,
+        observation: this.observe,
       },
     );
     this.cache = { block, promptText: userQuery };
+    this.observe.emit("recall_result", "search", block);
     return block;
   }
 
@@ -61,7 +76,10 @@ export class RecallManager {
 
   injectRecall(messages: any[]): { messages: any[]; injectedBlock: string | null } {
     const block = this.cache.block;
-    if (!block) return { messages, injectedBlock: null };
+    if (!block) {
+      this.observe.emit("recall_result", "inject", false, "");
+      return { messages, injectedBlock: null };
+    }
 
     let injected = false;
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -87,6 +105,7 @@ export class RecallManager {
         break;
       }
     }
+    this.observe.emit("recall_result", "inject", injected, block);
     return { messages, injectedBlock: injected ? block : null };
   }
 

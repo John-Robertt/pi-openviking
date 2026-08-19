@@ -93,7 +93,7 @@ OpenViking 地址与凭证按以下顺序解析：
 - `OV ✓`：最近一次检查可达；
 - `OV ✗`：当前不可达。
 
-`/viking` 显示来源类型、Content adapter capability、ACK frontier、待重放 entry 和最近失败。
+`/viking` 显示来源类型、Content adapter capability、ACK frontier、待重放 entry、最近失败和独立观察状态。
 `/viking sync` 立即从当前 Pi 会话来源重放。
 
 ## 工具

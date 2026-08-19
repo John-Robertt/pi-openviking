@@ -2,6 +2,7 @@ import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { OVClient } from "./client.js";
 import type { SyncManager } from "./sync.js";
+import { observation, type Observation } from "./shared/observe.mjs";
 
 /** 已注册的工具名，供系统提示引用；集合的事实源在本模块。 */
 export const VIKING_TOOL_NAMES = [
@@ -14,12 +15,17 @@ export const VIKING_TOOL_NAMES = [
   "viking_archive_expand",
 ] as const;
 
-export function registerTools(pi: any, client: OVClient, sync: SyncManager): void {
+export function registerTools(pi: any, client: OVClient, sync: SyncManager, observe: Observation = observation): void {
   // Session-scoped memory confines the model to its own namespace. The server
   // applies the user header to memory-semantic calls only, so every tool that
   // takes or returns a viking:// URI is clamped here as well.
   const scoped = (): string =>
     client.cfg.sessionScopedMemory ? client.userRoot : "";
+
+  const unavailable = (tool: string): boolean => {
+    observe.emit("tool_availability", tool, client.connected);
+    return !client.connected;
+  };
 
   /**
    * 唯一的归属判定：URI 必须是绑定根本身或其子路径。
@@ -27,25 +33,33 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager): voi
    * 前缀比较不足以表达归属——`<root>-other` 也以 root 开头却是另一个命名空间，
    * 因此子路径必须显式带分隔符。所有进出工具的 URI 都经过这里，边界规则只有一处。
    */
-  const inside = (uri: string): boolean => {
-    const root = scoped();
+  const inside = (uri: string, root = scoped()): boolean => {
     if (!root) return true;
     const want = String(uri || "").trim();
     return want === root || want.startsWith(`${root}/`);
   };
 
   /** Reject URIs outside the bound namespace instead of silently rewriting. */
-  const denyOutside = (uri: string): string | null =>
-    inside(uri)
+  const denyOutside = (
+    uri: string, tool: string, operation: "read" | "browse" | "delete", root = scoped(),
+  ): string | null => {
+    const allowed = inside(uri, root);
+    observe.emit("tool_scope", tool, operation, Boolean(root), allowed ? "allow" : "deny", allowed ? 1 : 0, allowed ? 0 : 1);
+    return allowed
       ? null
-      : `Refused: ${String(uri || "").trim()} is outside this session's memory namespace (${scoped()}).`;
+      : `Refused: ${String(uri || "").trim()} is outside this session's memory namespace (${root}).`;
+  };
 
   /** Search scope: never wider than the bound namespace. */
-  const scopeSearch = (requested?: string): string | undefined => {
-    const root = scoped();
-    if (!root) return requested;
+  const scopeSearch = (tool: string, requested?: string, root = scoped()): string | undefined => {
+    if (!root) {
+      observe.emit("tool_scope", tool, "search_request", false, "allow", 1, 0);
+      return requested;
+    }
     const want = String(requested || "").trim();
-    return want && inside(want) ? want : root;
+    const allowed = Boolean(want) && inside(want, root);
+    observe.emit("tool_scope", tool, "search_request", true, allowed ? "allow" : "clamp", 1, 0);
+    return allowed ? want : root;
   };
 
   // --- viking_search ---
@@ -67,15 +81,26 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager): voi
       _id: string, params: any, _signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
-      if (!client.connected) {
+      if (unavailable("viking_search")) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
       // 请求范围与回读核验都做：范围表达意图，核验保证返回给模型的 URI 确实
       // 落在绑定命名空间内，不依赖服务端对 target_uri 的执行。
-      const results = (await client.find(params.query, {
-        targetUri: scopeSearch(params.scope),
+      const root = scoped();
+      const found = await client.find(params.query, {
+        targetUri: scopeSearch("viking_search", params.scope, root),
         topK: params.limit ?? 10,
-      })).filter((r) => inside(r.uri));
+      });
+      const results = found.filter((result) => inside(result.uri, root));
+      observe.emit(
+        "tool_scope",
+        "viking_search",
+        "search_result",
+        Boolean(root),
+        results.length === found.length ? "allow" : "filter",
+        results.length,
+        found.length - results.length,
+      );
       if (results.length === 0) {
         return { content: [{ type: "text", text: "No results found." }] };
       }
@@ -107,10 +132,10 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager): voi
       _id: string, params: any, _signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
-      if (!client.connected) {
+      if (unavailable("viking_read")) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
-      const readDenied = denyOutside(params.uri);
+      const readDenied = denyOutside(params.uri, "viking_read", "read");
       if (readDenied) return { content: [{ type: "text", text: readDenied }] };
       let content: string | null = null;
       switch (params.level) {
@@ -139,13 +164,14 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager): voi
       _id: string, params: any, _signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
-      if (!client.connected) {
+      if (unavailable("viking_browse")) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
       // Browsing defaults to the namespace root so the model cannot enumerate
       // sibling sessions from `viking://`.
-      const uri = params.uri ?? (scoped() || "viking://");
-      const browseDenied = denyOutside(uri);
+      const root = scoped();
+      const uri = params.uri ?? (root || "viking://");
+      const browseDenied = denyOutside(uri, "viking_browse", "browse", root);
       if (browseDenied) return { content: [{ type: "text", text: browseDenied }] };
       if (params.action === "stat") {
         const info = await client.stat(uri);
@@ -180,7 +206,7 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager): voi
       _id: string, params: any, _signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
-      if (!client.connected) {
+      if (unavailable("viking_remember")) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
       // Store as a tagged message directly in OV — the extractor picks up [Remember — ...] prefix
@@ -215,11 +241,11 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager): voi
       _id: string, params: any, _signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
-      if (!client.connected) {
+      if (unavailable("viking_forget")) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
       if (params.uri) {
-        const forgetDenied = denyOutside(params.uri);
+        const forgetDenied = denyOutside(params.uri, "viking_forget", "delete");
         if (forgetDenied) return { content: [{ type: "text", text: forgetDenied }] };
         const ok = await client.delete(params.uri);
         return {
@@ -229,9 +255,9 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager): voi
       if (params.query) {
         // 搜索限定在绑定命名空间内，命中结果在删除前仍逐条复核归属：
         // 删除不可逆，不能只依赖搜索范围。
-        const results = await client.find(params.query, { targetUri: scopeSearch(), topK: 1 });
+        const results = await client.find(params.query, { targetUri: scopeSearch("viking_forget"), topK: 1 });
         if (results.length > 0 && results[0].score > 0.8) {
-          const matchDenied = denyOutside(results[0].uri);
+          const matchDenied = denyOutside(results[0].uri, "viking_forget", "delete");
           if (matchDenied) return { content: [{ type: "text", text: matchDenied }] };
           const ok = await client.delete(results[0].uri);
           return {
@@ -258,7 +284,7 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager): voi
       _id: string, params: any, _signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
-      if (!client.connected) {
+      if (unavailable("viking_add_resource")) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
       const result = await client.addResource(params.url);
@@ -286,7 +312,7 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager): voi
       _id: string, params: any, _signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
-      if (!client.connected) {
+      if (unavailable("viking_archive_expand")) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
       const sid = String(params.session_id ?? params.archive_id ?? "").trim();
@@ -296,14 +322,18 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager): voi
       // `viking://session` 是独立于 viking://user 的顶层作用域，denyOutside 表达不了
       // 它的归属。会话边界在这里的含义是本次会话自己的 OV session：展开其他 session
       // 就是跨会话读取。精确相等同时排除了 `../` 拼接出的穿越路径。
-      if (scoped() && sid !== sync.sessionId) {
+      const root = scoped();
+      if (root && sid !== sync.sessionId) {
+        observe.emit("tool_scope", "viking_archive_expand", "archive", true, "deny", 0, 1);
         return {
           content: [{ type: "text", text: `Refused: this session may only expand its own archive (${sync.sessionId ?? "unavailable"}).` }],
         };
       }
       if (!/^[A-Za-z0-9._-]+$/.test(sid)) {
+        observe.emit("tool_scope", "viking_archive_expand", "archive", Boolean(root), "deny", 0, 1);
         return { content: [{ type: "text", text: `Refused: ${sid} is not a valid session id.` }] };
       }
+      observe.emit("tool_scope", "viking_archive_expand", "archive", Boolean(root), "allow", 1, 0);
       const uri = `viking://session/${sid}`;
       const content = await client.overview(uri);
       if (content) return { content: [{ type: "text", text: content }] };

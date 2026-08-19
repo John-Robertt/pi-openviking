@@ -239,15 +239,12 @@ async function searchOneSource(fetchJSON, query, source, limit, actorPeerId = ""
   return items.map((item) => ({ ...item, _sourceType: source.type }));
 }
 
-async function searchAllSources(fetchJSON, query, perSourceLimit, actorPeerId = "", log = () => {}, userSpace = "") {
+async function searchAllSources(fetchJSON, query, perSourceLimit, actorPeerId = "", observation = null, userSpace = "") {
   const results = await Promise.all(
     SOURCES.map((src) => searchOneSource(fetchJSON, query, src, perSourceLimit, actorPeerId, userSpace)),
   );
   const all = results.flat();
-  log("recall_search_summary", {
-    counts: SOURCES.map((src, i) => ({ type: src.type, uri: src.uri, count: results[i].length })),
-    total: all.length,
-  });
+  observation?.emit("recall_source", "raw_find", all.length);
   return all;
 }
 
@@ -277,7 +274,7 @@ async function resolveItemContent(fetchJSON, item, cfg, actorPeerId = "") {
   return content;
 }
 
-async function buildFallbackInjectionBlock(fetchJSON, items, cfg, actorPeerId = "", log = () => {}) {
+async function buildFallbackInjectionBlock(fetchJSON, items, cfg, actorPeerId = "") {
   if (items.length === 0) return null;
 
   let budgetRemaining = Math.max(200, Number(cfg.recallTokenBudget || 2000));
@@ -286,7 +283,6 @@ async function buildFallbackInjectionBlock(fetchJSON, items, cfg, actorPeerId = 
     "Relevant context from OpenViking. Use the read MCP tool to expand URIs.",
   ];
   let contentCount = 0;
-  let hintCount = 0;
 
   for (const item of items) {
     const score = (clampScore(item.score) * 100).toFixed(0);
@@ -299,7 +295,6 @@ async function buildFallbackInjectionBlock(fetchJSON, items, cfg, actorPeerId = 
 
       if (lineTokens > budgetRemaining && contentCount > 0) {
         lines.push(uriLine);
-        hintCount++;
       } else {
         lines.push(contentLine);
         budgetRemaining -= lineTokens;
@@ -307,19 +302,10 @@ async function buildFallbackInjectionBlock(fetchJSON, items, cfg, actorPeerId = 
       }
     } else {
       lines.push(uriLine);
-      hintCount++;
     }
   }
 
   lines.push("</openviking-context>");
-
-  const budgetUsed = Math.max(200, Number(cfg.recallTokenBudget || 2000)) - budgetRemaining;
-  log("recall_injection_built", {
-    contentItems: contentCount,
-    hintItems: hintCount,
-    budgetUsed,
-    budgetTotal: Math.max(200, Number(cfg.recallTokenBudget || 2000)),
-  });
 
   return lines.join("\n");
 }
@@ -378,11 +364,10 @@ function wrapContext(body) {
  */
 export async function buildServerAssembledBlock(fetchJSON, cfg, query, options = {}) {
   const actorPeerId = options.actorPeerId ?? cfg.peerId ?? "";
-  const log = options.log || (() => {});
 
-  const block = await recallViaContextFace(fetchJSON, cfg, query, { ...options, actorPeerId }, log);
+  const block = await recallViaContextFace(fetchJSON, cfg, query, { ...options, actorPeerId });
   if (block !== null) return block;
-  return recallViaEndpoint(fetchJSON, cfg, query, actorPeerId, log);
+  return recallViaEndpoint(fetchJSON, cfg, query, actorPeerId, options.observation);
 }
 
 /**
@@ -393,7 +378,7 @@ export async function buildServerAssembledBlock(fetchJSON, cfg, query, options =
  */
 export async function fetchAssembledContext(fetchJSON, cfg, query, options = {}) {
   const actorPeerId = options.actorPeerId || "";
-  const log = options.log || (() => {});
+  const observation = options.observation;
   if (await isContextFaceLegacy(options.legacyCachePath)) return null;
 
   const body = buildContextSearchBody(cfg, options);
@@ -407,21 +392,16 @@ export async function fetchAssembledContext(fetchJSON, cfg, query, options = {})
     const status = res.status || 0;
     if ((status === 400 || status === 422) && looksLikeUnknownField(res)) {
       await markContextFaceLegacy(options.legacyCachePath);
-      log("recall_context_face_unsupported", { status });
+      observation?.emit("recall_failure", null, "context_unsupported", "retry", "legacy_endpoint", status);
     } else {
-      log("recall_context_face_error", { status });
+      observation?.emit("recall_failure", null, "context_error", "retry", "legacy_endpoint", status);
     }
     return null;
   }
 
   const result = res.result || {};
   const stats = result.stats || {};
-  log("recall_context_assembled", {
-    entries: Array.isArray(result.entries) ? result.entries.length : 0,
-    usedTokens: stats.used_tokens || 0,
-    tiers: stats.tier_counts || {},
-    rewrite: stats.rewrite || "off",
-  });
+  observation?.emit("recall_source", "context_face", Array.isArray(result.entries) ? result.entries.length : 0);
   return {
     rendered: String(result.rendered || "").trim(),
     entries: Array.isArray(result.entries) ? result.entries : [],
@@ -430,14 +410,13 @@ export async function fetchAssembledContext(fetchJSON, cfg, query, options = {})
   };
 }
 
-async function recallViaContextFace(fetchJSON, cfg, query, options, log) {
-  const assembled = await fetchAssembledContext(fetchJSON, cfg, query, { ...options, log });
+async function recallViaContextFace(fetchJSON, cfg, query, options) {
+  const assembled = await fetchAssembledContext(fetchJSON, cfg, query, options);
   if (assembled === null) return null;
 
   const { rendered } = assembled;
   const digest = assembled.digest;
   if (String(assembled.stats?.rewrite || "").toLowerCase() === "no_relevant") {
-    log("recall_server_compression", { status: "empty" });
     return "";
   }
 
@@ -446,22 +425,23 @@ async function recallViaContextFace(fetchJSON, cfg, query, options, log) {
   return wrapContext(injected);
 }
 
-async function recallViaEndpoint(fetchJSON, cfg, query, actorPeerId = "", log = () => {}) {
+async function recallViaEndpoint(fetchJSON, cfg, query, actorPeerId = "", observation = null) {
   const body = buildRecallEndpointBody(cfg);
   body.query = query;
-  const res = await postRecall(fetchJSON, body, { actorPeerId, log });
+  const res = await postRecall(fetchJSON, body, { actorPeerId, observation });
   if (!res.ok) {
-    log("recall_endpoint_fallback", { status: res.status || 0 });
+    observation?.emit("recall_failure", null, "endpoint_error", "retry", "raw_find", res.status || 0);
     return null;
   }
   const rendered = String(res.result?.rendered || "").trim();
+  observation?.emit("recall_source", "legacy_endpoint", rendered ? 1 : 0);
   if (!rendered) return "";
   return wrapContext(rendered);
 }
 
 export async function postRecall(fetchJSON, body, opts = {}) {
   const actorPeerId = opts.actorPeerId || "";
-  const log = opts.log || (() => {});
+  const observation = opts.observation;
   const request = { ...body };
   const res = await fetchJSON("/api/v1/search/recall", {
     method: "POST",
@@ -473,7 +453,7 @@ export async function postRecall(fetchJSON, body, opts = {}) {
 
   const downgraded = { ...request };
   delete downgraded.peer_scope;
-  log("recall_peer_scope_downgrade", { status: res.status || 0 });
+  observation?.emit("recall_failure", null, "peer_scope_unsupported", "retry", "same_without_peer", res.status || 0);
   return fetchJSON("/api/v1/search/recall", {
     method: "POST",
     body: JSON.stringify(downgraded),
@@ -482,7 +462,7 @@ export async function postRecall(fetchJSON, body, opts = {}) {
 
 export async function buildRecallBlock(fetchJSON, cfg, query, options = {}) {
   const actorPeerId = options.actorPeerId ?? cfg.peerId ?? "";
-  const log = options.log || (() => {});
+  const observation = options.observation;
   const trimmed = String(query || "").trim();
   if (!trimmed) return null;
 
@@ -491,13 +471,12 @@ export async function buildRecallBlock(fetchJSON, cfg, query, options = {}) {
   const serverBlock = await buildServerAssembledBlock(fetchJSON, cfg, trimmed, {
     ...options,
     actorPeerId,
-    log,
   });
   if (serverBlock !== null) return serverBlock || null;
 
   const recallLimit = Math.max(1, Number(cfg.recallLimit || DEFAULT_CONTEXT_LIMIT));
   const perSourceLimit = Math.max(recallLimit * 2, 8);
-  const raw = await searchAllSources(fetchJSON, trimmed, perSourceLimit, actorPeerId, log, options.userSpace);
+  const raw = await searchAllSources(fetchJSON, trimmed, perSourceLimit, actorPeerId, observation, options.userSpace);
   if (raw.length === 0) return null;
 
   const profile = buildQueryProfile(trimmed);
@@ -505,13 +484,7 @@ export async function buildRecallBlock(fetchJSON, cfg, query, options = {}) {
   const filtered = raw.filter((it) => clampScore(it.score) >= scoreThreshold);
   filtered.sort((a, b) => rankItem(b, profile) - rankItem(a, profile));
   const picked = dedupeItems(filtered).slice(0, recallLimit);
-  log("recall_picked", {
-    rawCount: raw.length,
-    filteredCount: filtered.length,
-    pickedCount: picked.length,
-    items: picked.map((it) => ({ type: it._sourceType, uri: it.uri, score: clampScore(it.score) })),
-  });
 
   if (picked.length === 0) return null;
-  return buildFallbackInjectionBlock(fetchJSON, picked, cfg, actorPeerId, log);
+  return buildFallbackInjectionBlock(fetchJSON, picked, cfg, actorPeerId);
 }

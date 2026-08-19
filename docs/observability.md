@@ -37,11 +37,13 @@
 Pi session 可以跨进程恢复，因此 `run` 区分不同观察实例，`session` 只负责把相关记录关联到活动会话。
 
 一个完整 run 的第一条记录是 `kind=state, stage=observe_run_start`，最后一条记录是
-`kind=state, stage=observe_run_end`；两者使用 `mode=snapshot`，结束记录带 accepted/dropped 数量和写出该记录前
-已知的 sink 状态，但不声称自身已经 flush/close。最终写入确认由进程退出后的 verifier 或读取者完成。进程崩溃、
-写入失败、队列丢弃或缺少结束记录都表示证据不完整；不完整记录仍可提供线索，但其中
-“没有出现某事件”不能作为结论。一个 run 可以先后观察多个 Pi session；每条记录的 `session` 只标识该记录发生时
-的活动会话。
+`kind=state, stage=observe_run_end`；两者使用 `mode=snapshot`。结束记录中的 `accepted` 是从 start 到结束记录入队前
+成功进入队列的记录数（包含 start、不包含 end），`dropped` 是从 run 创建到 finalization 开始前，因 schema、队列或
+不完整状态而未能入队的记录尝试数；观察未启用时及 `finish` 完成后的调用位于该 run 边界之外，不计数。两者都是非负整数；end 成功入队后，只读状态中的 `accepted` 比该记录
+携带的值大 1。结束记录同时带入队前已知的 sink 状态，但不声称自身已经 flush/close。最终写入确认由进程退出后的
+verifier 或读取者完成。进程崩溃、写入失败、队列丢弃或缺少结束记录都表示证据不完整；不完整记录仍可提供线索，
+但其中“没有出现某事件”不能作为结论。一个 run 可以先后观察多个 Pi session；每条记录的 `session` 只标识该记录
+发生时的活动会话。
 
 ### 版本化记录
 
@@ -57,7 +59,6 @@ Pi session 可以跨进程恢复，因此 `run` 区分不同观察实例，`sess
   "kind": "boundary",
   "stage": "client_http",
   "op": 7,
-  "parentOp": 3,
   "data": {
     "phase": "begin",
     "method": "POST",
@@ -76,7 +77,6 @@ Pi session 可以跨进程恢复，因此 `run` 区分不同观察实例，`sess
 | `kind`          | `boundary`、`decision`、`state`、`failure` 之一                                          |
 | `stage`         | 稳定的源码点位名，采用 `module_action`；重构行号不得改变其语义                           |
 | `op`            | run 内操作号；`boundary` 必带，其他记录在属于某操作时携带                                |
-| `parentOp`      | 可选的直接父操作号；只表达本进程内已知的调用关系                                         |
 | `data`          | 由 `kind` 与 `stage` 的可执行白名单 schema 接受的诊断量                                  |
 
 `session` 使用 `sha256(canonicalJsonBytes(["pi-openviking/observation-session", 1, piSessionId]))` 计算，使同一
@@ -91,7 +91,7 @@ Pi session 可以跨进程恢复，因此 `run` 区分不同观察实例，`sess
 | `boundary`   | 与 Pi 或外部服务实际交互了什么 | `begin`/`end` 使用同一 `op`；`end` 必带 `outcome` 与 `durationMs`                                |
 | `decision`   | 为什么选择了该后续路径         | 同时记录影响选择的安全输入量和选中的 `branch`                                                    |
 | `state`      | 长生命周期状态是什么、何时变化 | `mode=change` 时带 `from`/`to`，`mode=snapshot` 时带当前值                                      |
-| `failure`    | 哪个错误被内部吸收或转换       | 带安全的错误分类及 `disposition`：`degrade`、`retry`、`ignore` 或 `abort_operation`              |
+| `failure`    | 哪个错误被内部吸收或转换       | 带安全错误分类和 `disposition`（`degrade`/`retry`/`ignore`/`abort_operation`）；具体产品路径同记录带 `branch` |
 
 ### `boundary`
 
@@ -102,36 +102,44 @@ Pi session 可以跨进程恢复，因此 `run` 区分不同观察实例，`sess
 
 ### `decision`
 
-只观察会改变产品后续路径的判断：命名空间与 URI 边界、Content capability、ACK 推进或停止、recall 来源、
-fail-open 选择及阶段规范明确要求的其他分支。普通循环条件、格式选择和不会改变结果的局部分支不设点位。
+只观察会改变产品后续路径的判断：命名空间与 URI 边界、Content capability、ACK 推进或停止、recall 来源及阶段
+规范明确要求的其他分支。错误处置已经由同一条 `failure` 的 `disposition`/`branch` 完整表达时不再记录 `decision`；只有
+错误之外的安全输入共同决定分支时才增加 `decision`。普通循环条件、格式选择和不会改变结果的局部分支不设点位。
 
 ### `state`
 
 只观察调查者必须跨步骤理解的长生命周期状态：连接、Content capability、ACK frontier、绑定命名空间以及后续
-阶段引入的 Archive/checkpoint/`ActiveContext` 状态。状态变化时记录 `change`；会话就绪、`turn_end` 和正常
-shutdown 各记录一次 `snapshot`，使单个 run 不依赖此前历史即可解释。
+阶段引入的 Archive/checkpoint/`ActiveContext` 状态。状态首次绑定时记录 `snapshot`，随后只记录 `change`，正常
+session 结束或 shutdown 再记录最终 `snapshot`。`turn_end` 只有在当前 manifest 需要且该事实不能由初始值与 change
+流推出时才增加快照。
 
 ### `failure`
 
 `failure` 的边界由错误语义决定，不由 `catch` 语法决定：异常或错误结果被吞掉、转换、重试或用于降级时，由承担
-该决定的模块记录一次；原样向上抛出的错误由最终处理边界记录，途中不得重复。观察实现自身的失败只进入观察状态，
-不得递归产生 `failure`。
+该处置的模块记录一次；`disposition` 记录处理方式，处置选择具体产品路径时由同一记录的 `branch` 表达，不得再为同一事实
+增加 `decision`。原样向上抛出的错误由最终处理边界记录，途中不得重复。观察实现自身的失败只进入观察状态，不得递归
+产生 `failure`。
 
 ## 覆盖规则
 
-点位覆盖只从当前产品责任推导，不另建路径矩阵：
+点位覆盖只从当前产品责任推导，不另建路径矩阵。本文定义语义和推导规则，现行点位明细只保留一份：
 
-1. `AGENTS.md`“必须保持的系统保证”中涉及外部交互、拒绝、冲突、降级或状态推进的保证必须可由上述四类记录解释；
-2. `verify:observability:live` 的 manifest 声明既有路径的预期 stage/outcome；后续 phase manifest 只声明该阶段新增
-   或改变的观察责任，不追改已经关闭阶段的 manifest；
-3. 新增或改变运行时路径时，同时观察成功结果和每条会改变产品行为的失败结果；
-4. 同一事实只在承担该职责的模块观察一次，调用方不得从返回值反推被调用方内部过程。
+1. 当前产品责任来自 `docs/spec.md`；`docs/roadmap.md` 的实施状态排除尚未落地的目标，`docs/design.md` 与生产代码确认
+   已存在的行为及其责任模块，`AGENTS.md` 只提供导航，不作为观察契约来源；
+2. `shared/observe.mjs` 的 stage registry 是现行点位的唯一机器可读清单；每个 stage 只声明一个 owner、kind、必需/允许
+   字段与有限 outcome，调用点和 verifier 都引用该清单，不另写一份 schema；
+3. `verify:observability:live` 的当前 manifest 引用 registry 中全部现行 stage，并为成功与受控失败 workload 声明预期
+   branch/outcome；阶段 manifest 只增加该阶段 workload 的预期，不拥有完整点位清单；
+4. 产品责任新增、改变、替换或删除时同步更新 registry 与当前 observability manifest；旧定义只留在版本历史和既有
+   artifact，不得继续约束现行点位；
+5. 新增或改变运行时路径时，同时观察成功结果和每条会改变产品行为的失败结果；
+6. 同一事实只在承担该职责的模块观察一次，调用方不得从返回值反推被调用方内部过程。
 
 ## 字段与脱敏
 
 脱敏采用可执行白名单，而不是对任意对象做黑名单过滤：
 
-- `shared/observe.mjs` 为每个 `kind`/`stage` 声明允许的字段、类型、枚举、长度和可空性；未声明字段不得输出。
+- stage registry 中的字段 schema 采用白名单，声明类型、枚举、长度和可空性；未声明字段不得输出。
 - 允许的数据只有有限数值、布尔、`null`、代码拥有的枚举、无参数 route 模板、协议已有 hash、计数/长度，以及
   通过格式校验的 OpenViking `traceId`。
 - 原始 session/entry/user id、URI、HTTP path/query/header/body、prompt、模型输出、事件 payload、凭证和外部
@@ -149,27 +157,31 @@ shutdown 各记录一次 `snapshot`，使单个 run 不依赖此前历史即可�
 | 去向             | 配置                      | 契约                                                                                 |
 | ---------------- | ------------------------- | ------------------------------------------------------------------------------------ |
 | 新文件           | `OV_OBSERVE=<path>`       | 父目录必须已存在；以 `wx`/`0600` 独占创建；不跟随已有文件或链接，不自动创建目录      |
-| 继承文件描述符   | `OV_OBSERVE_FD=<3..999>`  | 必须指向大小为 0、属主为当前用户且 group/other 权限位为 0 的可写常规文件；进程不解析其路径 |
+| 继承文件描述符   | `OV_OBSERVE_FD=<整数>`     | 值必须为十进制整数且不小于 3；FD 必须指向大小为 0、属主为当前用户且 group/other 权限位为 0 的可写常规文件；进程不解析其路径 |
 
-两个变量同时设置、配置非法或打开失败时，观察保持关闭并把原因保存为无敏感值的内存状态；不得抛出、回退到另一
-去向或改变 Pi 行为。一个 sink 只承载一个 run，因此无需轮转、追加到旧文件或在记录中猜测进程边界。
+两个变量均未设置时状态为 `disabled`，reason 为 `not_requested`。进程初始化只判断一次变量是否存在并绑定 no-op；此后
+观察调用不触碰文件系统，不读取时钟，不序列化、散列、分配 op 或构造逐记录数据。调用点只能传递产品路径已经拥有的
+值，不得在调用前执行仅供观察使用的计算。固定的只读 disabled 状态不属于逐记录工作。
+
+任一变量存在即表示请求观察。两个变量同时设置、值非法或打开失败时状态为 `incomplete`，只保存无敏感值的 reason；
+一次性校验或打开可以执行该去向必需的系统调用，但不得抛出、回退到另一去向或改变 Pi 行为。成功打开后状态为
+`ready` 并创建 run。一个 sink 只承载一个 run，因此无需轮转、追加旧文件或在记录中猜测进程边界。
 
 统一实现使用单个有界队列和单个顺序 writer。运行时观察调用不得 `await`、抛出或同步写文件；队列满、序列化失败、
-部分写或 writer 错误时立即停止接受新记录，并把 run 标记为不完整。正常 shutdown 只在产品已有的 shutdown 期限内
-排空队列，不得新增独立等待预算。
-
-关闭状态只执行一次启用判断，不触碰文件系统、不序列化、不散列，也不构造观察实现内部对象。调用点只能传递产品
-路径已经拥有的值，不得在调用前执行仅供观察使用的昂贵计算。
+部分写或 writer 错误时转为 `incomplete`，停止接受新记录并按 `ObservationRun` 定义累计 dropped。writer 在产品 shutdown 工作期间
+继续排空；调用方先停止会产生记录的健康检查、同步和 transport，再固定产品状态推进、取消与 close 结果。观察随后只能使用
+既有 shutdown 期限的剩余时间写入 end、排空并关闭 sink，不得缩短或延长产品操作的期限，也不得改变其顺序、返回值或
+结果。已知生产者未在期限内停止时不得写入 end；flush 或 close 时间不足同样只使观察状态不完整，不新增等待预算。
 
 统一实现暴露只读观察状态，供 `/viking` 与 live verifier 显示 `disabled`、`ready`、`incomplete` 及无敏感值的
-reason code、accepted/dropped 数量。该状态只服务诊断和验收，任何产品决策不得读取它。
+reason、accepted/dropped 数量。该状态只服务诊断和验收，任何产品决策不得读取它。
 
 ## 完整证据
 
 只有同时满足下列条件的 run 才能证明某事件没有发生：
 
-1. `observe_run_start` 与 `observe_run_end` 使用同一 schema 和 run，结束记录声明 dropped 为 0 且此前无 sink 错误；
-2. `seq` 连续，所有非崩溃场景的 `boundary begin` 都有同 op 的唯一 `end`；
+1. `observe_run_start` 与 `observe_run_end` 使用同一 schema 和 run；结束记录声明 `accepted=end.seq-1`、`dropped=0` 且此前无 sink 错误；
+2. `seq` 连续，所有非崩溃场景的 `boundary begin` 都有同 op、同 session 的唯一 `end`；
 3. 读取者在进程退出后能完整解析 artifact；live verifier 从进程外确认 sink 写入、flush 与 close 没有错误；
 4. workload 声明的预期 stage、branch、outcome 与状态快照全部出现；
 5. 原始记录 hash 与 verifier summary 中保存的证据 hash 一致。
@@ -178,9 +190,11 @@ reason code、accepted/dropped 数量。该状态只服务诊断和验收，任�
 
 ## 代码放置与唯一性
 
-- `shared/observe.mjs` 只负责 run、记录 schema、脱敏、队列、sink 和观察状态，不读取或推断业务状态。
+- `shared/observe.mjs` 只负责 active stage registry、run、记录 schema、脱敏、队列、sink 和观察状态，不读取或推断业务状态。
 - 点位位于承担该职责的模块内部并紧邻实际边界、判断或状态更新；观察调用不得成为条件、返回值或时序依赖。
-- `OV_DEBUG_LOG` 等自由文本调试日志属于第二套观察点，统一实现落地时必须删除。
+- 任何以复原运行过程为职责、写到统一 sink 之外的持久或进程外输出都是第二套观察点，包括 `OV_DEBUG_LOG`、自由文本
+  文件日志、stderr debug 和 logger transport，统一实现落地时必须删除。只呈现当前产品结果且不承担过程复原的用户
+  通知、配置错误和 `/viking` 状态不属于第二套观察点。
 - `ov-observation` Pi entry 记录实际注入内容，是产品事实，不属于本标准。
 - `scripts/e2e-probe.ts` 捕获原始 provider payload，是受 `docs/verification.md` 约束的测试证据，不得套用观察记录
   schema 或脱敏规则；它与观察实现只能共享无业务语义的私有 JSONL sink 能力。
@@ -190,7 +204,7 @@ reason code、accepted/dropped 数量。该状态只服务诊断和验收，任�
 
 新增或改变运行时边界、路径判断、长生命周期状态或失败处置时，必须同时满足：
 
-1. 相关 manifest 的成功标准与证伪条件能映射到最小必要 stage，没有为历史实现保留冗余点位；
+1. 当前 observability manifest 的成功标准与证伪条件覆盖每个 active stage，registry 不含没有当前产品责任或消费者的点位；
 2. 记录 schema、脱敏、禁用路径、sink 失败和关联规则通过 deterministic checks；
 3. 相关 live gate 的成功与受控失败 workload 都产生完整 run，summary 保存允许的阶段/outcome 计数和证据 hash；
 4. 观察记录没有进入 Pi JSONL 或 OpenViking，仓库中没有第二套运行过程观察。

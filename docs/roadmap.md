@@ -18,10 +18,11 @@
 提供真实边界证据。该门禁断言的范围见 [`docs/verification.md`](./verification.md) 的阶段门禁表；
 workload、身份与阈值由 `test/live/phase0.workloads.json` 及其固定 hash 承载。
 
-**当前工作是下文“可观测性基线（横切）”**，其收敛项与验收标准见该节。统一观察记录尚未接通，
-因此调查需要各自搭建临时观察手段。
+**可观测性基线出口已关闭。** `shared/observe.mjs` 的 active stage registry 是现行点位唯一清单；关闭零工作、
+sink/schema fail-open、字节一致性和职责模块接点由 deterministic checks 证明，`verify:observability:live` 在固定
+manifest/hash 下覆盖成功 recall/同步、断线、409 冲突、URI 拒绝和持久清理。该 gate 此后作为每个阶段的常驻出口条件。
 
-**Phase 1 尚未开始。**
+**当前工作是 Phase 1 的基线调查；Phase 1 实现尚未开始。**
 
 ## 实施顺序
 
@@ -52,20 +53,22 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 收敛先于 Phase 1 的基线调查完成，因为该调查是观察记录的第一个消费者：步骤 2 要求用观察记录区分
 候选的原子机制，缺少统一记录就只能依赖一次性探针。
 
-- 建立 `shared/observe.mjs`：实现版本化 run/record、四类 stage schema、会话 hash、本地操作关联、字段白名单、
-  单一有界 writer、两种互斥去向与只读观察状态；
+- 建立 `shared/observe.mjs`：实现唯一 active stage registry（owner/kind/schema/outcome）、版本化 run/record、会话 hash、
+  本地操作关联、字段白名单、单一有界 writer、两种互斥去向与只读观察状态；
 - 把 `index.ts` 与 `sync.ts` 的 `OV_DEBUG_LOG` 自由文本日志收敛为职责模块内的结构化点位；
 - 为 `client.ts` 的 HTTP 请求建立成对 `boundary`，只记录 route 模板，并在实际响应存在时透出合法 `traceId`；
-- 为 Pi lifecycle 建立独立 boundary schema，接通 recall/tool/capability/ACK/fail-open 的最小 `decision`，并按实际
-  长生命周期状态和错误处置补 `state`、`failure`；
+- 为 Pi lifecycle 建立独立 boundary schema，接通 recall/tool/capability/ACK 的最小 `decision`，错误直接触发的 fail-open
+  由同一条 `failure` 的 disposition/branch 表达，并按实际长生命周期状态补 `state`；
 - `/viking` 只读展示观察状态；`scripts/e2e-probe.ts` 继续承担原始 provider payload 验证，不并入观察记录。
 
 **验收**：
 
-- deterministic checks 证明版本与 stage schema、脱敏、关闭时无 I/O/序列化、固定输入下路径与 FD 字节等价，
-  sink 配置或写入失败只把 run 标为不完整，且观察记录不进入事实源；
-- `verify:observability:live` 的真实 Pi 成功与受控降级 workload 各产生一个完整 run，能够按 op 复原 OpenViking
-  交互、分支选择、状态变化和失败处置，且无非法记录、丢弃或未配对 boundary；
+- deterministic checks 证明 active stage registry 唯一且无冗余、版本与 schema/脱敏成立、未请求观察时初始化后无
+  文件系统/时钟/序列化/hash/op/逐记录构造调用、固定输入下路径与 FD 字节等价；sink 配置或写入失败只产生
+  `incomplete`，产品返回值、状态和调用顺序与未观察基线一致，且观察记录不进入事实源；
+- `verify:observability:live` 的当前 manifest 覆盖 registry 全部 active stage；真实 Pi 成功与受控降级 workload 各产生
+  一个完整 run，能够按 op 复原 OpenViking 交互、分支选择、状态变化和失败处置，且无非法记录、丢弃或未配对
+  boundary；
 - 仓库内不存在第二套运行过程观察。
 
 ### Phase 0：完整记录与最小可靠同步
@@ -247,10 +250,6 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 
 ## 下一实施入口
 
-当前入口是“可观测性基线（横切）”：先实现 `shared/observe.mjs` 的版本化记录、stage schema、关联、脱敏、
-有界 writer 和观察状态，再补成对 HTTP/lifecycle boundary 并删除两份 `OV_DEBUG_LOG`，最后按产品责任接通最小
-decision/state/failure。该基线通过成功与受控降级的真实验收后，Phase 1 的基线调查即以完整观察 run 为证据来源。
-
-其后是 Phase 1 的基线调查：按“实施顺序”的调查闭环先建立 `test/live/phase1.workloads.json`
-manifest，再对真实 OpenViking 0.4.13 运行 Archive 原子绑定与崩溃语义的最小基线探针；获得原子
-可见性、幂等恢复和确定性读取证据后才实现 Archive。
+当前入口是 Phase 1 的基线调查：按“实施顺序”的调查闭环建立 `test/live/phase1.workloads.json` manifest，
+使用已经通过常驻 gate 的统一观察 run，对真实 OpenViking 0.4.13 调查 Archive 原子绑定、可见性与崩溃语义；
+把 baseline、数值阈值、预期变化和证伪条件固定后，再选择并实现 Archive 机制。

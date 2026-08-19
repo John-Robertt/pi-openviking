@@ -30,9 +30,11 @@ test("/viking 展示 JSONL、Content capability、ACK 和待重放状态", () =>
       pendingEntries: 4,
       lastFailure: null,
     },
+    observation: { state: "ready", reason: "ready", accepted: 12, dropped: 0 },
   });
   assert.match(output, /来源：Pi JSONL/);
   assert.match(output, /适配器：content-api-v1（可用）/);
+  assert.match(output, /观察：就绪（accepted=12，dropped=0）/);
   assert.match(output, /ACK frontier：2 个 leaves/);
   assert.match(output, /待重放：4 个 entry/);
 });
@@ -48,9 +50,11 @@ test("/viking 在断线时明确 fail-open 和最近失败", () => {
       pendingEntries: 2,
       lastFailure: "RecordedEventSyncError: unavailable",
     },
+    observation: { state: "incomplete", reason: "write_failed", accepted: 5, dropped: 2 },
   });
   assert.match(output, /来源：进程内 best-effort/);
   assert.match(output, /待重放：2 个 entry/);
   assert.match(output, /主任务：fail-open/);
   assert.match(output, /最近同步失败：RecordedEventSyncError: unavailable/);
+  assert.match(output, /观察：不完整（write_failed，accepted=5，dropped=2）/);
 });

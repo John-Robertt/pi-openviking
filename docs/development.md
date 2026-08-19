@@ -66,6 +66,7 @@ npm run dev -- status
 
 # 5. 重跑受影响阶段的 live gate
 npm run verify:phase0:live
+npm run verify:observability:live
 ```
 
 第 3 步的 manifest 更新不是形式手续。manifest 声明的是“该阶段的结论在哪一组真实身份上成立”，
@@ -185,6 +186,24 @@ wrapper，使 Pi `/reload` 可用。reload 会先触发 `session_shutdown`，再
 
 `scripts/e2e-probe.ts` 是供 live verifier 使用的 payload 采集扩展，必须最后加载，只向 verifier
 预开的私有 FD 写入；普通交互开发不启用 payload 采集。
+
+## 统一观察调查
+
+观察默认关闭；普通开发不设置 `OV_OBSERVE` 或 `OV_OBSERVE_FD`。需要调查单次 Pi 进程时，先建立仓库内私有
+artifact 目录，再选择一种去向：
+
+```bash
+mkdir -p test/.artifacts/manual-observation
+OV_OBSERVE=test/.artifacts/manual-observation/run.jsonl npm run dev -- pi
+```
+
+文件必须尚不存在；另一种方式由父进程预开 `0600` 空文件并只向子进程继承 `OV_OBSERVE_FD`。两种变量不得同时
+设置。`/viking` 只读显示 `disabled`、`ready` 或 `incomplete` 以及 accepted/dropped；观察失败不改变 Pi、同步或
+recall 结果。记录 schema、脱敏、完整 run 与清理条件只由 [`docs/observability.md`](./observability.md) 定义。
+
+`npm run verify:observability:live` 是常驻横切 gate。它要求隔离服务已由 `dev up` 启动，并会使用开发模型、随机
+session namespace、受控 409 对象及 URI 拒绝 workload；执行前必须取得真实模型调用和所属测试 namespace 写入/删除
+授权。verifier 只在 marker 与精确根匹配时删除，且在 OpenViking 目录骨架物化窗口后再次核对全部已写对象不存在。
 
 ## 安全清理
 

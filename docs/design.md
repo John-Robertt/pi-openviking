@@ -1,4 +1,4 @@
-# 当前 Phase 0 实现设计
+# 当前实现设计
 
 ## 文档职责
 
@@ -16,11 +16,20 @@
 
 - 绑定 Pi 生命周期；
 - 在 `session_start` 初始化会话来源和 ACK；
-- 在 `turn_end`、`session_compact` 非阻塞调度观察或同步；
-- `session_shutdown` 给予同步 500ms grace 后取消 transport，未确认内容留在 Pi 来源；
+- 在 `turn_end`、`session_compact` 非阻塞调度会话来源检查或同步；
+- `session_shutdown` 给予同步 500ms grace 后取消 transport，未确认内容留在 Pi 来源；观察已启用时只用该期限的
+  剩余时间完成独立记录；
 - recall 实际注入时追加 `ov-observation` custom entry，再由同一事件链同步；
 - OpenViking 不可用时只更新待重放诊断，不阻塞 Pi 主任务；
 - 不触发 Pi compaction，不构造 Archive，不替换 provider 上下文。
+
+### `shared/observe.mjs`
+
+- 维护唯一 active stage registry、版本化记录与字段白名单；
+- 未请求观察时提供固定 no-op，调用不读取时钟、不序列化、不散列也不分配操作号；
+- 启用时将职责模块提供的既有安全值写入单个私有 JSONL sink；有界队列、schema 或 sink 失败只把观察状态转为
+  `incomplete`；
+- 不读取产品状态，不写 Pi JSONL、ACK 或 OpenViking，也不向任何业务路径提供决策输入。
 
 ### `shared/pi-session-source.mjs`
 
@@ -111,6 +120,9 @@ sync-ack
 /viking diagnostics
 ```
 
+观察链与上述产品链正交：各责任模块在实际 boundary、decision、state 或 failure 处调用固定 no-op/observer，统一写入
+私有 JSONL；该 JSONL 没有返回产品链的依赖边。
+
 ## 失败语义
 
 失败、冲突、重放和可用性边界由 [`docs/spec.md`](./spec.md) 的“准确性与可用性边界”统一定义；
@@ -130,4 +142,9 @@ sync-ack
 - `test/client-content.test.mjs`：HTTP transport；
 - `test/sync-manager.test.mjs`：重启、ACK 丢失、分支和 fail-open；
 - `test/config-schema.test.mjs`：唯一配置 schema；
+- `test/observe.test.mjs`：registry、记录 schema、关闭零工作、sink 失败和字节一致性；
+- `test/observability-integration.test.mjs`：职责模块接点、脱敏及 fail-open 产品等价性；
+- `test/observation-evidence.test.mjs`、`test/observability-live-verifier.test.mjs`：完整 run 与 manifest 契约；
 - `test/viking-status.test.mjs`：运行诊断。
+
+真实边界由 `npm run verify:observability:live` 覆盖成功 recall/同步、断线、409 冲突、URI 拒绝与持久清理。

@@ -40,16 +40,20 @@ takeover 链路；固定 golden 回放只提供结果对照。
 观察记录支持上述四类证据，但不构成新的产品事实。其完整性与安全性按 `docs/observability.md` 判定，验证方法
 固定如下：
 
-- deterministic checks 以固定时钟、run/session/op 和输入向量逐条校验版本化 record 与 stage schema；未知字段、
-  原始 URI/path/error message、凭证和会话正文必须使记录被拒绝且不得出现在输出或错误状态；
-- 两个观察变量均未设置时，以文件系统、序列化和 hash 依赖的调用计数证明只执行启用判断；配置冲突、非法 FD、
-  队列满、部分写和关闭错误不得抛出或改变产品结果，只能产生 `incomplete` 状态；
+- deterministic checks 以固定时钟、run/session/op 和输入向量校验 active stage registry 的 stage 唯一性、owner、kind、
+  必需/允许字段及版本化 record；未知字段、原始 URI/path/error message、凭证和会话正文必须使记录被拒绝且不得出现
+  在输出或错误状态；
+- 两个观察变量均未设置时，以文件系统、时钟、序列化、hash、op 分配和逐记录构造依赖的调用计数证明初始化后均为 0；
+  配置冲突、非法 FD、打开失败、队列满、部分写、stalled writer/close 和关闭错误只能产生 `incomplete`，并逐项比较
+  产品返回值、状态和调用顺序与未观察基线一致；生产者未在 shutdown 期限内停止时不得生成完整 end；
 - 同一组固定记录分别通过新文件和继承 FD 写出，规范 JSONL 字节必须一致；文件创建、FD owner/mode/size 与路径
   不可复用条件分别验证；
-- live manifest 为成功和受控失败 workload 声明预期 stage、branch、outcome 与状态快照。verifier 逐 run 校验
-  start/end、连续 seq、boundary op 配对、观察状态和原始记录 hash；子进程退出后由父进程同步并关闭其保留的 artifact
-  FD，再读取最终字节。缺失、丢弃、写入、同步或关闭错误都使 gate 失败；
-- verifier 同时断言观察记录未进入 Pi JSONL 和 OpenViking 事件命名空间，且仓库运行路径没有第二套观察点。
+- 当前 observability manifest 引用 registry 的全部 active stage，并为成功和受控失败 workload 声明预期 branch/outcome
+  与必要状态快照；verifier 逐 run 校验 start/end、accepted/dropped、连续 seq、boundary op/session 配对、观察状态和原始记录
+  hash。子进程退出后由父进程同步并关闭其保留的 artifact FD，再读取最终字节；缺失、丢弃、写入、同步或关闭错误都使
+  gate 失败；
+- verifier 同时断言观察记录未进入 Pi JSONL 和 OpenViking 事件命名空间，并按 `docs/observability.md`“代码放置与唯一性”
+  的边界检查生产运行路径没有第二套观察点。
 
 原始观察 JSONL 只存在于 `test/.artifacts/live/{runId}`。summary 的 `observationRuns` 仅保留每个观察 run 的
 schema version、run、seq 范围、stage/kind/outcome 计数、accepted/dropped、完整性结论与原始文件 hash，不保留
@@ -61,13 +65,14 @@ schema version、run、seq 范围、stage/kind/outcome 计数、accepted/dropped
 
 每个实施阶段交付一个由 `package.json` 暴露的 live verifier：`verify:phase0:live`、`verify:phase1:live`、
 `verify:phase2a:live`、`verify:phase2b:live`、`verify:phase2c:live`、`verify:phase3:live` 和
-`verify:phase4:live`；横切可观测性基线独立使用 `verify:observability:live`，不改变已关闭阶段的 manifest。一个入口
-可以组合多个聚焦脚本，但每个出口只引用自己的入口。live verifier 是相应实现的一部分，mock、内存 transport、
-合成模型输出和人工检查不构成门禁替代品。
+`verify:phase4:live`；横切能力使用常驻的 `verify:observability:live`，其当前 manifest 覆盖 active stage 全集。阶段 gate
+引用同一 registry，只增加本阶段 workload 的预期，不复制观察 schema；产品责任变化时更新当前 observability manifest，
+已关闭阶段仍验证其现行产品保证，但不得要求已被替换或删除的观察点。一个入口可以组合多个聚焦脚本，但每个出口只
+引用自己的入口。live verifier 是相应实现的一部分，mock、内存 transport、合成模型输出和人工检查不构成门禁替代品。
 
 所有 live verifier 使用同一契约：
 
-- 每个阶段和横切基线先提交 `test/live/{gate}.workloads.json` manifest，固定 workload/seed、适用版本与真实进程/
+- 每个阶段和横切 observability gate 先提交 `test/live/{gate}.workloads.json` manifest，固定 workload/seed、适用版本与真实进程/
   端点身份、成功标准、证伪条件、证据提取方式和阈值决策规则；基线探针完成后，将 baseline、数值阈值
   与预期变化写入 manifest 并在实现前固定其 hash，运行时不能临时改变；
 - 启动前连接并校验 manifest 声明的真实 Pi、OpenViking、provider/model、VLM、prompt 和协议身份；
@@ -88,7 +93,8 @@ schema version、run、seq 范围、stage/kind/outcome 计数、accepted/dropped
   脱敏测量、身份与证据 hash；
 - OpenViking 写入前确认本次随机 namespace 不存在或为空，以 create-if-absent 写入包含 run ID、
   manifest hash 和随机 nonce 的 ownership marker，并逐字节回读。verifier 只在写入前检查与删除前复核
-  均匹配同一精确根路径和 marker 字节时删除该 namespace；
+  均匹配同一精确根路径和 marker 字节时删除该 namespace；删除后越过服务端目录物化窗口，全部已写对象必须持续
+  不存在；OpenViking 0.4.13 重建的无文件目录骨架只记录，不作为产品对象残留；
 - 受管环境可执行中断/重启；远端破坏性测试需要显式 opt-in。清理前先生成脱敏测量与证据 hash，随后
   成功或失败都删除远端对象；清理失败使 gate 失败；
 - 完成测量后，成功时删除整个本地 run 目录；失败时删除全部 raw payload，只保留字段白名单式脱敏诊断。

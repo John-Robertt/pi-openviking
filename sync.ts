@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import type { OVClient } from "./client.js";
 import { canonicalJsonBytes } from "./shared/canonical-json.mjs";
 import { parsePiSessionJsonl } from "./shared/pi-session-source.mjs";
+import { observation, type Observation } from "./shared/observe.mjs";
 import { RecordedEventAdapter } from "./shared/recorded-event-adapter.mjs";
 import { projectPiEntries } from "./shared/recorded-event.mjs";
 import { deriveHarnessSessionId } from "./shared/session-model.mjs";
@@ -36,18 +36,9 @@ export interface SyncStatus {
 interface SyncManagerOptions {
   ackPathForSession?: (sessionId: string) => string | null;
   adapterFactory?: (client: OVClient, userRoot: string) => RecordedEventAdapter;
+  observation?: Observation;
 }
 
-function debugLog(message: string): void {
-  const file = process.env.OV_DEBUG_LOG;
-  if (!file) return;
-  try {
-    mkdirSync(dirname(file), { recursive: true });
-    appendFileSync(file, `${new Date().toISOString()} ${message}\n`);
-  } catch {
-    // Diagnostics must never affect the Pi task.
-  }
-}
 
 function defaultAckPath(
   sessionId: string,
@@ -62,6 +53,7 @@ function defaultAckPath(
 export class SyncManager {
   private client: OVClient;
   private options: SyncManagerOptions;
+  private observe: Observation;
   private ovSessionId: string | null = null;
   private piSessionId: string | null = null;
   private adapter: RecordedEventAdapter | null = null;
@@ -80,16 +72,23 @@ export class SyncManager {
   constructor(client: OVClient, options: SyncManagerOptions = {}) {
     this.client = client;
     this.options = options;
+    this.observe = options.observation ?? observation;
   }
 
   get sessionId(): string | null { return this.ovSessionId; }
   get status(): SyncStatus { return { ...this.syncStatus, acknowledgedLeaves: [...this.syncStatus.acknowledgedLeaves] }; }
+
+  observeFinalState(): void {
+    this.observe.emit("sync_capability", "snapshot", this.syncStatus.capability);
+    this.observe.emit("sync_ack", "snapshot", this.ack, null, this.syncStatus.pendingEntries);
+  }
 
   async ensureSession(piSessionId: string): Promise<boolean> {
     if (this.piSessionId === piSessionId && this.adapter) return true;
     // in-memory 父子映射只描述当前会话的 entry 树，换会话即失效。
     if (this.piSessionId !== piSessionId) this.knownParents.clear();
     this.piSessionId = piSessionId;
+    this.observe.bindSession(piSessionId);
     this.ovSessionId = deriveHarnessSessionId("pi-", piSessionId);
 
     let userRoot = this.client.userRoot;
@@ -99,7 +98,7 @@ export class SyncManager {
     }
     this.adapter = this.options.adapterFactory
       ? this.options.adapterFactory(this.client, userRoot)
-      : new RecordedEventAdapter(this.client, { userRoot });
+      : new RecordedEventAdapter(this.client, { userRoot, observation: this.observe });
 
     this.ackPath = this.options.ackPathForSession
       ? this.options.ackPathForSession(piSessionId)
@@ -109,8 +108,11 @@ export class SyncManager {
     } catch (error: any) {
       this.ack = { acknowledgedLeaves: [] };
       this.syncStatus.lastFailure = error?.message || String(error);
+      this.observe.emit("sync_failure", error, "ack_read", "degrade", "replay_all", 0, 0);
     }
     this.publishStatus();
+    this.observe.emit("sync_capability", "snapshot", this.syncStatus.capability);
+    this.observe.emit("sync_ack", "snapshot", this.ack, null, this.syncStatus.pendingEntries);
     return true;
   }
 
@@ -130,12 +132,14 @@ export class SyncManager {
     const pending = this.operationTail;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await Promise.race([
+      const drained = await Promise.race([
         pending.then(() => true),
         new Promise<boolean>((resolve) => {
           timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
         }),
       ]);
+      this.observe.emit("shutdown_grace", timeoutMs, drained);
+      return drained;
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -153,6 +157,7 @@ export class SyncManager {
         sessionId: this.piSessionId || undefined,
         leafId: typeof sessionManager.getLeafId === "function" ? sessionManager.getLeafId() : null,
       });
+      this.observe.emit("sync_source", "persistent_jsonl", parsed.entries.length);
       return { entries: parsed.entries, parentById: parsed.parentById, source: "persistent-jsonl" };
     }
 
@@ -164,6 +169,7 @@ export class SyncManager {
     for (const entry of Array.isArray(entries) ? entries : []) {
       if (typeof entry?.id === "string") this.knownParents.set(entry.id, entry.parentId ?? null);
     }
+    this.observe.emit("sync_source", "in_memory", Array.isArray(entries) ? entries.length : 0);
     return {
       entries: Array.isArray(entries) ? entries : [],
       parentById: this.knownParents,
@@ -176,10 +182,11 @@ export class SyncManager {
   }
 
   private async observeSessionNow(sessionManager: any, failure: string): Promise<SyncBranchResult> {
-    if (!this.piSessionId || !this.adapter) return this.emptyResult("sync session is not initialized");
+    if (!this.piSessionId || !this.adapter) return this.uninitializedResult();
     try {
       const { entries, parentById, source } = await this.sessionSource(sessionManager);
       const pending = entries.filter((entry) => !isEntryAcknowledged(this.ack, entry.id, parentById)).length;
+      const previousPending = this.syncStatus.pendingEntries;
       this.syncStatus = {
         source,
         capability: this.syncStatus.capability,
@@ -187,8 +194,12 @@ export class SyncManager {
         pendingEntries: pending,
         lastFailure: pending > 0 ? failure : null,
       };
+      if (previousPending !== pending) {
+        this.observe.emit("sync_ack", "change", this.ack, this.ack, previousPending, pending);
+      }
       return { added: 0, allDelivered: pending === 0, pending, failure: pending > 0 ? failure : null };
     } catch (error: any) {
+      this.observe.emit("sync_failure", error, "source", "abort_operation", "pending_replay", 0, this.syncStatus.pendingEntries);
       return this.failResult(error?.message || String(error));
     }
   }
@@ -198,11 +209,12 @@ export class SyncManager {
   }
 
   private async syncSessionNow(sessionManager: any): Promise<SyncBranchResult> {
-    if (!this.piSessionId || !this.adapter) return this.emptyResult("sync session is not initialized");
+    if (!this.piSessionId || !this.adapter) return this.uninitializedResult();
     try {
       const { entries, parentById, source } = await this.sessionSource(sessionManager);
       return await this.syncSource(entries, parentById, source);
     } catch (error: any) {
+      this.observe.emit("sync_failure", error, "source", "abort_operation", "pending_replay", 0, this.syncStatus.pendingEntries);
       return this.failResult(error?.message || String(error));
     }
   }
@@ -212,12 +224,13 @@ export class SyncManager {
     parentById: Map<string, string | null>,
     source: SyncStatus["source"],
   ): Promise<SyncBranchResult> {
-    if (!this.piSessionId || !this.adapter) return this.emptyResult("sync session is not initialized");
+    if (!this.piSessionId || !this.adapter) return this.uninitializedResult();
 
     let events: any[];
     try {
       events = projectPiEntries(this.piSessionId, entries);
     } catch (error: any) {
+      this.observe.emit("sync_failure", error, "projection", "abort_operation", "pending_replay", 0, entries.length);
       return this.failResult(error?.message || String(error), source);
     }
     const eventsByEntry = new Map<string, any[]>();
@@ -227,6 +240,7 @@ export class SyncManager {
       eventsByEntry.set(event.source.entryId, entryEvents);
     }
     const pendingEntries = entries.filter((entry) => !isEntryAcknowledged(this.ack, entry.id, parentById));
+    const previousPending = this.syncStatus.pendingEntries;
     this.syncStatus = {
       source,
       capability: this.syncStatus.capability,
@@ -234,40 +248,69 @@ export class SyncManager {
       pendingEntries: pendingEntries.length,
       lastFailure: null,
     };
+    if (previousPending !== pendingEntries.length) {
+      this.observe.emit("sync_ack", "change", this.ack, this.ack, previousPending, pendingEntries.length);
+    }
 
     let added = 0;
     for (const entry of pendingEntries) {
       const entryEvents = eventsByEntry.get(entry.id) || [];
+      let failureCode: "ack_persist" | "capability" | "delivery" = "delivery";
       try {
         const result = await this.adapter.writeEvents(this.piSessionId, entryEvents);
         if (result.acceptedEventIds.length !== entryEvents.length) {
           throw new Error(`OpenViking did not confirm every event for Pi entry ${entry.id}`);
         }
         if (!result.capabilityVerified) {
+          failureCode = "capability";
           throw new Error("OpenViking Content capability was not byte-verified");
         }
-        this.syncStatus.capability = "ready";
-        const nextAck = advanceSyncAck(this.ack, entry.id, parentById);
+        this.setCapability("ready");
+        const previousAck = this.ack;
+        const previousPending = this.syncStatus.pendingEntries;
+        const nextAck = advanceSyncAck(previousAck, entry.id, parentById);
+        failureCode = "ack_persist";
         if (this.ackPath) await writeSyncAck(this.ackPath, nextAck);
         this.ack = nextAck;
         added++;
         this.syncStatus.pendingEntries--;
+        this.observe.emit("sync_ack_advance", entryEvents.length, result.acceptedEventIds.length, result.capabilityVerified);
+        this.observe.emit("sync_ack", "change", previousAck, nextAck, previousPending, this.syncStatus.pendingEntries);
         this.publishStatus();
       } catch (error: any) {
         const status = Number(error?.status || 0);
-        if ([404, 405, 422].includes(status) || /invalid result|did not confirm/.test(error?.message || "")) {
-          this.syncStatus.capability = "mismatch";
-        }
+        const capabilityMismatch = [404, 405, 422].includes(status) || /invalid result|did not confirm/.test(error?.message || "");
+        if (capabilityMismatch) this.setCapability("mismatch");
         const failure = `${error?.name || "Error"}: ${error?.message || String(error)}${error?.uri ? ` — ${error.uri}` : ""}`;
         this.syncStatus.lastFailure = failure;
         this.publishStatus();
-        debugLog(`recorded-event sync failed: ${failure}`);
+        this.observe.emit(
+          "sync_failure",
+          error,
+          capabilityMismatch ? "capability" : failureCode,
+          "abort_operation",
+          "pending_replay",
+          added,
+          this.syncStatus.pendingEntries,
+        );
         return { added, allDelivered: false, pending: this.syncStatus.pendingEntries, failure };
       }
     }
 
     this.publishStatus();
     return { added, allDelivered: true, pending: 0, failure: null };
+  }
+
+  private setCapability(next: SyncStatus["capability"]): void {
+    const previous = this.syncStatus.capability;
+    this.syncStatus.capability = next;
+    if (previous !== next) this.observe.emit("sync_capability", "change", previous, next);
+  }
+
+  private uninitializedResult(): SyncBranchResult {
+    const failure = "sync session is not initialized";
+    this.observe.emit("sync_failure", failure, "not_initialized", "abort_operation", "pending_replay", 0, this.syncStatus.pendingEntries);
+    return this.emptyResult(failure);
   }
 
   private publishStatus(): void {

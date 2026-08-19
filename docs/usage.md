@@ -190,7 +190,8 @@ ACK 文件不包含 transcript。删除 ACK 只会使下一次从 Pi JSONL 幂�
 - Content adapter capability：待探测、可用或不兼容；
 - ACK frontier leaves；
 - 待重放 entry；
-- 最近同步失败及 fail-open 状态。
+- 最近同步失败及 fail-open 状态；
+- 独立观察状态：未启用、就绪或不完整，以及 accepted/dropped 计数。
 
 立即重放：
 

@@ -47,6 +47,15 @@ import {
 } from "../../shared/recorded-event-adapter.mjs";
 import { probeServerHealth } from "../../shared/server-health.mjs";
 import { isEntryAcknowledged, readSyncAck } from "../../shared/sync-ack.mjs";
+import {
+  AssertionLog,
+  ackFileKey,
+  checkManifestHash,
+  conflictBytesOf,
+  createRpcLineParser,
+  derivePassed,
+  sha256Hex,
+} from "./live-support.mjs";
 
 const REPO = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
 const MANIFEST_PATH = join(REPO, "test/live/phase0.workloads.json");
@@ -75,85 +84,6 @@ export function seededString(seed, n) {
   return parts.join("").slice(0, n);
 }
 
-export function sha256Hex(bytes) {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
-/** manifest 字节 hash 与固定 hash 文件一致才允许运行。 */
-export function checkManifestHash(manifestBytes, hashFileText) {
-  const expected = String(hashFileText || "").trim();
-  if (!/^[0-9a-f]{64}$/.test(expected)) return false;
-  return sha256Hex(manifestBytes) === expected;
-}
-
-/** ACK 文件名派生，与 sync.ts defaultAckPath 同一规范数组契约。 */
-export function ackFileKey(endpoint, account, user, sessionId) {
-  return createHash("sha256")
-    .update(canonicalJsonBytes(["pi-openviking/sync-ack", 1, { endpoint, account, user }, sessionId]))
-    .digest("hex");
-}
-
-/** 冲突字节：对规范字节做确定性单字节变更。 */
-export function conflictBytesOf(bytes) {
-  const copy = Buffer.from(bytes);
-  copy[copy.length - 1] = copy[copy.length - 1] ^ 0x01;
-  return copy;
-}
-
-/** passed 只由全部必要断言与清理派生。 */
-export function derivePassed(assertions) {
-  return assertions.length > 0 && assertions.every((a) => a.pass === true);
-}
-
-/**
- * RPC stdout 行解析器：只按 \n 分帧（U+2028/U+2029 不是分隔符），逐条 JSON 解析。
- * 返回 push(chunk) => parsed messages[]；不可解析行产生 { type: "__unparsed" }。
- */
-export function createRpcLineParser() {
-  let buffer = "";
-  return (chunk) => {
-    buffer += chunk;
-    const out = [];
-    let i;
-    while ((i = buffer.indexOf("\n")) >= 0) {
-      const line = buffer.slice(0, i);
-      buffer = buffer.slice(i + 1);
-      if (!line.trim()) continue;
-      try {
-        out.push(JSON.parse(line));
-      } catch {
-        out.push({ type: "__unparsed", line: line.slice(0, 200) });
-      }
-    }
-    return out;
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Assertion log
-// ---------------------------------------------------------------------------
-
-class AssertionLog {
-  constructor() {
-    this.items = [];
-  }
-  check(workload, id, expected, actual, pass, detail) {
-    const entry = { workload, id, expected, actual, pass: pass === true };
-    if (detail !== undefined) entry.delta = String(detail).slice(0, 400);
-    this.items.push(entry);
-    const mark = entry.pass ? "✓" : "✗";
-    process.stderr.write(`  ${mark} [${workload}] ${id}: expected=${truncate(expected)} actual=${truncate(actual)}${entry.pass ? "" : ` (${entry.delta ?? ""})`}\n`);
-    return entry.pass;
-  }
-  fail(workload, id, error) {
-    return this.check(workload, id, "no exception", String(error?.message || error), false, error?.stack);
-  }
-}
-
-function truncate(value) {
-  const s = typeof value === "string" ? value : JSON.stringify(value);
-  return s && s.length > 120 ? `${s.slice(0, 117)}...` : s;
-}
 
 // ---------------------------------------------------------------------------
 // Pi RPC driver
@@ -196,7 +126,6 @@ async function runPi(ctx, { workloadId, turn, endpoint, actions }) {
     [ctx.profile.taskVlm.apiKeyEnv]: ctx.apiKey,
     OV_E2E_FD: "3",
     OV_E2E_TURN: String(turn),
-    OV_DEBUG_LOG: join(runDir, "debug.log"),
   });
 
   const child = spawn(process.execPath, args, {

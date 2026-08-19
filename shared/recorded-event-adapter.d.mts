@@ -1,3 +1,4 @@
+import type { Observation } from "./observe.mjs";
 import type { PiRecordedEventV1 } from "./recorded-event.mjs";
 
 export const BATCH_MAX_OPERATIONS: 128;
@@ -43,7 +44,7 @@ export class RecordedEventSyncError extends Error {
 export function recordedEventStorageLocation(userRoot: string, sessionId: string, eventId: string): RecordedEventStorageLocation;
 
 export class RecordedEventAdapter {
-  constructor(transport: RecordedEventTransport, options: { userRoot: string });
+  constructor(transport: RecordedEventTransport, options: { userRoot: string; observation?: Observation });
   writeEvents(sessionId: string, events: PiRecordedEventV1[]): Promise<{
     acceptedEventIds: string[];
     capabilityVerified: boolean;
