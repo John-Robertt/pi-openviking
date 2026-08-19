@@ -31,7 +31,6 @@ import {
   ensureUv,
   OPENVIKING_SPEC,
   runProcess,
-  TOOLCHAIN,
   toolchainPaths,
   uvEnv,
   ZSTANDARD_SPEC,
@@ -478,7 +477,7 @@ async function uninstall() {
 // ---------------------------------------------------------------------------
 
 async function setup() {
-  say(`pi-openviking setup (v${CLI_VERSION}) — 目标服务端: ${OPENVIKING_SPEC}, ${TOOLCHAIN.xxhashConstraint}`);
+  say(`pi-openviking setup (v${CLI_VERSION}) — 目标服务端: ${OPENVIKING_SPEC}`);
   say("");
 
   try {

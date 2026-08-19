@@ -1,6 +1,6 @@
 // verify:phase0:live — Phase 0 真实验收门禁。
 //
-// 在真实 Pi CLI（RPC 模式）、真实 SessionManager、受管 OpenViking 0.4.13 与开发模型
+// 在真实 Pi CLI（RPC 模式）、真实 SessionManager、受管 OpenViking 0.4.15 与开发模型
 // 身份上执行 test/live/phase0.workloads.json 声明的四个 workload，机器断言
 // Pi JSONL → RecordedEvent → direct/chunked 对象 → entry ACK 逐项对应，以及重放、
 // 409、断线、shutdown 与清理成立。manifest 字节 hash 在实现前固定于
@@ -842,7 +842,7 @@ async function main() {
       }
     }
 
-    // 持久删除核验：OpenViking 0.4.13 会在删除后由目录语义管线物化空目录骨架（实测
+    // 持久删除核验：OpenViking 0.4.15 会在删除后由目录语义管线物化空目录骨架（实测
     // 10–40s 窗口），事件文件与 marker 不会复活。等最后一次删除越过该窗口后，逐 URI
     // 断言全部已写对象仍为 404；骨架目录是否再现只作为观察记录，不构成失败。
     const settleMs = manifest.thresholds.cleanupSettleMs;

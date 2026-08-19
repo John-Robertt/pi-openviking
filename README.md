@@ -14,7 +14,7 @@ Pi JSONL 始终保留完整历史并是 Pi 事件的唯一事实源。OpenViking
 - user、assistant、tool call/result、thinking、image、未知 part、错误、aborted、custom entry 和
   Pi compaction 均按原始 JSON 值记录；
 - 事件使用 RFC 8785 规范字节、稳定 event ID 和内容 hash；
-- OpenViking `0.4.13` Content API 以 dot-prefixed event files 保存投影；
+- OpenViking `0.4.15` Content API 以 dot-prefixed event files 保存投影；
 - 小事件直接写入，超过 8 MiB 的事件使用 claim/chunks/commit marker；
 - 服务端确认一个 Pi entry 的全部事件后才推进最小 `SyncAck`；
 - 不持久化待发送 transcript payload，也不使用数组长度作为同步水位；
@@ -27,7 +27,7 @@ Archive 和 `ActiveContext` 前不会替换 Pi 上下文。
 
 - Pi Coding Agent
 - Node.js 22.19.0 或更高版本（与当前 Pi 运行时要求一致）
-- OpenViking `0.4.13` 或通过相同 Content API 行为验收的服务
+- OpenViking `0.4.15` 或通过相同 Content API 行为验收的服务
 
 ## 快速开始
 

@@ -5,10 +5,6 @@
  * function is parameterized by home, reports through log, and throws instead
  * of exiting. Script-level prompts, config parsing and lifecycle stay in the
  * scripts.
- *
- * xxhash<4 is NOT optional: openviking 0.4.13 passes str into xxhash.xxh64(),
- * and xxhash 4 removed implicit encoding, which silently drops every vector
- * record (see docs/usage.md「前置条件」).
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -19,8 +15,7 @@ import { join } from "node:path";
 export const TOOLCHAIN = Object.freeze({
   uvVersion: "0.12.5",
   pythonVersion: "3.12",
-  openvikingVersion: "0.4.13",
-  xxhashConstraint: "xxhash<4",
+  openvikingVersion: "0.4.15",
   zstandardVersion: "0.25.0",
 });
 export const OPENVIKING_SPEC = `openviking[local-embed]==${TOOLCHAIN.openvikingVersion}`;
@@ -209,16 +204,13 @@ export function ensureServerPackages({ home, log = () => {} }) {
   if (!existsSync(paths.venvPython)) createVenv(paths, log);
 
   const ov = installedVersion(paths.venvPython, "openviking");
-  const xxhash = installedVersion(paths.venvPython, "xxhash");
-  if (ov === TOOLCHAIN.openvikingVersion && xxhash && Number(xxhash.split(".")[0]) < 4) {
-    log(`服务端已就绪: openviking ${ov}, xxhash ${xxhash}（跳过安装）`);
+  if (ov === TOOLCHAIN.openvikingVersion) {
+    log(`服务端已就绪: openviking ${ov}（跳过安装）`);
   } else {
-    log(
-      `安装/修正服务端: ${OPENVIKING_SPEC} ${TOOLCHAIN.xxhashConstraint}（当前 openviking=${ov || "未安装"}, xxhash=${xxhash || "未安装"}）`,
-    );
+    log(`安装服务端: ${OPENVIKING_SPEC}（当前 openviking=${ov || "未安装"}）`);
     const install = runProcess(
       paths.uvBin,
-      ["pip", "install", "--python", paths.venvPython, "--upgrade", OPENVIKING_SPEC, TOOLCHAIN.xxhashConstraint],
+      ["pip", "install", "--python", paths.venvPython, "--upgrade", OPENVIKING_SPEC],
       { env: uvEnv(paths) },
     );
     if (!install.ok) throw new Error("服务端依赖安装失败，见上方输出。");

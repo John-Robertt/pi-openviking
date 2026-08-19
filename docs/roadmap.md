@@ -251,5 +251,5 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 ## 下一实施入口
 
 当前入口是 Phase 1 的基线调查：按“实施顺序”的调查闭环建立 `test/live/phase1.workloads.json` manifest，
-使用已经通过常驻 gate 的统一观察 run，对真实 OpenViking 0.4.13 调查 Archive 原子绑定、可见性与崩溃语义；
+使用已经通过常驻 gate 的统一观察 run，对真实 OpenViking 0.4.15 调查 Archive 原子绑定、可见性与崩溃语义；
 把 baseline、数值阈值、预期变化和证伪条件固定后，再选择并实现 Archive 机制。

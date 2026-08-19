@@ -100,7 +100,7 @@ tool results 沿用最近 assistant step，下一 assistant entry 开始新 step
 持久化最小 `SyncAck`。OpenViking 确认接受事件后推进 ACK frontier，发送失败时保持原
 frontier。ACK 状态丢失时从 Pi JSONL 幂等重放。
 
-OpenViking `0.4.13` 的公开 Content API 是 OpenViking `RecordedEvent` 投影的物理持久化边界。扩展
+OpenViking `0.4.15` 的公开 Content API 是 OpenViking `RecordedEvent` 投影的物理持久化边界。扩展
 通过 `POST /api/v1/content/batch-write` 在 OpenViking VikingFS 内实现事件兼容层，不修改
 OpenViking 核心，也不建立第二套物理长期 event store。`sessionScopedMemory=true` 时，存储用户是
 `sanitize(configuredUser || "default") + "--pi-" + sanitize(sessionId)`；否则使用配置用户或服务解析的
@@ -117,7 +117,7 @@ viking://user/{storageUser}/resources/.pi-openviking/recorded-events/v1/
 
 `sanitize` 将不属于 `[A-Za-z0-9._-]` 的每个字符替换为 `-`。两位十六进制形成固定 256 个逻辑
 shards，避免目录数随事件数线性增长；目录由 adapter 按需幂等创建。
-原始事件文件使用隐藏名称；OpenViking 0.4.13 的普通 `ls` 会过滤 dot files，但仍可能展示 dot
+原始事件文件使用隐藏名称；OpenViking 0.4.15 的普通 `ls` 会过滤 dot files，但仍可能展示 dot
 directories，因此 `.pi-openviking` 目录可见不构成事件泄露。语义 DAG 同样过滤 dot file names，
 不直接索引 raw event。该命名空间由 adapter 独占，其他功能不得对事件对象执行 replace、append、
 WebDAV PUT 或删除。append-only 是 adapter 所有权约束而非
@@ -400,10 +400,10 @@ Pi compaction 仍由 Pi 的运行时条件触发。
 `managedServer.proxy` 属于服务连接配置，与扩展的事件、Archive 和上下文策略分离。事件 URI、
 规范编码、分片、precondition 和 ACK 规则是系统完整性约束，不提供用户可变配置。
 
-受管服务固定使用已通过集成探针的 OpenViking `0.4.13`。远端服务在首次真实 Content 操作中探测
+受管服务固定使用已通过集成探针的 OpenViking `0.4.15`。远端服务在首次真实 Content 操作中探测
 batch-write、raw download、mkdir 和严格响应语义；路由缺失、请求 schema 不兼容或响应结构不匹配
 标记 capability mismatch，网络不可用保持 unknown。隐藏文件不进入普通语义处理是支持版本的安装/
-集成验收项，不在每次启动创建额外探针对象。0.4.13 在 namespace 删除后会由目录语义管线物化空目录骨架（不含任何文件）；live gate 的清理以逐 URI 持久 404 为准，骨架再现只是服务端行为观察。两类失败都保持事件待重放和 Pi 主任务 fail-open，并由 `/viking` 报告。
+集成验收项，不在每次启动创建额外探针对象。0.4.15 在 namespace 删除后会由目录语义管线物化空目录骨架（不含任何文件）；live gate 的清理以逐 URI 持久 404 为准，骨架再现只是服务端行为观察。两类失败都保持事件待重放和 Pi 主任务 fail-open，并由 `/viking` 报告。
 
 ## 准确性与可用性边界
 

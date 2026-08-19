@@ -44,14 +44,14 @@ npm run dev -- pi
 
 ## 升级外部版本
 
-`shared/toolchain.mjs` 的 `TOOLCHAIN` 唯一维护 OpenViking、uv、托管 Python、xxhash 和 zstandard 的当前
+`shared/toolchain.mjs` 的 `TOOLCHAIN` 唯一维护 OpenViking、uv、托管 Python 和 zstandard 的当前
 受管选择；`package.json` 维护 Node 最低版本、npm 依赖与 peer 最低兼容基线。peer 不设置预防性上限：
 当前 lock 和 live manifest 记录最近验证快照，后续版本默认向前兼容，只有实际 gate 证明存在破坏时才临时
 隔离并适配。文档中的版本号由 `npm test` 检查与权威源一致。
 
 ```bash
 # 1. 修改唯一权威源
-#    OpenViking / uv / Python / xxhash / zstandard → shared/toolchain.mjs 的 TOOLCHAIN
+#    OpenViking / uv / Python / zstandard → shared/toolchain.mjs 的 TOOLCHAIN
 #    Node / npm dependency / peer 最低基线           → package.json
 
 # 2. 由检查列出全部待同步位置（文档正文、live manifest 身份）
@@ -76,8 +76,8 @@ gate 的 preflight 会用真实 `/health` 逐字核对；服务版本变化意�
 [`docs/verification.md`](./verification.md)。固定 hash 使这一步必须是有意识的动作。该精确身份只表示最近一次
 已经通过的证据快照，不构成对后续版本的支持上限。
 
-`shared/toolchain.mjs` 中记录特定版本缺陷的注释（如 `xxhash<4` 的约束）需要人工判断该缺陷在新版本
-是否仍然存在，不由检查覆盖。
+`shared/toolchain.mjs` 中记录特定版本缺陷的注释需要人工判断该缺陷在新版本是否仍然存在，不由检查覆盖；
+缺陷修复后同步移除仅为绕开它而存在的约束与逻辑。
 
 ## 目录与数据边界
 
@@ -108,7 +108,7 @@ wheel 安装与 fingerprint 校验），各自独立演化；任何脚本级参�
 2. 验证本地依赖已按 lock 安装（否则提示先运行 `npm ci`）；
 3. 校验 `dev/model-profile.json`（快速失败，避免无效下载）；
 4. 下载并校验固定 uv（环境存在 HTTP(S)\_PROXY 时自动经代理下载），安装托管 Python，创建 wheel venv；
-5. 安装固定 OpenViking wheel 与 `xxhash<4`，并验证服务二进制可执行且版本与 pin 一致；
+5. 安装固定 OpenViking wheel，并验证服务二进制可执行且版本与 pin 一致；
 6. 本地 embedding 模型由 OpenViking 在首次 `dev up` 时自动下载，bootstrap 不预取；
 7. 以不输出凭证的 `pi auth check` 报告开发模型凭证是否就绪，不发起模型推理，不就绪不失败。
 

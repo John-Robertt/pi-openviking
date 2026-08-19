@@ -97,7 +97,7 @@ manifest 中的精确依赖、服务和模型身份是可重放的最近验证�
 - OpenViking 写入前确认本次随机 namespace 不存在或为空，以 create-if-absent 写入包含 run ID、
   manifest hash 和随机 nonce 的 ownership marker，并逐字节回读。verifier 只在写入前检查与删除前复核
   均匹配同一精确根路径和 marker 字节时删除该 namespace；删除后越过服务端目录物化窗口，全部已写对象必须持续
-  不存在；OpenViking 0.4.13 重建的无文件目录骨架只记录，不作为产品对象残留；
+  不存在；OpenViking 0.4.15 重建的无文件目录骨架只记录，不作为产品对象残留；
 - 受管环境可执行中断/重启；远端破坏性测试需要显式 opt-in。清理前先生成脱敏测量与证据 hash，随后
   成功或失败都删除远端对象；清理失败使 gate 失败；
 - 完成测量后，成功时删除整个本地 run 目录；失败时删除全部 raw payload，只保留字段白名单式脱敏诊断。

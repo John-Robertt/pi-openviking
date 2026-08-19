@@ -136,7 +136,7 @@ function eventWithByteLength(sessionId, index, byteLength) {
   return event;
 }
 
-test("adapter 限制符合 OpenViking 0.4.13 Content API 协议值", () => {
+test("adapter 限制符合 OpenViking 0.4.15 Content API 协议值", () => {
   assert.equal(BATCH_MAX_OPERATIONS, OPENVIKING_MAX_OPERATIONS);
   assert.equal(BATCH_MAX_FILE_BYTES, OPENVIKING_MAX_FILE_BYTES);
   assert.equal(BATCH_MAX_TOTAL_BYTES, OPENVIKING_MAX_BATCH_BYTES);

@@ -26,7 +26,7 @@
 | 项目简介和文档入口                                     | [`README.md`](./README.md)                                                               | 本地链接检查与 `npm pack --dry-run`                 |
 | npm 命令、发布文件、Node 和 peer 边界                  | [`package.json`](./package.json)                                                         | `package-lock.json`、npm 命令和打包检查             |
 | Node/Pi 依赖解析                                       | [`package-lock.json`](./package-lock.json)                                               | `npm ci`                                            |
-| OpenViking/uv/Python/xxhash/zstandard 安装 pin          | [`shared/toolchain.mjs`](./shared/toolchain.mjs)                                         | `test/toolchain.test.mjs` 与开发 bootstrap          |
+| OpenViking/uv/Python/zstandard 安装 pin                 | [`shared/toolchain.mjs`](./shared/toolchain.mjs)                                         | `test/toolchain.test.mjs` 与开发 bootstrap          |
 | 配置默认值和运行时接受字段                             | [`config.json`](./config.json)、[`shared/config-schema.mjs`](./shared/config-schema.mjs) | `test/config-schema.test.mjs`                       |
 | 开发模型身份                                           | [`dev/model-profile.json`](./dev/model-profile.json)                                     | `test/dev-bootstrap.test.mjs`                       |
 | 可执行行为                                             | 生产代码                                                                                 | 对应测试与真实运行证据                              |

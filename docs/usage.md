@@ -26,14 +26,9 @@ thinking、tool call/result、真实错误和 aborted 状态、未知 part、cus
 
 - Pi Coding Agent；
 - Node.js 22.19.0 或更高版本（与当前 Pi 运行时要求一致）；
-- OpenViking `0.4.13` 或通过相同 Content API 行为验收的服务；
+- OpenViking `0.4.15` 或通过相同 Content API 行为验收的服务；
 
-受管安装固定使用：
-
-```text
-openviking[local-embed]==0.4.13
-xxhash<4
-```
+受管安装固定使用 `openviking[local-embed]==0.4.15`。0.4.14 及更早版本在安装到 xxhash 4.x 的环境（如全新安装）中会静默丢失向量、导致内容无法召回，自建服务请勿使用该组合。
 
 ## 3. 安装与服务管理
 
