@@ -288,6 +288,62 @@ export function verifyRunFiles(runDir, { expectedPid } = {}) {
   return { ok: true, state };
 }
 
+/** 核对状态指纹、实际 ov.conf 与当前 profile 生成的期望配置三者一致。 */
+export function verifyDevServerConfig(runDir, state, expectedConfig) {
+  const expectedFingerprint = configFingerprint(expectedConfig);
+  if (!state || typeof state.configFingerprint !== "string") {
+    return { ok: false, reason: "状态文件缺少配置指纹", expectedFingerprint };
+  }
+
+  let actualConfig;
+  try {
+    actualConfig = JSON.parse(readFileSync(join(runDir, "ov.conf"), "utf8"));
+  } catch {
+    return { ok: false, reason: "缺少或损坏的 ov.conf", expectedFingerprint };
+  }
+
+  const actualFingerprint = configFingerprint(actualConfig);
+  if (state.configFingerprint !== actualFingerprint) {
+    return {
+      ok: false,
+      reason: "状态文件配置指纹与 ov.conf 不一致",
+      stateFingerprint: state.configFingerprint,
+      actualFingerprint,
+      expectedFingerprint,
+    };
+  }
+  if (actualFingerprint !== expectedFingerprint) {
+    return {
+      ok: false,
+      reason: "运行配置与当前开发模型身份不一致",
+      stateFingerprint: state.configFingerprint,
+      actualFingerprint,
+      expectedFingerprint,
+    };
+  }
+  return {
+    ok: true,
+    stateFingerprint: state.configFingerprint,
+    actualFingerprint,
+    expectedFingerprint,
+  };
+}
+
+/** dev pi 的任务模型只能来自 model profile，避免交互运行与 OpenViking VLM 漂移。 */
+export function buildDevPiArgs(profile, args = []) {
+  if (!Array.isArray(args)) throw new TypeError("dev pi args must be an array");
+  const forbidden = new Set(["--provider", "--model", "--models", "--api-key"]);
+  const override = args.find((arg) => (
+    forbidden.has(arg) || [...forbidden].some((flag) => String(arg).startsWith(`${flag}=`))
+  ));
+  if (override) {
+    throw new Error(`${override} 不能覆盖 dev/model-profile.json 固定的任务模型`);
+  }
+  const { provider, model } = profile.taskVlm;
+  const qualifiedModel = model.includes("/") ? model : `${provider}/${model}`;
+  return ["--provider", provider, "--model", model, "--models", qualifiedModel, ...args];
+}
+
 function readPid() {
   try {
     const pid = Number(readFileSync(PID_FILE, "utf8").trim());
@@ -388,10 +444,11 @@ async function up() {
   if (existing && pidAlive(existing)) {
     const ownership = verifyRunFiles(RUN_DIR, { expectedPid: existing });
     if (ownership.ok && isDevServerProcess(readProcessCommand(existing))) {
-      const drift =
-        ownership.state.configFingerprint !== configFingerprint(buildDevServerConfig(profile));
+      const configCheck = verifyDevServerConfig(RUN_DIR, ownership.state, buildDevServerConfig(profile));
       say(`服务已在运行 (pid ${existing})。endpoint: ${DEV_ENDPOINT}`);
-      if (drift) say("注意: 当前 profile 与运行中配置不一致，如需应用请 down 后重新 up。");
+      if (!configCheck.ok) {
+        fail(`当前开发服务配置不匹配（${configCheck.reason}），请先 npm run dev -- down，再重新 up。`);
+      }
       return;
     }
     fail(`pid ${existing} 存活但身份核对失败（${ownership.ok ? "进程命令行不匹配" : ownership.reason}）。不接管身份不匹配的残留进程。`);
@@ -486,7 +543,17 @@ async function status() {
   const pid = readPid();
   const alive = pid ? pidAlive(pid) : false;
   const ownership = existsSync(STATE_FILE) && pid ? verifyRunFiles(RUN_DIR, { expectedPid: pid }) : null;
+  let profile = null;
+  let profileError = null;
+  try {
+    profile = loadModelProfile();
+  } catch (e) {
+    profileError = e;
+  }
   const identityOk = Boolean(alive && ownership?.ok && isDevServerProcess(readProcessCommand(pid)));
+  const configCheck = identityOk && profile
+    ? verifyDevServerConfig(RUN_DIR, ownership.state, buildDevServerConfig(profile))
+    : null;
 
   say(`service:    ${alive ? `running (pid ${pid})` : "stopped"}${alive && !identityOk ? "（身份未确认）" : ""}`);
   const health = await probeServerHealth(DEV_ENDPOINT);
@@ -498,6 +565,9 @@ async function status() {
     say(`health:     ${health.statusCode ? `FAIL (HTTP ${health.statusCode})` : "不可达"}`);
   }
   say(`endpoint:   ${DEV_ENDPOINT}`);
+  if (alive) {
+    say(`config:     ${configCheck?.ok ? "matches profile" : `DRIFT (${configCheck?.reason || profileError?.message || ownership?.reason || "身份未确认"})`}`);
+  }
 
   if (existsSync(OV_CONF)) {
     try {
@@ -511,14 +581,13 @@ async function status() {
     say("config:     未生成（先运行 npm run dev -- up）");
   }
 
-  try {
-    const profile = loadModelProfile();
+  if (profile) {
     say(`credential: ${credentialReady(profile) ? "ready" : "not ready（/login " + profile.taskVlm.provider + "）"}`);
-  } catch (e) {
-    say(`credential: profile 无效（${e.message}）`);
+  } else {
+    say(`credential: profile 无效（${profileError?.message || "未知错误"}）`);
   }
   say(`log:        ${LOG_FILE}`);
-  if (!alive || !health.ok || !identityOk) process.exitCode = 1;
+  if (!alive || !health.ok || !identityOk || !configCheck?.ok) process.exitCode = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -548,6 +617,16 @@ async function pi(args) {
     fail("开发服务未运行或身份未确认，先 npm run dev -- up。");
   }
   const profile = loadModelProfile();
+  const configCheck = verifyDevServerConfig(RUN_DIR, ownership.state, buildDevServerConfig(profile));
+  if (!configCheck.ok) {
+    fail(`开发服务配置不匹配（${configCheck.reason}），请先 npm run dev -- down，再重新 up。`);
+  }
+  let piArgs;
+  try {
+    piArgs = buildDevPiArgs(profile, args);
+  } catch (e) {
+    fail(e.message);
+  }
 
   let apiKey;
   try {
@@ -557,7 +636,7 @@ async function pi(args) {
   }
   ensurePiWrapper();
 
-  const child = spawn("npm", ["exec", "--", "pi", ...args], {
+  const child = spawn("npm", ["exec", "--", "pi", ...piArgs], {
     stdio: "inherit",
     windowsHide: true,
     env: buildChildEnv({

@@ -31,10 +31,12 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { OVClient } from "../../client.ts";
 import {
   buildChildEnv,
+  buildDevServerConfig,
   isDevServerProcess,
   isNodeVersionSupported,
   loadModelProfile,
   readProcessCommand,
+  verifyDevServerConfig,
   verifyRunFiles,
 } from "../../scripts/dev.mjs";
 import { canonicalJsonBytes } from "../../shared/canonical-json.mjs";
@@ -712,6 +714,11 @@ async function preflight(log, ctx) {
   const identityOk = ownership.ok && isDevServerProcess(cmdline, join(DEV_RUN_DIR, "ov.conf"));
   log.check(g, "dev-service-ownership", "marker/state/pid/cmdline consistent",
     ownership.ok ? (identityOk ? "ok" : "cmdline mismatch") : ownership.reason, identityOk);
+  const configCheck = ownership.ok
+    ? verifyDevServerConfig(DEV_RUN_DIR, ownership.state, buildDevServerConfig(ctx.profile))
+    : { ok: false, reason: ownership.reason };
+  log.check(g, "dev-service-config", "state/ov.conf/model profile consistent",
+    configCheck.ok ? "ok" : configCheck.reason, configCheck.ok);
   const health = await probeServerHealth(ctx.endpoint, { timeoutMs: 5000 });
   log.check(g, "openviking-health", `${ctx.manifest.identities.openviking.version}/${ctx.manifest.identities.openviking.authMode}`,
     health.ok ? `${health.data?.version}/${health.data?.auth_mode}` : `unreachable(${health.statusCode})`,

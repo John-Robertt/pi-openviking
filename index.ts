@@ -19,6 +19,7 @@ import { registerTools, VIKING_TOOL_NAMES } from "./tools.js";
 
 const HEALTH_REFRESH_INTERVAL_MS = 5000;
 const OBSERVATION_ENTRY_TYPE = "ov-observation";
+const OBSERVATION_ENTRY_SCHEMA_VERSION = 1;
 
 export default async function (pi: ExtensionAPI) {
   // --- Load config ---
@@ -32,7 +33,7 @@ export default async function (pi: ExtensionAPI) {
   const recordObservation = (kind: string, content: string, targetEntryId: string | null): void => {
     const op = observation.begin("pi_entry_append", kind);
     try {
-      pi.appendEntry(OBSERVATION_ENTRY_TYPE, { schemaVersion: 1, kind, targetEntryId, content });
+      pi.appendEntry(OBSERVATION_ENTRY_TYPE, { schemaVersion: OBSERVATION_ENTRY_SCHEMA_VERSION, kind, targetEntryId, content });
       observation.end("pi_entry_append", op, kind, "appended");
     } catch (error: unknown) {
       observation.end("pi_entry_append", op, kind, "error");

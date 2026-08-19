@@ -34,6 +34,7 @@ import {
   TOOLCHAIN,
   toolchainPaths,
   uvEnv,
+  ZSTANDARD_SPEC,
 } from "../shared/toolchain.mjs";
 
 // Pinned toolchain versions live in shared/toolchain.mjs (single copy shared
@@ -158,7 +159,7 @@ async function ensureServerConfig() {
 const ZSTD_SHIM = join(TOOLCHAIN_PATHS.binDir, "zstd");
 
 function ensureZstdShim() {
-  if (!runProcess(TOOLCHAIN_PATHS.uvBin, ["pip", "install", "--python", VENV_PYTHON, "zstandard==0.25.0"], { env: uvEnv(TOOLCHAIN_PATHS) }).ok) return false;
+  if (!runProcess(TOOLCHAIN_PATHS.uvBin, ["pip", "install", "--python", VENV_PYTHON, ZSTANDARD_SPEC], { env: uvEnv(TOOLCHAIN_PATHS) }).ok) return false;
   mkdirSync(TOOLCHAIN_PATHS.binDir, { recursive: true });
   writeFileSync(
     ZSTD_SHIM,

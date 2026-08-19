@@ -1,6 +1,8 @@
 import type { Observation } from "./observe.mjs";
 import type { PiRecordedEventV1 } from "./recorded-event.mjs";
 
+export const RECORDED_EVENT_STORAGE_VERSION: 1;
+
 export const BATCH_MAX_OPERATIONS: 128;
 export const BATCH_MAX_FILE_BYTES: number;
 export const BATCH_MAX_TOTAL_BYTES: number;

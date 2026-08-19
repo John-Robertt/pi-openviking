@@ -5,11 +5,13 @@ import {
   OPENVIKING_SPEC,
   TOOLCHAIN,
   toolchainPaths,
+  ZSTANDARD_SPEC,
 } from "../shared/toolchain.mjs";
 
 test("OPENVIKING_SPEC 由 pin 常量确定性组合", () => {
   assert.equal(OPENVIKING_SPEC, `openviking[local-embed]==${TOOLCHAIN.openvikingVersion}`);
   assert.match(TOOLCHAIN.xxhashConstraint, /^xxhash<\d+$/);
+  assert.equal(ZSTANDARD_SPEC, `zstandard==${TOOLCHAIN.zstandardVersion}`);
 });
 
 test("toolchainPaths 按平台生成正确布局", () => {

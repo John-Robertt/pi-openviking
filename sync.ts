@@ -1,10 +1,8 @@
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { OVClient } from "./client.js";
-import { canonicalJsonBytes } from "./shared/canonical-json.mjs";
 import { parsePiSessionJsonl } from "./shared/pi-session-source.mjs";
 import { observation, type Observation } from "./shared/observe.mjs";
 import { RecordedEventAdapter } from "./shared/recorded-event-adapter.mjs";
@@ -14,6 +12,7 @@ import {
   advanceSyncAck,
   isEntryAcknowledged,
   readSyncAck,
+  syncAckFileKey,
   writeSyncAck,
   type SyncAck,
 } from "./shared/sync-ack.mjs";
@@ -44,9 +43,7 @@ function defaultAckPath(
   sessionId: string,
   target: { endpoint: string; account: string; user: string },
 ): string {
-  const key = createHash("sha256")
-    .update(canonicalJsonBytes(["pi-openviking/sync-ack", 1, target, sessionId]))
-    .digest("hex");
+  const key = syncAckFileKey(target, sessionId);
   return join(homedir(), ".pi", "openviking", "sync-ack", `${key}.json`);
 }
 

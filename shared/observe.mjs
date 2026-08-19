@@ -8,8 +8,10 @@ import {
 } from "node:fs";
 
 import { canonicalJsonBytes } from "./canonical-json.mjs";
+import { OPENVIKING_API_PREFIX, openVikingApiPath } from "./openviking-api.mjs";
 
 export const OBSERVATION_SCHEMA_VERSION = 1;
+export const OBSERVATION_IDENTITY_VERSION = 1;
 export const OBSERVATION_SESSION_DOMAIN = "pi-openviking/observation-session";
 export const OBSERVATION_QUEUE_CAPACITY = 1024;
 
@@ -57,23 +59,25 @@ const SYNC_TRIGGERS = [
 ];
 const HTTP_ROUTES = [
   "/health",
-  "/api/v1/content/abstract",
-  "/api/v1/content/batch-write",
-  "/api/v1/content/download",
-  "/api/v1/content/overview",
-  "/api/v1/content/read",
-  "/api/v1/fs",
-  "/api/v1/fs/ls",
-  "/api/v1/fs/mkdir",
-  "/api/v1/fs/stat",
-  "/api/v1/resources",
-  "/api/v1/search/find",
-  "/api/v1/search/recall",
-  "/api/v1/search/search",
-  "/api/v1/sessions",
-  "/api/v1/sessions/{id}/commit",
-  "/api/v1/sessions/{id}/messages",
-  "/api/v1/system/status",
+  ...[
+    "/content/abstract",
+    "/content/batch-write",
+    "/content/download",
+    "/content/overview",
+    "/content/read",
+    "/fs",
+    "/fs/ls",
+    "/fs/mkdir",
+    "/fs/stat",
+    "/resources",
+    "/search/find",
+    "/search/recall",
+    "/search/search",
+    "/sessions",
+    "/sessions/{id}/commit",
+    "/sessions/{id}/messages",
+    "/system/status",
+  ].map(openVikingApiPath),
   "other",
 ];
 const TOOLS = [
@@ -830,21 +834,21 @@ function dependencies(overrides = {}) {
 
 export function observationSessionHash(piSessionId) {
   return createHash("sha256")
-    .update(canonicalJsonBytes([OBSERVATION_SESSION_DOMAIN, 1, String(piSessionId)]))
+    .update(canonicalJsonBytes([OBSERVATION_SESSION_DOMAIN, OBSERVATION_IDENTITY_VERSION, String(piSessionId)]))
     .digest("hex");
 }
 
 function namespaceHash(value) {
   if (!value) return null;
   return createHash("sha256")
-    .update(canonicalJsonBytes(["pi-openviking/observation-namespace", 1, String(value)]))
+    .update(canonicalJsonBytes(["pi-openviking/observation-namespace", OBSERVATION_IDENTITY_VERSION, String(value)]))
     .digest("hex");
 }
 
 function ackHash(value) {
   const leaves = Array.isArray(value?.acknowledgedLeaves) ? value.acknowledgedLeaves : [];
   return createHash("sha256")
-    .update(canonicalJsonBytes(["pi-openviking/observation-ack", 1, leaves]))
+    .update(canonicalJsonBytes(["pi-openviking/observation-ack", OBSERVATION_IDENTITY_VERSION, leaves]))
     .digest("hex");
 }
 
@@ -882,8 +886,16 @@ function classifyError(error, status) {
 function routeTemplate(path) {
   const raw = String(path || "");
   const pathname = raw.split("?", 1)[0] || "";
-  if (/^\/api\/v1\/sessions\/[^/]+\/messages$/.test(pathname)) return "/api/v1/sessions/{id}/messages";
-  if (/^\/api\/v1\/sessions\/[^/]+\/commit$/.test(pathname)) return "/api/v1/sessions/{id}/commit";
+  const sessionPrefix = `${OPENVIKING_API_PREFIX}/sessions/`;
+  if (pathname.startsWith(sessionPrefix)) {
+    const parts = pathname.slice(sessionPrefix.length).split("/");
+    if (parts.length === 2 && parts[0] && parts[1] === "messages") {
+      return openVikingApiPath("/sessions/{id}/messages");
+    }
+    if (parts.length === 2 && parts[0] && parts[1] === "commit") {
+      return openVikingApiPath("/sessions/{id}/commit");
+    }
+  }
   return HTTP_ROUTES.includes(pathname) ? pathname : "other";
 }
 

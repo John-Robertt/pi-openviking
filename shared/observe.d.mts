@@ -21,6 +21,7 @@ export interface Observation {
 }
 
 export const OBSERVATION_SCHEMA_VERSION: 1;
+export const OBSERVATION_IDENTITY_VERSION: 1;
 export const OBSERVATION_SESSION_DOMAIN: string;
 export const OBSERVATION_QUEUE_CAPACITY: number;
 export const OBSERVATION_STAGE_REGISTRY: Readonly<Record<string, Readonly<Record<string, unknown>>>>;

@@ -2,6 +2,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { openVikingApiPath } from "./openviking-api.mjs";
+
 const PREFERENCE_QUERY_RE = /prefer|preference|favorite|favourite|like|偏好|喜欢|爱好|更倾向/i;
 const TEMPORAL_QUERY_RE = /when|what time|date|day|month|year|yesterday|today|tomorrow|last|next|什么时候|何时|哪天|几月|几年|昨天|今天|明天/i;
 const QUERY_TOKEN_RE = /[a-z0-9一-龥]{2,}/gi;
@@ -230,7 +232,7 @@ function resolveTargetUri(targetUri, userSpace) {
 async function searchOneSource(fetchJSON, query, source, limit, actorPeerId = "", userSpace = "") {
   const resolvedUri = resolveTargetUri(source.uri, userSpace);
   const body = { query, target_uri: resolvedUri, limit, score_threshold: 0 };
-  const res = await fetchJSON("/api/v1/search/find", {
+  const res = await fetchJSON(openVikingApiPath("/search/find"), {
     method: "POST",
     body: JSON.stringify(body),
   }, { actorPeerId });
@@ -256,7 +258,7 @@ async function resolveItemContent(fetchJSON, item, cfg, actorPeerId = "") {
   } else if (item.level === 2) {
     try {
       const res = await fetchJSON(
-        `/api/v1/content/read?uri=${encodeURIComponent(item.uri)}`,
+        openVikingApiPath(`/content/read?uri=${encodeURIComponent(item.uri)}`),
         {},
         { actorPeerId },
       );
@@ -383,7 +385,7 @@ export async function fetchAssembledContext(fetchJSON, cfg, query, options = {})
 
   const body = buildContextSearchBody(cfg, options);
   body.query = query;
-  const res = await fetchJSON("/api/v1/search/search", {
+  const res = await fetchJSON(openVikingApiPath("/search/search"), {
     method: "POST",
     body: JSON.stringify(body),
   }, { actorPeerId, timeoutMs: contextRequestTimeoutMs(cfg, body) });
@@ -443,7 +445,7 @@ export async function postRecall(fetchJSON, body, opts = {}) {
   const actorPeerId = opts.actorPeerId || "";
   const observation = opts.observation;
   const request = { ...body };
-  const res = await fetchJSON("/api/v1/search/recall", {
+  const res = await fetchJSON(openVikingApiPath("/search/recall"), {
     method: "POST",
     body: JSON.stringify(request),
   }, { actorPeerId });
@@ -454,7 +456,7 @@ export async function postRecall(fetchJSON, body, opts = {}) {
   const downgraded = { ...request };
   delete downgraded.peer_scope;
   observation?.emit("recall_failure", null, "peer_scope_unsupported", "retry", "same_without_peer", res.status || 0);
-  return fetchJSON("/api/v1/search/recall", {
+  return fetchJSON(openVikingApiPath("/search/recall"), {
     method: "POST",
     body: JSON.stringify(downgraded),
   }, { actorPeerId });

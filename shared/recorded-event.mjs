@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 
 import { canonicalJsonBytes } from "./canonical-json.mjs";
 
+export const RECORDED_EVENT_SCHEMA_VERSION = 1;
+export const RECORDED_EVENT_IDENTITY_VERSION = 1;
+
 const EVENT_DOMAIN = "pi-openviking/recorded-event";
 const TURN_DOMAIN = "pi-openviking/turn";
 const STEP_DOMAIN = "pi-openviking/step";
@@ -98,18 +101,18 @@ function entryRole(entry) {
 }
 
 function turnId(sessionId, entryId) {
-  return stableId("turn", [TURN_DOMAIN, 1, sessionId, entryId]);
+  return stableId("turn", [TURN_DOMAIN, RECORDED_EVENT_IDENTITY_VERSION, sessionId, entryId]);
 }
 
 function stepId(sessionId, entryId) {
-  return stableId("step", [STEP_DOMAIN, 1, sessionId, entryId]);
+  return stableId("step", [STEP_DOMAIN, RECORDED_EVENT_IDENTITY_VERSION, sessionId, entryId]);
 }
 
 export function recordedEventId(source) {
   if (!source || source.system !== "pi") throw new TypeError("recordedEventId requires a pi source");
   const identity = [
     EVENT_DOMAIN,
-    1,
+    RECORDED_EVENT_IDENTITY_VERSION,
     "pi",
     requireString(source.sessionId, "source.sessionId"),
     requireString(source.entryId, "source.entryId"),
@@ -176,7 +179,7 @@ export function projectPiEntries(sessionId, entries) {
         partIndex: part.partIndex,
       };
       const event = {
-        schemaVersion: 1,
+        schemaVersion: RECORDED_EVENT_SCHEMA_VERSION,
         eventId: recordedEventId(source),
         parentId,
         contentHash: contentHash(part.payload),

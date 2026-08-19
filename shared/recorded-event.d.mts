@@ -1,5 +1,8 @@
 import type { JsonValue } from "./canonical-json.mjs";
 
+export const RECORDED_EVENT_SCHEMA_VERSION: 1;
+export const RECORDED_EVENT_IDENTITY_VERSION: 1;
+
 export interface PiRecordedEventSourceV1 {
   system: "pi";
   sessionId: string;
@@ -11,7 +14,7 @@ export interface PiRecordedEventSourceV1 {
 }
 
 export interface PiRecordedEventV1 {
-  schemaVersion: 1;
+  schemaVersion: typeof RECORDED_EVENT_SCHEMA_VERSION;
   eventId: string;
   parentId: string | null;
   contentHash: string;

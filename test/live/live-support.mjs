@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { canonicalJsonBytes } from "../../shared/canonical-json.mjs";
+import { syncAckFileKey } from "../../shared/sync-ack.mjs";
 
 export function sha256Hex(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -22,9 +22,7 @@ export function conflictBytesOf(bytes) {
 }
 
 export function ackFileKey(endpoint, account, user, sessionId) {
-  return createHash("sha256")
-    .update(canonicalJsonBytes(["pi-openviking/sync-ack", 1, { endpoint, account, user }, sessionId]))
-    .digest("hex");
+  return syncAckFileKey({ endpoint, account, user }, sessionId);
 }
 
 export class AssertionLog {

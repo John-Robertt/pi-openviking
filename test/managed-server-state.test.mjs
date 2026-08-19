@@ -14,7 +14,7 @@ const config = {
   embedding: {
     dense: {
       provider: "local",
-      model: "bge-small-zh-v1.5-f16",
+      model: "test-embed",
       dimension: 512,
       api_key: "embedding-secret",
     },
@@ -36,7 +36,7 @@ const proxy = {
 test("服务端配置摘要仅保留状态展示所需字段", () => {
   assert.deepEqual(summarizeServerConfig(config), {
     endpoint: "http://127.0.0.1:1933",
-    embedding: { provider: "local", model: "bge-small-zh-v1.5-f16", dimension: "512" },
+    embedding: { provider: "local", model: "test-embed", dimension: "512" },
     vlm: { provider: "openai", model: "gpt-test", credential: "API key configured" },
     storage: "/data/openviking",
   });

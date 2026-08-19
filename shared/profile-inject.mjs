@@ -1,3 +1,5 @@
+import { openVikingApiPath } from "./openviking-api.mjs";
+
 /**
  * Session-start profile injection helper.
  *
@@ -62,7 +64,7 @@ function tokensToCharsBudget(content, maxTokens) {
 
 async function readProfile(fetchJSON, profileUri, actorPeerId = "") {
   const res = await fetchJSON(
-    `/api/v1/content/read?uri=${encodeURIComponent(profileUri)}`,
+    openVikingApiPath(`/content/read?uri=${encodeURIComponent(profileUri)}`),
     {},
     { actorPeerId },
   );
@@ -81,7 +83,7 @@ async function readProfile(fetchJSON, profileUri, actorPeerId = "") {
  * to keep owner-namespacing visible and unambiguous when multiple owners exist.
  */
 async function lsDir(fetchJSON, dirUri, actorPeerId = "") {
-  const url = `/api/v1/fs/ls?uri=${encodeURIComponent(dirUri)}&output=agent&recursive=true&abs_limit=512&node_limit=512`;
+  const url = openVikingApiPath(`/fs/ls?uri=${encodeURIComponent(dirUri)}&output=agent&recursive=true&abs_limit=512&node_limit=512`);
   const res = await fetchJSON(url, {}, { actorPeerId });
   if (!res.ok || !Array.isArray(res.result)) return [];
   return res.result

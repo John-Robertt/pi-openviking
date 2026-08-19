@@ -4,6 +4,9 @@ import { canonicalJsonBytes } from "./canonical-json.mjs";
 import { observation as processObservation } from "./observe.mjs";
 import { recordedEventBytes } from "./recorded-event.mjs";
 
+export const RECORDED_EVENT_STORAGE_VERSION = 1;
+const RECORDED_EVENT_STORAGE_SEGMENT = `recorded-events/v${RECORDED_EVENT_STORAGE_VERSION}`;
+
 export const BATCH_MAX_OPERATIONS = 128;
 export const BATCH_MAX_FILE_BYTES = 8 * 1024 * 1024;
 export const BATCH_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
@@ -35,10 +38,10 @@ export function recordedEventStorageLocation(userRoot, sessionId, eventId) {
   if (typeof sessionId !== "string" || sessionId.length === 0) throw new TypeError("sessionId must be a non-empty string");
   requireEventId(eventId);
   const sessionKey = createHash("sha256")
-    .update(canonicalJsonBytes([STORAGE_DOMAIN, 1, "session", sessionId]))
+    .update(canonicalJsonBytes([STORAGE_DOMAIN, RECORDED_EVENT_STORAGE_VERSION, "session", sessionId]))
     .digest("hex");
   const digest = eventId.slice(4);
-  const sessionRoot = `${root}/resources/.pi-openviking/recorded-events/v1/${sessionKey}`;
+  const sessionRoot = `${root}/resources/.pi-openviking/${RECORDED_EVENT_STORAGE_SEGMENT}/${sessionKey}`;
   const shardRoot = `${sessionRoot}/${digest.slice(0, 2)}`;
   return {
     sessionKey,
@@ -194,7 +197,7 @@ export class RecordedEventAdapter {
       });
     }
     const claim = {
-      schemaVersion: 1,
+      schemaVersion: RECORDED_EVENT_STORAGE_VERSION,
       type: "recorded-event-claim",
       eventId: event.eventId,
       eventHash: sha256(bytes),
@@ -221,7 +224,7 @@ export class RecordedEventAdapter {
     this.byteReadVerified = true;
 
     const commit = {
-      schemaVersion: 1,
+      schemaVersion: RECORDED_EVENT_STORAGE_VERSION,
       type: "recorded-event-commit",
       eventId: event.eventId,
       claimHash: sha256(claimBytes),

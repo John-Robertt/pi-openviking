@@ -45,6 +45,7 @@
 - 将 Pi entry/content part 投影为 `RecordedEventV1`；
 - 保留 message envelope、原始 part、错误和终止状态；
 - 生成 event/turn/step identity、parent 关系和内容 hash；
+- 以独立常量维护事件 schema 与 identity 版本，普通依赖升级不改变协议身份；
 - 不清洗、过滤、截断或解释 payload。
 
 ### `shared/canonical-json.mjs`
@@ -60,6 +61,7 @@
 - 按 Content API 限制拆分 `batch-write`；
 - 核对每个响应 URI；
 - 处理 direct 或 claim/chunks/commit 表示；
+- 独立维护存储身份、claim/commit schema 与路径版本；
 - 将冲突、transport failure 和 capability mismatch 返回同步层。
 
 adapter 不读取 Pi session、不持久化 ACK，也不创建 Archive。
@@ -69,6 +71,7 @@ adapter 不读取 Pi session、不持久化 ACK，也不创建 Archive。
 - 保存最小 `acknowledgedLeaves`；
 - 根据完整 parent map 判断祖先是否已确认；
 - 在分支产生共同祖先或 sibling leaves 时保持最小 frontier；
+- 维护 ACK 文件键的确定性身份版本；
 - 原子替换 ACK 文件。
 
 ACK 文件不包含 transcript 或事件 payload。丢失 ACK 只会触发幂等重放。
@@ -85,6 +88,11 @@ ACK 文件不包含 transcript 或事件 payload。丢失 ACK 只会触发幂等
 6. 发布 source、capability、pending 和 failure 状态。
 
 它只持久化 `SyncAck`，不持久化待发送事件副本。
+
+### `shared/openviking-api.mjs`
+
+- 唯一维护 OpenViking API 版本前缀；
+- 只把职责模块提供的相对路径组合为版本化路径，不拥有 HTTP 方法、payload 或业务决策。
 
 ### `client.ts`
 
@@ -140,8 +148,10 @@ sync-ack
 - `test/session-source-ack.test.mjs`：JSONL golden 分支恢复和树形 ACK；
 - `test/recorded-event-adapter.test.mjs`：127/128/129 项、8/16 MiB、冲突和 chunk/commit 边界；
 - `test/client-content.test.mjs`：HTTP transport；
+- `test/openviking-api.test.mjs`：版本前缀与相对路径组合；
 - `test/sync-manager.test.mjs`：重启、ACK 丢失、分支和 fail-open；
 - `test/config-schema.test.mjs`：唯一配置 schema；
+- `test/package-metadata.test.mjs`：manifest/lock 一致与 peer 最低兼容基线；
 - `test/observe.test.mjs`：registry、记录 schema、关闭零工作、sink 失败和字节一致性；
 - `test/observability-integration.test.mjs`：职责模块接点、脱敏及 fail-open 产品等价性；
 - `test/observation-evidence.test.mjs`、`test/observability-live-verifier.test.mjs`：完整 run 与 manifest 契约；

@@ -1,6 +1,7 @@
 import type { OVConfig } from "./config.js";
 import { Agent, request as undiciRequest } from "undici";
 import { observation, type Observation } from "./shared/observe.mjs";
+import { openVikingApiPath } from "./shared/openviking-api.mjs";
 
 // pi installs a proxying global dispatcher (undici EnvHttpProxyAgent) when
 // settings.httpProxy is set, and it only honors NO_PROXY captured at startup.
@@ -231,9 +232,9 @@ export class OVClient {
 
   // ========== Sessions ==========
 
-  /** POST /api/v1/sessions — create or reuse session */
+  /** Create or reuse a session. */
   async createSession(sessionId: string): Promise<boolean> {
-    const res = await this.fetchJSON<any>("/api/v1/sessions", {
+    const res = await this.fetchJSON<any>(openVikingApiPath("/sessions"), {
       method: "POST",
       body: JSON.stringify({ session_id: sessionId }),
     });
@@ -241,10 +242,10 @@ export class OVClient {
   }
 
 
-  /** POST /api/v1/sessions/{id}/messages — add a message (simple text mode) */
+  /** Add a message in simple text mode. */
   async addMessage(sessionId: string, role: string, content: string): Promise<boolean> {
     const res = await this.fetchJSON<any>(
-      `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
+      openVikingApiPath(`/sessions/${encodeURIComponent(sessionId)}/messages`),
       { method: "POST", body: JSON.stringify({ role, content }) },
       10000,
     );
@@ -254,7 +255,7 @@ export class OVClient {
   /** Commit only an explicit viking_remember message for memory extraction. */
   async commitRememberedMessage(sessionId: string): Promise<boolean> {
     const response = await this.fetchJSON<any>(
-      `/api/v1/sessions/${encodeURIComponent(sessionId)}/commit`,
+      openVikingApiPath(`/sessions/${encodeURIComponent(sessionId)}/commit`),
       { method: "POST", body: JSON.stringify({ keep_recent_count: 0 }) },
       30000,
     );
@@ -263,7 +264,7 @@ export class OVClient {
 
   // ========== Search ==========
 
-  /** POST /api/v1/search/find — basic vector search */
+  /** Basic vector search. */
   async find(
     query: string,
     opts?: { targetUri?: string; topK?: number; scoreThreshold?: number },
@@ -273,7 +274,7 @@ export class OVClient {
     if (opts?.topK) body.limit = opts.topK;
     if (opts?.scoreThreshold) body.score_threshold = opts.scoreThreshold;
 
-    const res = await this.fetchJSON<any>("/api/v1/search/find", {
+    const res = await this.fetchJSON<any>(openVikingApiPath("/search/find"), {
       method: "POST", body: JSON.stringify(body),
     }, 10000);
     if (!res.ok || !res.result) return [];
@@ -302,45 +303,45 @@ export class OVClient {
 
   // ========== Content ==========
 
-  /** GET /api/v1/content/abstract — L0 summary */
+  /** L0 content summary. */
   async abstract(uri: string): Promise<string | null> {
     const res = await this.fetchJSON<string>(
-      `/api/v1/content/abstract?uri=${encodeURIComponent(uri)}`,
+      openVikingApiPath(`/content/abstract?uri=${encodeURIComponent(uri)}`),
       undefined, 10000,
     );
     return res.ok ? res.result : null;
   }
 
-  /** GET /api/v1/content/overview — L1 overview (directories only) */
+  /** L1 directory overview. */
   async overview(uri: string): Promise<string | null> {
     const res = await this.fetchJSON<string>(
-      `/api/v1/content/overview?uri=${encodeURIComponent(uri)}`,
+      openVikingApiPath(`/content/overview?uri=${encodeURIComponent(uri)}`),
       undefined, 10000,
     );
     return res.ok ? res.result : null;
   }
 
-  /** GET /api/v1/content/read — L2 full content (files only) */
+  /** L2 full file content. */
   async readContent(uri: string): Promise<string | null> {
     const res = await this.fetchJSON<string>(
-      `/api/v1/content/read?uri=${encodeURIComponent(uri)}`,
+      openVikingApiPath(`/content/read?uri=${encodeURIComponent(uri)}`),
       undefined, 10000,
     );
     return res.ok ? res.result : null;
   }
 
-  /** POST /api/v1/content/batch-write — immutable, preconditioned byte writes. */
+  /** Immutable, preconditioned byte writes. */
   async batchWrite(request: OVBatchWriteRequest): Promise<OVResponse<OVBatchWriteResult>> {
     return this.fetchJSON<OVBatchWriteResult>(
-      "/api/v1/content/batch-write",
+      openVikingApiPath("/content/batch-write"),
       { method: "POST", body: JSON.stringify(request) },
       30000,
     );
   }
 
-  /** GET /api/v1/content/download — raw stored bytes without JSON decoding. */
+  /** Raw stored bytes without JSON decoding. */
   async downloadBytes(uri: string): Promise<OVBytesResponse> {
-    const path = `/api/v1/content/download?uri=${encodeURIComponent(uri)}`;
+    const path = openVikingApiPath(`/content/download?uri=${encodeURIComponent(uri)}`);
     const op = this.observe.begin("client_http", path, "GET", 30000);
     try {
       const headers = this.headers();
@@ -385,7 +386,7 @@ export class OVClient {
   /** Stat result that distinguishes not-found from transport failure. */
   async statUri(uri: string): Promise<OVUriStatus> {
     const response = await this.fetchJSON<OVStatInfo>(
-      `/api/v1/fs/stat?uri=${encodeURIComponent(uri)}`,
+      openVikingApiPath(`/fs/stat?uri=${encodeURIComponent(uri)}`),
       undefined,
       10000,
     );
@@ -399,7 +400,7 @@ export class OVClient {
   /** Create one VikingFS directory; callers make parents explicitly. */
   async mkdirUri(uri: string): Promise<OVResponse<{ uri: string }>> {
     return this.fetchJSON<{ uri: string }>(
-      "/api/v1/fs/mkdir",
+      openVikingApiPath("/fs/mkdir"),
       { method: "POST", body: JSON.stringify({ uri }) },
       10000,
     );
@@ -408,10 +409,10 @@ export class OVClient {
 
   // ========== Filesystem ==========
 
-  /** GET /api/v1/fs/ls — list directory */
+  /** List one directory. */
   async ls(uri: string): Promise<OVDirEntry[]> {
     const res = await this.fetchJSON<any[]>(
-      `/api/v1/fs/ls?uri=${encodeURIComponent(uri)}`,
+      openVikingApiPath(`/fs/ls?uri=${encodeURIComponent(uri)}`),
       undefined, 10000,
     );
     if (!res.ok || !Array.isArray(res.result)) return [];
@@ -426,19 +427,19 @@ export class OVClient {
     }));
   }
 
-  /** GET /api/v1/fs/stat — file/directory metadata */
+  /** Read file or directory metadata. */
   async stat(uri: string): Promise<OVStatInfo | null> {
     const res = await this.fetchJSON<OVStatInfo>(
-      `/api/v1/fs/stat?uri=${encodeURIComponent(uri)}`,
+      openVikingApiPath(`/fs/stat?uri=${encodeURIComponent(uri)}`),
       undefined, 10000,
     );
     return res.ok ? res.result : null;
   }
 
-  /** DELETE /api/v1/fs — remove file or directory */
+  /** Remove a file or directory. */
   async delete(uri: string, recursive = false): Promise<boolean> {
     const res = await this.fetchJSON<any>(
-      `/api/v1/fs?uri=${encodeURIComponent(uri)}&recursive=${recursive}`,
+      openVikingApiPath(`/fs?uri=${encodeURIComponent(uri)}&recursive=${recursive}`),
       { method: "DELETE" },
       10000,
     );
@@ -447,14 +448,14 @@ export class OVClient {
 
   // ========== Resources ==========
 
-  /** POST /api/v1/resources — ingest a URL or file path */
+  /** Ingest a URL or file path. */
   async addResource(
     path: string, opts?: { to?: string },
   ): Promise<{ root_uri: string } | null> {
     const body: Record<string, unknown> = { path };
     if (opts?.to) body.to = opts.to;
     const res = await this.fetchJSON<{ root_uri: string }>(
-      "/api/v1/resources",
+      openVikingApiPath("/resources"),
       { method: "POST", body: JSON.stringify(body) },
       30000,
     );
@@ -474,7 +475,7 @@ export class OVClient {
    * 对空配置用户的处理保持一致。
    */
   async resolveUserSpace(): Promise<string> {
-    const statusRes = await this.fetchJSON<any>("/api/v1/system/status", undefined, 5000);
+    const statusRes = await this.fetchJSON<any>(openVikingApiPath("/system/status"), undefined, 5000);
     const resolved = statusRes.ok && typeof statusRes.result?.user === "string"
       ? statusRes.result.user.trim()
       : "";

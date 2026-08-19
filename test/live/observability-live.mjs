@@ -20,10 +20,12 @@ import { fileURLToPath } from "node:url";
 import { OVClient } from "../../client.ts";
 import {
   buildChildEnv,
+  buildDevServerConfig,
   isDevServerProcess,
   isNodeVersionSupported,
   loadModelProfile,
   readProcessCommand,
+  verifyDevServerConfig,
   verifyRunFiles,
 } from "../../scripts/dev.mjs";
 import { canonicalJsonBytes } from "../../shared/canonical-json.mjs";
@@ -604,6 +606,10 @@ async function preflight(log, ctx) {
   const command = ownership.ok ? readProcessCommand(pid) : null;
   const identity = ownership.ok && isDevServerProcess(command, join(DEV_RUN_DIR, "ov.conf"));
   log.check(group, "dev-service-ownership", true, identity, identity, ownership.reason);
+  const configCheck = ownership.ok
+    ? verifyDevServerConfig(DEV_RUN_DIR, ownership.state, buildDevServerConfig(ctx.profile))
+    : { ok: false, reason: ownership.reason };
+  log.check(group, "dev-service-config", true, configCheck.ok, configCheck.ok, configCheck.reason);
   const health = await probeServerHealth(ctx.endpoint, { timeoutMs: 5000 });
   log.check(group, "openviking-health", `${ctx.manifest.identities.openviking.version}/${ctx.manifest.identities.openviking.authMode}`,
     health.ok ? `${health.data?.version}/${health.data?.auth_mode}` : `unreachable-${health.statusCode}`,

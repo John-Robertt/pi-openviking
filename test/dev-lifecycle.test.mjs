@@ -5,10 +5,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import {
   buildChildEnv,
+  buildDevPiArgs,
   buildDevServerConfig,
   createRunFiles,
   isDevServerProcess,
   piWrapperSource,
+  verifyDevServerConfig,
   verifyRunFiles,
 } from "../scripts/dev.mjs";
 
@@ -45,6 +47,35 @@ test("buildDevServerConfig 使用 profile 字段且凭证为环境占位符", ()
   assert.equal(config.embedding.dense.dimension, 128);
   assert.ok(config.embedding.dense.cache_dir.includes("models"));
   assert.ok(config.storage.workspace.includes("data"));
+});
+
+test("buildDevPiArgs 固定 profile 模型并拒绝命令行覆盖", () => {
+  assert.deepEqual(
+    buildDevPiArgs(profile, ["--thinking", "off"]),
+    ["--provider", "test-provider", "--model", "test-model", "--models", "test-provider/test-model", "--thinking", "off"],
+  );
+  for (const args of [["--provider", "other"], ["--model=other"], ["--models", "other/*"], ["--api-key=secret"]]) {
+    assert.throws(() => buildDevPiArgs(profile, args), /不能覆盖/);
+  }
+});
+
+test("verifyDevServerConfig 核对状态、ov.conf 与 profile 期望配置", () => {
+  withTmpDir((dir) => {
+    const expected = buildDevServerConfig(profile);
+    createRunFiles(dir, { pid: 12345, config: expected });
+    writeFileSync(join(dir, "ov.conf"), JSON.stringify(expected));
+    let state = verifyRunFiles(dir).state;
+    assert.equal(verifyDevServerConfig(dir, state, expected).ok, true);
+
+    const changed = { ...expected, vlm: { ...expected.vlm, model: "changed-model" } };
+    writeFileSync(join(dir, "ov.conf"), JSON.stringify(changed));
+    assert.equal(verifyDevServerConfig(dir, state, expected).reason, "状态文件配置指纹与 ov.conf 不一致");
+
+    createRunFiles(dir, { pid: 12345, config: changed });
+    writeFileSync(join(dir, "ov.conf"), JSON.stringify(changed));
+    state = verifyRunFiles(dir).state;
+    assert.equal(verifyDevServerConfig(dir, state, expected).reason, "运行配置与当前开发模型身份不一致");
+  });
 });
 
 test("createRunFiles/verifyRunFiles 往返一致", () => {

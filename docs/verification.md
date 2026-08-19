@@ -72,11 +72,14 @@ schema version、run、seq 范围、stage/kind/outcome 计数、accepted/dropped
 
 所有 live verifier 使用同一契约：
 
+manifest 中的精确依赖、服务和模型身份是可重放的最近验证快照，不是后续版本的支持上限。最低兼容边界由
+`package.json` 等对应权威契约维护；后续版本默认向前兼容，实际 gate 发现破坏时再隔离和适配。
+
 - 每个阶段和横切 observability gate 先提交 `test/live/{gate}.workloads.json` manifest，固定 workload/seed、适用版本与真实进程/
   端点身份、成功标准、证伪条件、证据提取方式和阈值决策规则；基线探针完成后，将 baseline、数值阈值
   与预期变化写入 manifest 并在实现前固定其 hash，运行时不能临时改变；
-- 启动前连接并校验 manifest 声明的真实 Pi、OpenViking、provider/model、VLM、prompt 和协议身份；
-  支持矩阵或端点身份不匹配时明确拒绝运行；
+- 启动前连接并校验 manifest 声明的真实 Pi、OpenViking、provider/model、VLM、prompt 和协议身份，并核对
+  运行中服务配置、状态指纹与开发模型 profile 一致；身份或配置不匹配时明确拒绝运行；
 - 输入使用脱敏 fixture 或可重放生成参数；live verifier 在专用测试 workspace 和测试用户 namespace
   运行，凭证只从环境读取，不写入输入、payload artifact 或 summary；
 - summary 使用一个版本化 JSON 结构，记录 phase、run ID、manifest hash、版本/端点身份、逐项 expected/

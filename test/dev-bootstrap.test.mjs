@@ -12,13 +12,13 @@ test("提交的 dev/model-profile.json 通过校验", () => {
 test("validateModelProfile 拒绝缺失或非法字段", () => {
   const valid = {
     taskVlm: {
-      provider: "deepseek",
-      model: "deepseek-v4-flash",
-      apiBase: "https://api.deepseek.com",
+      provider: "test-provider",
+      model: "test-model",
+      apiBase: "https://example.test",
       credentialKind: "api_key",
-      apiKeyEnv: "DEEPSEEK_API_KEY",
+      apiKeyEnv: "TEST_API_KEY",
     },
-    embedding: { dense: { provider: "local", model: "bge-small-zh-v1.5-f16", dimension: 512 } },
+    embedding: { dense: { provider: "local", model: "test-embed", dimension: 128 } },
   };
   assert.deepEqual(validateModelProfile(valid), []);
 

@@ -1,5 +1,17 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+
+import { canonicalJsonBytes } from "./canonical-json.mjs";
+
+export const SYNC_ACK_IDENTITY_VERSION = 1;
+const SYNC_ACK_DOMAIN = "pi-openviking/sync-ack";
+
+export function syncAckFileKey(target, sessionId) {
+  return createHash("sha256")
+    .update(canonicalJsonBytes([SYNC_ACK_DOMAIN, SYNC_ACK_IDENTITY_VERSION, target, sessionId]))
+    .digest("hex");
+}
 
 export function normalizeSyncAck(value) {
   const leaves = Array.isArray(value?.acknowledgedLeaves)

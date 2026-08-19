@@ -21,8 +21,10 @@ export const TOOLCHAIN = Object.freeze({
   pythonVersion: "3.12",
   openvikingVersion: "0.4.13",
   xxhashConstraint: "xxhash<4",
+  zstandardVersion: "0.25.0",
 });
 export const OPENVIKING_SPEC = `openviking[local-embed]==${TOOLCHAIN.openvikingVersion}`;
+export const ZSTANDARD_SPEC = `zstandard==${TOOLCHAIN.zstandardVersion}`;
 
 const UV_TARGETS = {
   "darwin-arm64": "aarch64-apple-darwin",

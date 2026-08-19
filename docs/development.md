@@ -42,16 +42,17 @@ npm run dev -- pi
 
 完整参数以 `npm run dev -- help` 为准；本文只保留工作流和安全边界，不复制全部 CLI flags。
 
-## 升级固定版本
+## 升级外部版本
 
-OpenViking、uv 和托管 Python 的版本由 `shared/toolchain.mjs` 的 `TOOLCHAIN` 常量唯一确定，Node 由
-`package.json` 的 `engines` 确定。文档正文中的版本号是这两处的副本，由 `npm test` 保证不脱节；因此
-升级只需修改唯一权威源，再让检查指出其余待改位置。
+`shared/toolchain.mjs` 的 `TOOLCHAIN` 唯一维护 OpenViking、uv、托管 Python、xxhash 和 zstandard 的当前
+受管选择；`package.json` 维护 Node 最低版本、npm 依赖与 peer 最低兼容基线。peer 不设置预防性上限：
+当前 lock 和 live manifest 记录最近验证快照，后续版本默认向前兼容，只有实际 gate 证明存在破坏时才临时
+隔离并适配。文档中的版本号由 `npm test` 检查与权威源一致。
 
 ```bash
 # 1. 修改唯一权威源
-#    OpenViking / uv / Python → shared/toolchain.mjs 的 TOOLCHAIN
-#    Node                     → package.json 的 engines
+#    OpenViking / uv / Python / xxhash / zstandard → shared/toolchain.mjs 的 TOOLCHAIN
+#    Node / npm dependency / peer 最低基线           → package.json
 
 # 2. 由检查列出全部待同步位置（文档正文、live manifest 身份）
 npm test
@@ -72,7 +73,8 @@ npm run verify:observability:live
 第 3 步的 manifest 更新不是形式手续。manifest 声明的是“该阶段的结论在哪一组真实身份上成立”，
 gate 的 preflight 会用真实 `/health` 逐字核对；服务版本变化意味着该阶段的基线需要按
 [`docs/roadmap.md`](./roadmap.md)“实施顺序”的调查闭环重新建立，其规则见
-[`docs/verification.md`](./verification.md)。固定 hash 使这一步必须是有意识的动作。
+[`docs/verification.md`](./verification.md)。固定 hash 使这一步必须是有意识的动作。该精确身份只表示最近一次
+已经通过的证据快照，不构成对后续版本的支持上限。
 
 `shared/toolchain.mjs` 中记录特定版本缺陷的注释（如 `xxhash<4` 的约束）需要人工判断该缺陷在新版本
 是否仍然存在，不由检查覆盖。
@@ -136,8 +138,10 @@ provider/model/apiBase/凭证类型/凭证环境变量名；`embedding.dense` �
 provider/model/dimension。其他文档、命令示例和阶段 gate 只引用“开发模型身份”，不得复制具体值。
 
 任务模型与 OpenViking VLM 共同读取 `taskVlm`；OpenViking 本地 dense embedding 读取
-`embedding.dense`。`<profile.path>` 表示读取 profile 对应字段；Pi runner、OpenViking 配置生成器
-和凭证桥接禁止保存字段副本。
+`embedding.dense`。`dev pi` 显式传入 profile 的 provider/model，并把可选模型集合限制为同一身份；命令行
+不得覆盖这些字段或通过 `--api-key` 绕过凭证桥接。`dev up`、`status`、`dev pi` 和 live preflight 同时核对
+状态指纹、实际 `ov.conf` 与 profile 生成配置，漂移时 fail-fast 并要求受管重启。Pi runner、OpenViking
+配置生成器和凭证桥接禁止保存字段副本。
 
 桥接动作按以下顺序执行：
 
