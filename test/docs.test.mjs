@@ -114,10 +114,13 @@ test("文档中的 OpenViking 与 Node 版本与安装 pin 一致", async () => 
   const engines = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).engines.node;
   const nodeVersion = engines.replace(/[^0-9.]/g, "");
   const stale = [];
+  let occurrences = 0;
   for (const file of markdownFiles()) {
     const text = readFileSync(join(REPO, file), "utf8");
     // 文档正文保留可读的版本号；此处保证它们不会与唯一 pin 脱节。
-    for (const [, found] of text.matchAll(/OpenViking[`\s]*`?(\d+\.\d+\.\d+)`?/g)) {
+    // 同时覆盖散文中的 `OpenViking x.y.z` 与安装说明中的 `openviking[...]==x.y.z`。
+    for (const [, found] of text.matchAll(/openviking(?:\[[^\]\s]*\])?(?:==)?[`\s]*`?(\d+\.\d+\.\d+)`?/gi)) {
+      occurrences += 1;
       if (found !== TOOLCHAIN.openvikingVersion) {
         stale.push(`${file}: OpenViking ${found} ≠ pin ${TOOLCHAIN.openvikingVersion}`);
       }
@@ -126,6 +129,7 @@ test("文档中的 OpenViking 与 Node 版本与安装 pin 一致", async () => 
       if (found !== nodeVersion) stale.push(`${file}: Node.js ${found} ≠ engines ${nodeVersion}`);
     }
   }
+  assert.ok(occurrences > 0, "版本扫描未命中任何 OpenViking 版本号，正则可能已失效");
   assert.deepEqual(stale, []);
 });
 
