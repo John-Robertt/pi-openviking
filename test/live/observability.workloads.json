@@ -19,7 +19,7 @@
     },
     "modelProfile": {
       "path": "dev/model-profile.json",
-      "sha256": "bd7af403f86113ddc796a6d91fc6c2dbd03fa8d0520adfc866471e222e1d7355"
+      "sha256": "48a1ec8a4cfd2bdbc231c41e6f6e20e0057ea6b126b8440149154d78cba46a25"
     },
     "registry": {
       "schemaVersion": 1,

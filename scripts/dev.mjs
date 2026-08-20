@@ -573,7 +573,9 @@ async function status() {
     try {
       const summary = summarizeServerConfig(JSON.parse(readFileSync(OV_CONF, "utf8")));
       say(`embedding:  ${summary.embedding.provider}/${summary.embedding.model} (dimension ${summary.embedding.dimension})`);
-      say(`vlm:        ${summary.vlm.provider}/${summary.vlm.model} (credential: ${summary.vlm.credential})`);
+      // 同一个身份同时供 Pi 任务模型与 OpenViking VLM 使用；只写 "vlm" 会让人以为
+      // 任务模型另有来源。
+      say(`任务模型/VLM: ${summary.vlm.provider}/${summary.vlm.model} (credential: ${summary.vlm.credential})`);
     } catch (e) {
       say(`config:     INVALID (${e?.message || e})`);
     }
