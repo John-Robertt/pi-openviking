@@ -19,11 +19,11 @@
     },
     "modelProfile": {
       "path": "dev/model-profile.json",
-      "sha256": "42df2096b4627f9ec8ec699b9b0a52aa11d3d640fd91b4afc2d40354b1962dfb"
+      "sha256": "42313a69464c572b71138505ede211b257692fa9f69697811c1802eb52473bab"
     },
     "registry": {
       "schemaVersion": 1,
-      "sha256": "8643268ab335b532334a30dc96f1db596719d6598728e426d55a7f0352b2b98d"
+      "sha256": "b4b3ee62e9eb42fbce69c92758c8ba1cda7f8f19b1cabd4f83804932f9146b5d"
     },
     "extensionLoadOrder": ["index.ts"]
   },
@@ -32,7 +32,7 @@
     "isolation": "HOME、PI_CODING_AGENT_DIR、session 与 observation artifact 全部位于 test/.artifacts/live/<runId>",
     "credentials": "任务模型 key 由 verifier 按 taskModel 身份桥接给真实 Pi；VLM key 只由受管 OpenViking 启动路径持有；两者均不写入 manifest、observation、session、summary 或日志"
   },
-  "deterministicStages": ["archive_commit", "archive_failure", "index_failure", "recall_failure", "tool_availability", "tool_scope"],
+  "deterministicStages": ["archive_commit", "archive_failure", "checkpoint_failure", "checkpoint_process", "checkpoint_request", "checkpoint_state", "index_failure", "recall_failure", "tool_availability", "tool_scope"],
   "workloads": [
     {
       "id": "success-recall-sync",
@@ -131,7 +131,7 @@
     },
     {
       "id": "tool-uri-rejection",
-      "summary": "确定性脚本 provider 驱动真实 Pi 以内置 read 逐字调用越界 viking:// URI；生产 tool_call hook 必须在工具执行前阻止，并且不向 OpenViking 发出对应 content/read。",
+      "summary": "确定性脚本 provider 驱动真实 Pi 以内置 read 逐字调用越界 viking:// URI；生产 tool_call hook 在工具执行前阻止，随后显式 /viking sync 只负责收敛该次运行的事件证据。",
       "driver": "scripted-provider",
       "prompt": "读取那个文件，然后只回复 DONE。",
       "expectedRecords": [
@@ -141,7 +141,7 @@
       "successCriteria": [
         "真实 Pi tool_execution_end 证明内置 read 被生产 hook 阻止",
         "guard 后没有 OpenViking content/read，越界 namespace 保持不存在",
-        "观察 run 完整且不含 URI、prompt、session/user 或工具返回内容"
+        "显式同步后观察 run 完整、全部源事件已确认，且 artifact 不含 URI、prompt、session/user 或工具返回内容"
       ],
       "falsification": [
         "脚本输入未触发内置 read 调用或 Pi 未应用 hook block",
@@ -166,17 +166,17 @@
     "cleanupMs": 30000,
     "cleanupSettleMs": 60000,
     "baseline": {
-      "measuredAt": "2026-08-20T02:51:10.425Z",
+      "measuredAt": "2026-08-20T11:01:43.774Z",
       "expected": {
         "disabled": "deterministic baseline 的产品返回值、状态与调用顺序不变，观察依赖调用为 0",
         "enabled": "每个 run 完整、dropped=0，产品成功/ACK/fail-open/权限结果与对应 workload 断言一致"
       },
       "runs": [
-        { "workload": "success-recall-sync", "label": "success", "observedMs": 4162, "observedRecords": 134, "maxMs": 90000, "minRecords": 100, "maxRecords": 512 },
-        { "workload": "disconnect-fail-open", "label": "disconnect", "observedMs": 2966, "observedRecords": 37, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
-        { "workload": "conflict-409", "label": "conflict-prep", "observedMs": 3414, "observedRecords": 37, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
-        { "workload": "conflict-409", "label": "conflict-sync", "observedMs": 1167, "observedRecords": 67, "maxMs": 30000, "minRecords": 30, "maxRecords": 256 },
-        { "workload": "tool-uri-rejection", "label": "tool-uri-live", "observedMs": 2130, "observedRecords": 151, "maxMs": 90000, "minRecords": 20, "maxRecords": 256 }
+        { "workload": "success-recall-sync", "label": "success", "observedMs": 26740, "observedRecords": 211, "maxMs": 90000, "minRecords": 100, "maxRecords": 512 },
+        { "workload": "disconnect-fail-open", "label": "disconnect", "observedMs": 2641, "observedRecords": 39, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
+        { "workload": "conflict-409", "label": "conflict-prep", "observedMs": 3251, "observedRecords": 39, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
+        { "workload": "conflict-409", "label": "conflict-sync", "observedMs": 1375, "observedRecords": 69, "maxMs": 30000, "minRecords": 30, "maxRecords": 256 },
+        { "workload": "tool-uri-rejection", "label": "tool-uri-live", "observedMs": 2206, "observedRecords": 158, "maxMs": 90000, "minRecords": 20, "maxRecords": 256 }
       ]
     }
   }

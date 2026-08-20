@@ -36,7 +36,7 @@
 
 ## 最小系统心智模型
 
-当前实现的主干是两条独立链路；更完整的职责和数据流见 [`docs/design.md`](./docs/design.md)。
+当前实现的主干是三条协作链路；更完整的职责和数据流见 [`docs/design.md`](./docs/design.md)。
 
 ```text
 Pi JSONL / in-memory entries
@@ -51,6 +51,12 @@ confirmed events on the current branch
   → archive manifest commit point
   → self-proving manifest + parentId-chain expand
 
+committed Archives
+  → checkpoint request / explicit failure facts
+  → managed OpenViking VLM Session/Task
+  → source-proving checkpoint event
+  → derived backlog / notification state
+
 user prompt
   → recall search
   → profile / recall block
@@ -59,7 +65,7 @@ user prompt
 ```
 
 `index.ts` 绑定 Pi 生命周期并协调健康检查、同步、召回和工具；`sync.ts` 是来源、事件写入和 ACK 的唯一
-协调者；`client.ts` 只负责 OpenViking transport。
+协调者；`shared/checkpoint-store.mjs` 从已提交 Archive 与追加事实协调 VLM 消费；`client.ts` 只负责 OpenViking transport。
 Checkpoint、`ActiveContext` 和上下文接管的当前可用范围由 `docs/roadmap.md` 的实施状态及对应阶段
 gate 共同证明；配置字段只表达其权威文档定义的策略。
 
@@ -89,6 +95,7 @@ gate 共同证明；配置字段只表达其权威文档定义的策略。
 | ACK、重放、并发或 fail-open             | `docs/spec.md`“可靠增量同步”                  | `sync.ts`、`shared/sync-ack.mjs`                                                               | `test/sync-manager.test.mjs`、`test/session-source-ack.test.mjs`               |
 | Content API、批次、大对象或冲突         | `docs/spec.md` 存储契约                       | `client.ts`、`shared/content-objects.mjs`、`shared/recorded-event-adapter.mjs`                 | `test/client-content.test.mjs`、`test/content-objects.test.mjs`、`test/recorded-event-adapter.test.mjs` |
 | Archive 身份、边界、提交或 expand       | `docs/spec.md`“Archive 是一个原子对象”         | `shared/archive.mjs`、`shared/archive-store.mjs`、`sync.ts`                                    | `test/archive.test.mjs`、`verify:phase1:live`                                  |
+| checkpoint 身份、VLM、重试、恢复或积压 | `docs/spec.md`“Checkpoint 生成与消费状态”       | `shared/checkpoint*.mjs`、`shared/recorded-event*.mjs`、`sync.ts`                               | `test/checkpoint*.test.mjs`、`verify:phase2a:live`                              |
 | recall、profile 或 provider context     | `docs/spec.md` 检索/上下文边界                | `recall.ts`、`shared/recall-core.mjs`、`shared/profile-inject.mjs`                             | `test/recall.test.mjs`、阶段 provider payload gate                             |
 | 观察 registry、sink、脱敏或点位        | `docs/observability.md`                       | `shared/observe.mjs` 与 registry 声明的 owner                                                   | `test/observe.test.mjs`、`test/observability-integration.test.mjs`、observability gate |
 | `viking_*` 工具及 URI 权限              | `docs/usage.md`“会话隔离与数据位置”、“工具”   | `tools.ts`、`lib/uri-guard-adapter.mjs`、`shared/uri-guard.mjs`                                | `test/tools-boundary.test.mjs`                                                 |

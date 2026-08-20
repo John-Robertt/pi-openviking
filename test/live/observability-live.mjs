@@ -270,7 +270,7 @@ async function wToolUriRejection(log, ctx) {
       workloadId: ctx.workloadId,
       turn: "tool-uri-live",
       endpoint: ctx.endpoint,
-      actions: [{ prompt: ctx.workload.prompt }],
+      actions: [{ prompt: ctx.workload.prompt }, { command: "/viking sync" }],
       capture: "observation",
       ...scripted.runOverrides,
     });

@@ -66,7 +66,7 @@ interface PiRecordedEventV1 extends RecordedEventBaseV1 {
 
 interface ProducedRecordedEventV1 extends RecordedEventBaseV1 {
   source: {
-    system: "pi-openviking" | "openviking";
+    system: "pi-openviking";
     sourceId: string;
     sourceType: string;
   };
@@ -279,8 +279,12 @@ checkpoint。checkpoint 作为新事件追加，来源 Archive 和之前的 chec
 VLM 失败由后台异步重试，raw Archive 的持久状态保持有效。
 
 VLM 运行事实由 Archive manifest、request、checkpoint 和失败事件共同表达。request 记录
-`taskId`、`archiveId` 和提交时间；checkpoint 表示消费完成；task 明确失败时追加原始错误。
-持久化且来源 Archive 身份和 hash 匹配的 checkpoint 表示对应 Archive 已消费。
+`taskId`、`archiveId` 和提交时间；明确失败追加稳定错误分类、错误码与代码拥有的通用消息，外部
+provider/task 错误正文保留在受管 OpenViking 边界内。checkpoint 只有在 parent 指向当前 Archive 与前一
+checkpoint 下连续 attempt 中存在、匹配且没有 failure 的 request 时才表示消费完成；来源 Archive 身份和
+hash 必须同时匹配。并发进程写入同一事实身份时采用首个通过该完整事实链校验的已提交对象。
+多模态输入只有在每个媒体对象都得到非空语义摘要后才提交 VLM；终态 request/failure/checkpoint 跨重启
+派生临时 Session 与 attempt 媒体根的清理义务，二者都确认不存在才算清理完成。
 
 VLM 消费状态由上述事实派生。最新 checkpoint 之后没有 Archive 时表示已经赶上；只有
 一个 Archive 时表示正常处理中；已有两个或更多 Archive 时表示消费落后。积压 token 是

@@ -30,7 +30,7 @@ export class ArchiveManager {
   readonly status: ArchiveState;
   observeFinalState(): void;
   formArchives(sessionId: string, events: PiRecordedEventV1[]): Promise<
-    { planned: number; created: number } & ArchiveState
+    { planned: number; created: number; archives: Array<{ manifest: ArchiveManifestV1; tokenCount: number }> } & ArchiveState
   >;
   commit(sessionId: string, events: PiRecordedEventV1[]): Promise<{
     archiveId: string;

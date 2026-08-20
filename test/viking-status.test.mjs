@@ -30,6 +30,10 @@ test("/viking 展示 JSONL、Content capability、ACK 和待重放状态", () =>
       pendingEntries: 4,
       lastFailure: null,
       archive: { committed: 3, lastArchiveId: `arc_${"a".repeat(64)}`, pending: 1, lastFailure: null },
+      checkpoint: {
+        mode: "lagging", consumed: 1, pending: 2, backlogTokens: 3000,
+        lastCheckpointId: `chk_${"c".repeat(64)}`, currentArchiveId: `arc_${"d".repeat(64)}`, lastFailure: null,
+      },
     },
     observation: { state: "ready", reason: "ready", accepted: 12, dropped: 0 },
   });
@@ -39,6 +43,7 @@ test("/viking 展示 JSONL、Content capability、ACK 和待重放状态", () =>
   assert.match(output, /ACK frontier：2 个 leaves/);
   assert.match(output, /待重放：4 个 entry/);
   assert.match(output, new RegExp(`Archive：已提交 3 个，待提交 1 个（最近 arc_a{64}）`));
+  assert.match(output, new RegExp(`Checkpoint：消费落后，已消费 1 个，积压 2 个 Archive / 3000 tokens（最近 chk_c{64}）`));
 });
 
 test("/viking 在 Archive 尚未形成或提交失败时给出可诊断状态", () => {
@@ -61,11 +66,14 @@ test("/viking 在 Archive 尚未形成或提交失败时给出可诊断状态", 
       pendingEntries: 0,
       lastFailure: null,
       archive: { committed: 1, lastArchiveId: `arc_${"b".repeat(64)}`, pending: 2, lastFailure: "ContentBusyError: path busy" },
+      checkpoint: { mode: "failed", consumed: 0, pending: 1, backlogTokens: 1000, lastCheckpointId: null, currentArchiveId: `arc_${"b".repeat(64)}`, lastFailure: "task failed" },
     },
     observation: { state: "disabled" },
   });
   assert.match(failed, /Archive：已提交 1 个，待提交 2 个/);
   assert.match(failed, /最近 Archive 失败：ContentBusyError: path busy/);
+  assert.match(failed, /Checkpoint：失败，已消费 0 个，积压 1 个 Archive \/ 1000 tokens/);
+  assert.match(failed, /最近 checkpoint 失败：task failed/);
 });
 
 test("/viking 在断线时明确 fail-open 和最近失败", () => {

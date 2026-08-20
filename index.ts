@@ -27,8 +27,12 @@ export default async function (pi: ExtensionAPI) {
   if (!config.enabled) return;
 
   // --- Initialize modules ---
+  let statusContext: any = null;
   const client = new OVClient(config, observation);
-  const sync = new SyncManager(client, { observation });
+  const sync = new SyncManager(client, {
+    observation,
+    notify: (message, level) => statusContext?.ui?.notify(message, level),
+  });
   const recall = new RecallManager(client, config, () => sync.sessionId, observation);
   const recordObservation = (kind: string, content: string, targetEntryId: string | null): void => {
     const op = observation.begin("pi_entry_append", kind);
@@ -47,7 +51,6 @@ export default async function (pi: ExtensionAPI) {
   let toolsRegistered = false;
   let started = false;
   let startPromise: Promise<void> | null = null;
-  let statusContext: any = null;
   let startupWarningShown = false;
 
   const beginHook = (hook: string, reason = "none"): number => observation.begin("pi_lifecycle", hook, reason);
@@ -378,8 +381,9 @@ export default async function (pi: ExtensionAPI) {
       scheduleSync(ctx, "session_shutdown");
       const drained = await sync.waitForIdle(500);
       if (!drained) observation.abandon();
-      sync.observeFinalState();
       await client.close(true);
+      await sync.stopBackground();
+      sync.observeFinalState();
       endHook(op, "session_shutdown", reason);
     } catch (error) {
       endHook(op, "session_shutdown", reason, "error");

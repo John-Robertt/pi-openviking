@@ -43,10 +43,12 @@ export function formatVikingCommand({ connected, sessionId, sync, observation })
     `ACK frontier：${acknowledgedLeaves.length} 个 leaves`,
     `待重放：${pending} 个 entry`,
     formatArchiveLine(sync?.archive),
+    formatCheckpointLine(sync?.checkpoint),
   ];
   if (!connected && pending > 0) lines.push("主任务：fail-open，连接恢复后从 Pi 来源重放");
   if (sync?.lastFailure) lines.push(`最近同步失败：${sync.lastFailure}`);
   if (sync?.archive?.lastFailure) lines.push(`最近 Archive 失败：${sync.archive.lastFailure}`);
+  if (sync?.checkpoint?.lastFailure) lines.push(`最近 checkpoint 失败：${sync.checkpoint.lastFailure}`);
   return lines.join("\n");
 }
 
@@ -58,4 +60,17 @@ function formatArchiveLine(archive) {
     ? archive.lastArchiveId
     : "尚未形成";
   return `Archive：已提交 ${committed} 个，待提交 ${waiting} 个（最近 ${identity}）`;
+}
+
+function formatCheckpointLine(checkpoint) {
+  const mode = checkpoint?.mode === "lagging" ? "消费落后"
+    : checkpoint?.mode === "processing" ? "处理中"
+      : checkpoint?.mode === "failed" ? "失败" : "已赶上";
+  const consumed = Math.max(0, Math.floor(Number(checkpoint?.consumed) || 0));
+  const pending = Math.max(0, Math.floor(Number(checkpoint?.pending) || 0));
+  const tokens = Math.max(0, Math.floor(Number(checkpoint?.backlogTokens) || 0));
+  const identity = typeof checkpoint?.lastCheckpointId === "string" && checkpoint.lastCheckpointId
+    ? checkpoint.lastCheckpointId
+    : "尚未生成";
+  return `Checkpoint：${mode}，已消费 ${consumed} 个，积压 ${pending} 个 Archive / ${tokens} tokens（最近 ${identity}）`;
 }

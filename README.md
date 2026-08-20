@@ -1,10 +1,11 @@
 # Pi OpenViking 扩展
 
 这是面向 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
-[OpenViking](https://github.com/volcengine/OpenViking) 扩展。当前版本负责两件事：
+[OpenViking](https://github.com/volcengine/OpenViking) 扩展。当前版本负责三件事：
 
 1. 将 Pi 会话完整投影为稳定、可重放的原始事件并写入 OpenViking；
-2. 在模型请求前检索已有 OpenViking 记忆。
+2. 把已确认事件形成原子 Archive，并由受管 VLM 异步生成可追溯的结构化 checkpoint；
+3. 在模型请求前检索已有 OpenViking 记忆。
 
 Pi JSONL 始终保留完整历史并是 Pi 事件的唯一事实源。OpenViking 不可用时，编码任务继续运行；
 未确认事件留在 Pi 来源中，连接恢复后重放。
@@ -18,10 +19,12 @@ Pi JSONL 始终保留完整历史并是 Pi 事件的唯一事实源。OpenViking
 - 小事件直接写入，超过 8 MiB 的事件使用 claim/chunks/commit marker；
 - 服务端确认一个 Pi entry 的全部事件后才推进最小 `SyncAck`；
 - 不持久化待发送 transcript payload，也不使用数组长度作为同步水位；
+- 已确认事件按 token/step 边界形成自证 Archive，可按 `archiveId` 确定展开；
+- 每个 Archive 异步生成来源/hash 可核验的 checkpoint，失败与重启从追加事实恢复；
+- `/viking` 展示 checkpoint 处理、落后、失败和积压状态；
 - Pi compaction 只由 Pi 触发，扩展在完成后记录该事件。
 
-Archive、VLM checkpoint 和上下文接管属于后续阶段。相关配置表达目标策略，但在产生经过验收的
-Archive 和 `ActiveContext` 前不会替换 Pi 上下文。
+`ActiveContext` 与上下文接管属于后续阶段；当前 checkpoint 在后台形成，但 provider 仍使用完整 Pi 上下文。
 
 ## 前置条件
 
@@ -93,8 +96,8 @@ OpenViking 地址与凭证按以下顺序解析：
 - `OV ✓`：最近一次检查可达；
 - `OV ✗`：当前不可达。
 
-`/viking` 显示来源类型、Content adapter capability、ACK frontier、待重放 entry、最近失败和独立观察状态。
-`/viking sync` 立即从当前 Pi 会话来源重放。
+`/viking` 显示来源类型、Content adapter capability、ACK frontier、待重放 entry、Archive/checkpoint/积压、
+最近失败和独立观察状态。`/viking sync` 立即从当前 Pi 会话来源重放。
 
 ## 工具
 
@@ -116,10 +119,12 @@ OpenViking 地址与凭证按以下顺序解析：
 index.ts                     Pi 生命周期与 fail-open 接入
 config.ts / config.json      统一配置加载与出厂默认值
 client.ts                    OpenViking HTTP/Content transport
-sync.ts                      JSONL source、RecordedEvent 与 SyncAck 协调
+sync.ts                      JSONL、RecordedEvent、ACK、Archive 与 checkpoint 协调
 recall.ts                    当前提示词召回
 tools.ts                     Viking 工具与 /viking 命令
 shared/recorded-event*.mjs   规范事件与 Content adapter
+shared/archive*.mjs          Archive 身份、边界、提交与 expand
+shared/checkpoint*.mjs       checkpoint 身份、VLM 处理、事实与状态派生
 shared/pi-session-source.mjs 持久 Pi JSONL 分支恢复
 shared/sync-ack.mjs          最小 ACK frontier
 scripts/cli.mjs              安装与服务管理 CLI
@@ -132,7 +137,7 @@ docs/                        规范、设计、开发环境、用户文档与可
 - [`docs/roadmap.md`](./docs/roadmap.md)：阶段划分、当前实施状态和下一实施入口；
 - [`docs/verification.md`](./docs/verification.md)：证据标准与阶段门禁契约；
 - [`docs/development.md`](./docs/development.md)：开发环境的安装、运行、开发循环和清理；
-- [`docs/design.md`](./docs/design.md)：当前 Phase 0 实现的职责与数据流；
+- [`docs/design.md`](./docs/design.md)：当前实现的职责与数据流；
 - [`docs/usage.md`](./docs/usage.md)：安装、配置和故障排查；
 - [`docs/observability.md`](./docs/observability.md)：观察点契约、记录形状与脱敏边界。
 - [`AGENTS.md`](./AGENTS.md)：给编码代理的地图——需要答案时去哪里找。

@@ -27,11 +27,23 @@ manifest/hash 下覆盖成功 recall/同步、断线、409 冲突、URI 拒绝�
 `verify:phase1:live` 在真实 Pi lifecycle 与受管 OpenViking 上覆盖 Archive 形成、崩溃残留恢复、受管重启
 幂等和完整性冲突 fail-open；常驻 `verify:observability:live` 全量通过。
 
+**Phase 2A 生产实现已完成，阶段出口因当前 VLM 吞吐重新打开。** checkpoint request、代码拥有的明确 failure
+与结构化 checkpoint 作为自产 `RecordedEventV1` 进入既有 immutable event namespace；消费状态、完整
+parent/attempt 链、积压和终态清理义务只从 Archive 与这些事实派生。deterministic checks 证明孤立 checkpoint
+拒绝、并发首写者收敛、逐 Archive 三次 attempt、媒体失败 pending、外部错误脱敏和跨重启清理。当前
+`verify:phase2a:live` 在真实 0.4.15 Content/Session/Task API 上以 101/114 结束：多模态、明确失败后的真实
+VLM 重试和双 Archive 恢复成立，但一个文本 task 在 240000ms 门限时仍为 running，最终 608033ms 才完成，
+并级联导致门禁截止时的 checkpoint 与 active-task 清理断言失败。门限不放宽；当前 model profile 通过或被替换前，
+Phase 2A 不作为 Phase 2B 的已确认输入。常驻 `verify:observability:live` 已覆盖现行 registry。
+
 **环境注意**：服务端队列可能因既往强制终止留下 `status=processing` 且不再完成的条目，此时
 `/api/v1/system/wait` 必然超时、受管重启会变慢。`.dev/runs/openviking/data` 是可重建运行态，删除后
 `npm run dev -- up` 即恢复。
 
-**当前工作是 Phase 2A 的基线调查；Phase 2A 实现尚未开始。**
+**验证基础设施待修复**：`test/live/live-support.mjs` 的 task 清理虽然使用 workload 随机用户身份，但仍会枚举并
+取消该身份下的全部 active task，没有按本次 gate 记录的 `resource_id`/task 身份逐项证明 ownership。下一次 live gate 前改为只取消明确所属任务，并在取消前回读核对归属。
+
+**当前工作是恢复 Phase 2A 的当前开发 VLM 吞吐门禁；Phase 2B 基线调查与实现尚未开始。**
 
 ## 实施顺序
 
@@ -164,7 +176,7 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 
 - 每个 Archive 异步生成一个统一的结构化 checkpoint；
 - checkpoint 保存模型版本、prompt 版本、输入 Archive 身份和 hash；
-- 以 request、checkpoint 和失败事件表达 VLM 运行事实；
+- 以 request、代码拥有的明确 failure 和 checkpoint 事件表达 VLM 运行事实，并验证完整 parent/attempt 链；
 - 从未消费 Archive 派生处理中、落后、恢复和积压 token，并实现对应通知；
 - `/viking` 展示 VLM 积压、失败、checkpoint ID 和来源 Archive；
 - 校验 checkpoint 身份、hash、重试和跨重启恢复，并将有效 checkpoint 作为 Phase 2B 输入；
@@ -173,11 +185,12 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 
 **验收**：
 
-- 持久化且来源 Archive 身份和 hash 匹配的 checkpoint 表示该 Archive 消费完成；
-- 同一 Archive 的重试和进程重启恢复至多产生一个有效 checkpoint；
+- checkpoint 的来源 Archive 身份/hash 匹配，且 parent 指向连续 attempt 中存在、匹配、无 failure 的 request，才表示该 Archive 消费完成；
+- 同一 Archive 的重试、响应不确定、进程重启与并发恢复采用首个有效事实，至多产生一个有效 checkpoint；
 - 一个未消费 Archive 显示处理中，第二个产生时通知消费落后，恢复到至多一个在途 Archive 时
   通知一次；
-- Archive、request、checkpoint 和失败事件能够完整派生 VLM 状态、失败原因及积压 token；
+- Archive、request、checkpoint 和失败事件能够完整派生 VLM 状态、失败原因、积压 token 及终态 attempt 的临时清理义务；
+- 媒体未获得非空摘要时保持同一 request pending；终态 Session 与媒体根跨重启重试，二者都确认不存在才完成清理；
 - VLM 失败不改变已经持久化的事件和 raw Archive；
 - Phase 1 的各真实 Archive 工作负载均产生来源和 hash 可核验的 checkpoint，并分别满足固定 VLM
   吞吐要求。
@@ -259,6 +272,6 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 
 ## 下一实施入口
 
-当前入口是 Phase 2A 的基线调查：按“实施顺序”的调查闭环建立 `test/live/phase2a.workloads.json` manifest，
-用 Phase 1 已提交的真实 Archive 与开发模型身份中的 VLM，先实测 checkpoint 生成的吞吐、失败形态和重试
-语义；把 baseline、数值阈值、预期变化和证伪条件固定后，再实现 checkpoint 生产。
+当前入口是恢复 Phase 2A 的开发 VLM 门禁：保持 `test/live/phase2a.workloads.json` 已固定的 240000ms
+质量边界，选定能够稳定满足该边界的开发 VLM 身份并重新取得 114/114；只有通过后的实测值才更新 accepted
+baseline 和阶段状态。在此之前不建立 Phase 2B manifest，takeover 保持 inactive，provider 继续使用完整 Pi 上下文。

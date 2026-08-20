@@ -20,8 +20,9 @@ thinking、tool call/result、真实错误和 aborted 状态、未知 part、cus
 扩展不清洗、过滤或截断原始 payload。
 
 已确认事件按 `archive` 预算归入 Archive：一段事件与一份 manifest 原子绑定，可按 `archiveId`
-确定性展开回原始事件。当前阶段不创建 checkpoint 或 `ActiveContext`，也不替换 Pi 上下文。Pi 是
-compaction 唯一触发方。
+确定性展开回原始事件。每个已提交 Archive 由受管 OpenViking 的 VLM 异步生成结构化 checkpoint；request、
+明确 failure 与 checkpoint 都是可重放的追加事件；failure 只保存稳定分类、错误码和通用消息，有效 checkpoint 必须有连续且匹配的 request/failure parent 链。VLM 或网络失败不改变 raw event、ACK 或 Archive。
+当前阶段尚不创建 `ActiveContext`，也不替换 Pi 上下文；Pi 是 compaction 唯一触发方。
 
 ## 2. 前置条件
 
@@ -123,8 +124,8 @@ npx pi-openviking@latest credentials
 ```
 
 `archive.chunkTokenBudget` 控制每次 Archive 的目标增量，`archive.rawTailTokenBudget` 控制归档后保留
-的最近原始上下文。`takeover` 用于固定后续阶段的目标策略；在 `ActiveContext` 实现并通过验收前，不会
-替换上下文。
+最近原始上下文。`takeover` 已为 checkpoint 输出预算提供策略值；在 `ActiveContext` 实现并通过验收前，
+provider 仍使用完整 Pi 上下文，不执行上下文替换。
 
 ### 受管服务代理
 
@@ -166,8 +167,9 @@ sanitize(baseUser || "default")--pi-sanitize(piSessionId)
 的 Archive 位置由当前会话推导，跨会话展开在命名空间层面不可寻址，与该选项无关。关闭该选项后不
 施加读取、删除和浏览的边界。
 
-原始 event files 与 Archive manifest 都使用 dot-prefixed 名称，普通 shard 列表不返回这些文件；上层
-dot directory 仍可能可见。语义处理过滤 dot files。客户端仅持久化最小 ACK：
+原始 event files、Archive manifest 和 checkpoint 事实都使用 dot-prefixed 名称，普通 shard 列表不返回这些文件；
+上层 dot directory 仍可能可见，语义处理过滤 dot files。嵌入图片仅在 checkpoint attempt 的临时 Resource 中进入
+媒体语义处理；每个媒体得到非空摘要后才会提交 checkpoint 输入。终态事实跨重启重试删除所属 Session 和媒体根，二者都确认不存在才完成清理；长期 checkpoint 只保留 VLM 摘要与来源 hash。客户端仅持久化最小 ACK：
 
 ```text
 ~/.pi/openviking/sync-ack/<target-and-session-hash>.json
@@ -189,8 +191,12 @@ ACK 文件不包含 transcript。删除 ACK 只会使下一次从 Pi JSONL 幂�
 - ACK frontier leaves；
 - 待重放 entry；
 - Archive 已提交数、待提交数与最近 `archiveId`；
-- 最近同步失败、最近 Archive 失败及 fail-open 状态；
+- checkpoint 的已赶上/处理中/消费落后/失败状态、已消费数、积压 Archive/token 与最近 `checkpointId`；
+- 最近同步失败、最近 Archive/checkpoint 失败及 fail-open 状态；
 - 独立观察状态：未启用、就绪或不完整，以及 accepted/dropped 计数。
+
+进入 checkpoint 消费落后、真正恢复到 processing/caught-up、或 VLM task 明确失败时会通知；第三次失败明确提示重试已耗尽，不把 failed 当作恢复。同一进程的同一
+状态转换只通知一次，重启后可根据恢复出的当前状态再次提示。
 
 立即重放：
 
@@ -240,6 +246,13 @@ Pi 主任务继续执行。恢复服务后使用 `/viking sync` 或等待下一�
 
 冲突不会自动覆盖。使用 `/viking` 获取失败，再检查对应隐藏 URI 的 raw download。先判断是否有
 其他调用方使用同一凭证修改了 adapter 独占命名空间。
+
+### checkpoint 处理中、落后或失败
+
+`/viking` 的积压数量和 token 来自尚无有效 checkpoint 的 Archive。处理中或断线时无需删除 Archive 或 ACK；
+服务恢复后，下一次同步/状态轮询会复用已经持久化的 request 与 OpenViking task。task 明确失败时最多使用三个
+确定性 attempt，失败事实不会被覆盖，也不会复制 provider/task 原始错误正文。持续失败或最近失败显示 `cleanup` 时，先运行 `server status` 和 `server doctor` 检查受管 VLM、Session 与媒体根；
+raw event 与 Archive 仍可正常展开。
 
 ### 配置错误
 

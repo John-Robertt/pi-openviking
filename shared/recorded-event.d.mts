@@ -13,19 +13,42 @@ export interface PiRecordedEventSourceV1 {
   partIndex: number;
 }
 
-export interface PiRecordedEventV1 {
+export interface ProducedRecordedEventSourceV1 {
+  system: "pi-openviking";
+  sourceId: string;
+  sourceType: string;
+}
+
+export interface RecordedEventBaseV1 {
   schemaVersion: typeof RECORDED_EVENT_SCHEMA_VERSION;
   eventId: string;
   parentId: string | null;
   contentHash: string;
   occurredAt: string;
-  source: PiRecordedEventSourceV1;
   turnId?: string;
   stepId?: string;
   payload: JsonValue;
 }
 
-export function recordedEventId(source: PiRecordedEventSourceV1): string;
+export interface PiRecordedEventV1 extends RecordedEventBaseV1 {
+  source: PiRecordedEventSourceV1;
+}
+
+export interface ProducedRecordedEventV1 extends RecordedEventBaseV1 {
+  source: ProducedRecordedEventSourceV1;
+}
+
+export type RecordedEventV1 = PiRecordedEventV1 | ProducedRecordedEventV1;
+
+export function recordedEventId(source: PiRecordedEventSourceV1 | ProducedRecordedEventSourceV1): string;
 export function contentHash(payload: JsonValue): string;
-export function recordedEventBytes(event: PiRecordedEventV1): Buffer;
+export function recordedEventBytes(event: RecordedEventV1): Buffer;
+export function buildProducedRecordedEvent(input: {
+  system: ProducedRecordedEventSourceV1["system"];
+  sourceId: string;
+  sourceType: string;
+  parentId?: string | null;
+  occurredAt: string;
+  payload: JsonValue;
+}): ProducedRecordedEventV1;
 export function projectPiEntries(sessionId: string, entries: JsonValue[]): PiRecordedEventV1[];

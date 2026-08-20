@@ -139,3 +139,37 @@ test("服务端未给出身份时回落到 default", async () => {
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("OVClient 严格传输 checkpoint Session/Task 生命周期", async () => {
+  const requests = [];
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    requests.push({ method: request.method, url: request.url, body: Buffer.concat(chunks).toString("utf8") });
+    response.writeHead(200, { "content-type": "application/json" });
+    const result = request.url.includes("/tasks?") ? []
+      : request.url.endsWith("/commit") ? { task_id: "provider-task" }
+        : request.url.endsWith("/context?token_budget=123") ? { latest_archive_overview: "ready" }
+          : {};
+    response.end(JSON.stringify({ status: "ok", result }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const client = new OVClient(config(`http://127.0.0.1:${server.address().port}`));
+  try {
+    assert.equal(await client.createSession("task/id"), true);
+    assert.equal((await client.getSession("task/id")).ok, true);
+    assert.equal(await client.addMessage("task/id", "user", "input"), true);
+    assert.equal((await client.commitSession("task/id")).result.task_id, "provider-task");
+    assert.deepEqual((await client.listTasks("task/id")).result, []);
+    assert.equal((await client.getTask("provider/id")).ok, true);
+    assert.equal((await client.getSessionContext("task/id", 123)).result.latest_archive_overview, "ready");
+    assert.equal((await client.deleteSession("task/id")).ok, true);
+    assert.ok(requests.some((item) => item.method === "GET" && item.url === "/api/v1/sessions/task%2Fid"));
+    assert.ok(requests.some((item) => item.method === "POST" && item.url === "/api/v1/sessions/task%2Fid/commit" && JSON.parse(item.body).keep_recent_count === 0));
+    assert.ok(requests.some((item) => item.url === "/api/v1/tasks?task_type=session_commit&resource_id=task%2Fid&limit=20"));
+    assert.ok(requests.some((item) => item.method === "DELETE" && item.url === "/api/v1/sessions/task%2Fid"));
+  } finally {
+    await client.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

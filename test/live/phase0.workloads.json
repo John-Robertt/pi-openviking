@@ -23,7 +23,7 @@
     },
     "modelProfile": {
       "path": "dev/model-profile.json",
-      "sha256": "42df2096b4627f9ec8ec699b9b0a52aa11d3d640fd91b4afc2d40354b1962dfb",
+      "sha256": "42313a69464c572b71138505ede211b257692fa9f69697811c1802eb52473bab",
       "note": "开发与验证模型身份的唯一事实源；manifest 只固定其字节 hash，不复制具体值。Pi 读取 taskModel，OpenViking 读取 vlm。"
     },
     "protocol": {
@@ -195,17 +195,19 @@
     "devUpMs": 180000,
     "cleanupSettleMs": 60000,
     "baseline": {
-      "measuredAt": "2026-08-18",
-      "environment": "darwin arm64, node v24.15.0, pi 0.84.2, OpenViking 0.4.13 (dev 服务), deepseek/deepseek-v4-flash",
+      "measuredAt": "2026-08-20T11:25:39.348Z",
+      "environment": "linux x64, node v24.18.0, pi 0.84.2, OpenViking 0.4.15 受管开发服务；同次 gate 的开发模型身份由 summary.modelProfile.sha256 标识，manifest 不复制具体值",
       "runs": [
-        { "scenario": "happy 单 prompt + /viking sync", "wallMs": 7766, "assistantStarts": 1, "captures": 1, "extensionErrors": 0, "exitCode": 0 },
-        { "scenario": "续会话（启动同步 8.4MiB chunked entry）+ prompt + /viking sync", "wallMs": 7416, "assistantStarts": 1, "captures": 1, "extensionErrors": 0, "exitCode": 0 },
-        { "scenario": "死端口 fail-open 单 prompt", "wallMs": 1320, "assistantStarts": 1, "captures": 1, "extensionErrors": 0, "exitCode": 0 },
-        { "scenario": "恢复后 /viking sync 重放", "wallMs": 6621, "assistantStarts": 0, "captures": 0, "extensionErrors": 0, "exitCode": 0 }
+        { "scenario": "完整链路首轮 prompt + sync", "wallMs": 5047, "assistantStarts": 1, "captures": 1, "retries": 0, "extensionErrors": 0, "exitCode": 0 },
+        { "scenario": "续会话启动同步 chunked entry + prompt + sync", "wallMs": 3943, "assistantStarts": 1, "captures": 1, "retries": 0, "extensionErrors": 0, "exitCode": 0 },
+        { "scenario": "ACK 丢失前首次同步", "wallMs": 3451, "assistantStarts": 1, "captures": 1, "retries": 0, "extensionErrors": 0, "exitCode": 0 },
+        { "scenario": "ACK 丢失后 unchanged 重放", "wallMs": 3346, "assistantStarts": 1, "captures": 1, "retries": 0, "extensionErrors": 0, "exitCode": 0 },
+        { "scenario": "服务断线时任务模型继续", "wallMs": 2936, "assistantStarts": 1, "captures": 1, "retries": 0, "extensionErrors": 0, "exitCode": 0 },
+        { "scenario": "服务恢复后同步", "wallMs": 1444, "assistantStarts": 0, "captures": 0, "retries": 0, "extensionErrors": 0, "exitCode": 0 }
       ],
-      "correspondence": "7 entries → 7 events（1 chunked + 6 direct）远端逐字节一致；ACK frontier 单 leaf 覆盖全树",
+      "correspondence": "完整链路 8 events（1 chunked + 7 direct）远端逐字节一致；各 workload ACK frontier 覆盖完整 entry tree；任务模型请求均为单次完成且 provider payload 捕获数等于 assistant start 数",
       "conflictProbe": "create_if_absent：首写 created、同字节 unchanged、异字节 409 且 error.details.resource 指向冲突 URI；download 逐字节一致；缺失命名空间 stat 404；DELETE recursive 后 stat 404",
-      "thresholdRationale": "数值阈值取基线实测最大值的约 15 倍并取整，只作为失控保护；全部正确性断言为确定性等值/集合比较，不依赖阈值"
+      "thresholdRationale": "现行数值阈值保持为失控保护；当前最慢 Pi run 为 5047ms，piRunWallMs 仍保留约 23 倍余量以覆盖大对象同步和服务重启。正确性使用身份、规范字节、集合、ACK、零 retry 和清理等值断言，不依赖时长阈值。"
     }
   }
 }

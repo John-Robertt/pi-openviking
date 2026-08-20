@@ -34,7 +34,7 @@
     },
     "modelProfile": {
       "path": "dev/model-profile.json",
-      "sha256": "42df2096b4627f9ec8ec699b9b0a52aa11d3d640fd91b4afc2d40354b1962dfb",
+      "sha256": "42313a69464c572b71138505ede211b257692fa9f69697811c1802eb52473bab",
       "note": "开发与验证模型身份的唯一事实源；manifest 只固定其字节 hash，不复制具体值。Pi 读取 taskModel，OpenViking 读取 vlm。"
     },
     "protocol": {

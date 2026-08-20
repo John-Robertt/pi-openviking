@@ -28,6 +28,7 @@ import {
   verifyRunFiles,
 } from "../../scripts/dev.mjs";
 import { canonicalJsonBytes } from "../../shared/canonical-json.mjs";
+import { openVikingApiPath } from "../../shared/openviking-api.mjs";
 import { probeServerHealth } from "../../shared/server-health.mjs";
 import { syncAckFileKey } from "../../shared/sync-ack.mjs";
 
@@ -385,6 +386,33 @@ export async function establishRemoteOwnership(log, ctx) {
     readback.ok && Buffer.isBuffer(readback.bytes) && readback.bytes.equals(ctx.markerBytes));
 }
 
+async function cancelWorkloadTasks(client) {
+  const listed = await client.fetchJSON(openVikingApiPath("/tasks?limit=200"), undefined, 10000);
+  if (!listed.ok || !Array.isArray(listed.result)) return [];
+  const active = listed.result.filter((task) => ["pending", "running", "cancelling"].includes(task?.status));
+  for (const task of active) {
+    if (typeof task?.task_id === "string") {
+      await client.fetchJSON(
+        openVikingApiPath(`/tasks/${encodeURIComponent(task.task_id)}/cancel`),
+        { method: "POST", body: "{}" },
+        10000,
+      );
+    }
+  }
+  const residuals = [];
+  for (const task of active) {
+    if (typeof task?.task_id !== "string") continue;
+    let terminal = false;
+    for (let attempt = 0; attempt < 60 && !terminal; attempt++) {
+      const current = await client.getTask(task.task_id);
+      terminal = current.ok && ["completed", "failed", "cancelled"].includes(current.result?.status);
+      if (!terminal) await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    if (!terminal) residuals.push(task.task_id);
+  }
+  return residuals;
+}
+
 export async function cleanupRemote(log, ctx, objectUris) {
   const w = ctx.workloadId;
   const cleanup = { markerVerified: false, deleted: [], residuals: [], objectUris };
@@ -401,6 +429,9 @@ export async function cleanupRemote(log, ctx, objectUris) {
       cleanup.residuals.push("ownership never established; namespace left untouched");
     }
     if (cleanup.markerVerified) {
+      const taskResiduals = await cancelWorkloadTasks(ctx.client);
+      log.check(w, "cleanup.tasks", "no active tasks", taskResiduals.length, taskResiduals.length === 0);
+      if (taskResiduals.length > 0) cleanup.residuals.push(`${taskResiduals.length} active tasks`);
       // OpenViking 拒绝删除自身用户根（403）；删除动作使用服务级基础用户身份。
       for (const uri of [`${ctx.userRoot}/resources/.pi-openviking`, `${ctx.userRoot}/resources`, ctx.userRoot]) {
         let ok = false;
@@ -565,7 +596,13 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
       } catch (error) {
         log.fail(workload.id, "workload-exception", error);
       } finally {
-        wctx.cleanup = await cleanupRemote(log, wctx, collectObjectUris(wctx));
+        let objectUris = [];
+        try {
+          objectUris = await collectObjectUris(wctx);
+        } catch (error) {
+          log.fail(workload.id, "collect-cleanup-objects", error);
+        }
+        wctx.cleanup = await cleanupRemote(log, wctx, objectUris);
         workload.summary = { sessionId, runs: wctx.runs };
         (ctx.deletedObjects ??= []).push({ workload: workload.id, userRoot: wctx.userRoot, objectUris: wctx.cleanup.objectUris });
       }

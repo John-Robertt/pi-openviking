@@ -38,6 +38,10 @@ test("事件、内容、turn 和 step 身份符合固定协议向量", () => {
     partType: "text",
     partIndex: 0,
   }), "evt_5f31edf4d0dc5de1e1a1d6e449f662a2fcf1661984955a946857fce0193876c9");
+  assert.throws(
+    () => recordedEventId({ system: "openviking", sourceId: "unused", sourceType: "unused" }),
+    /not supported/,
+  );
   assert.equal(
     contentHash({ z: 1, a: [true, null, "中"] }),
     "sha256:2bf0d6b68168b022b4eb53c8ba7ca064387e28e246c2f5547eb4956373573cf3",

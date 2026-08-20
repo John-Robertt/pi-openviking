@@ -117,7 +117,7 @@ manifest 中的精确依赖、服务和模型身份是可重放的最近验证�
 | Observe  | 当前 Pi lifecycle、真实同步、受支持 OpenViking，以及受控断线、拒绝和冲突                                  | run 完整、op 配对、分支/状态/失败可还原、无敏感值和丢弃、记录不进入事实源且清理成立                                         |
 | Phase 0  | 当前 Pi CLI/lifecycle、真实 `SessionManager`、受支持 OpenViking Content API；涉及模型调用时使用开发模型身份 | Pi JSONL → 全部 `RecordedEvent` → direct/chunked 对象 → entry ACK 逐项对应；重放、409、断线、shutdown 和清理成立            |
 | Phase 1  | 受管 OpenViking 的 Archive 发布中断/客户端重启，以及多个真实 Pi workload 形成的 Archive                     | 原子可见、幂等恢复、确定 expand、event/step 边界和每种真实样本的 Archive 完整性成立                                         |
-| Phase 2A | Phase 1 的各真实 Archive 与开发模型身份中的 VLM                                                             | checkpoint 来源/hash、失败重试、重启恢复和积压派生正确；实际 VLM 吞吐满足 manifest 阈值                                     |
+| Phase 2A | Phase 1 的各真实 Archive 与开发模型身份中的 VLM                                                             | checkpoint 来源/hash/完整事实链、失败重试、并发与重启恢复、媒体摘要、积压和终态清理正确；实际 VLM 吞吐满足 manifest 阈值     |
 | Phase 2B | 真实 Pi session、候选 checkpoint/raw tail 和开发模型身份中的 task-model 元数据；takeover 保持 inactive      | 候选 payload 可由源事件逐项重算，step/anchor 完整；Pi 报告容量在边界两侧分别 fit/mismatch                                   |
 | Phase 2C | 真实 Pi `context` hook、开发模型身份中的 task provider、可控 OpenViking/VLM 降级及 Pi compaction            | 实际 provider 请求与 Phase 2B 候选 payload 一致；每个高水位只切换一次；分支/重启成立；降级时使用完整 Pi 上下文              |
 | Phase 3  | 固定 task/VLM 组合和多个彼此独立的真实 100k+ workload；每个 workload 至少重复三次                           | 源事件到实际 provider 请求全链一致；实际 token、吞吐、延迟和容量安全余量满足 manifest 阈值，重复运行结论一致                |

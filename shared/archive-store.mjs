@@ -14,6 +14,7 @@ import {
   archiveManifestBytes,
   buildArchiveManifest,
   parseArchiveManifest,
+  eventTokenWeight,
   planArchives,
 } from "./archive.mjs";
 import { canonicalJsonBytes } from "./canonical-json.mjs";
@@ -87,6 +88,7 @@ export class ArchiveManager {
     const previous = { ...this.state };
     let planned = 0;
     let created = 0;
+    const archives = [];
     try {
       const plans = planArchives(events, this.budgets).map((plan) => ({
         ...plan,
@@ -105,10 +107,19 @@ export class ArchiveManager {
       this.state.pending = planned - this.state.committed;
       this.observe.emit("archive_plan", planned, this.state.pending, events.length);
       for (const plan of plans) {
-        if (this.confirmed.has(plan.archiveId)) continue;
+        const range = events.slice(plan.startIndex, plan.endIndex + 1);
+        const descriptor = {
+          manifest: buildArchiveManifest(sessionId, range),
+          tokenCount: range.reduce((sum, event) => sum + eventTokenWeight(event), 0),
+        };
+        if (this.confirmed.has(plan.archiveId)) {
+          archives.push(descriptor);
+          continue;
+        }
         try {
-          const result = await this.commit(sessionId, events.slice(plan.startIndex, plan.endIndex + 1));
+          const result = await this.commit(sessionId, range);
           this.confirmed.add(result.archiveId);
+          archives.push({ ...descriptor, manifest: result.manifest });
           this.state.committed += 1;
           this.state.pending = Math.max(0, this.state.pending - 1);
           this.state.lastArchiveId = result.archiveId;
@@ -126,7 +137,7 @@ export class ArchiveManager {
     if (previous.committed !== this.state.committed || previous.pending !== this.state.pending) {
       this.observe.emit("archive_state", "change", previous, this.state);
     }
-    return { planned, created, ...this.status };
+    return { planned, created, archives, ...this.status };
   }
 
   /** Archive 失败不改变已经持久化的事件和 ACK：只记录处置，Pi 主任务继续。 */

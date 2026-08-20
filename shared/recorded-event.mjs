@@ -109,24 +109,55 @@ function stepId(sessionId, entryId) {
 }
 
 export function recordedEventId(source) {
-  if (!source || source.system !== "pi") throw new TypeError("recordedEventId requires a pi source");
-  const identity = [
-    EVENT_DOMAIN,
-    RECORDED_EVENT_IDENTITY_VERSION,
-    "pi",
-    requireString(source.sessionId, "source.sessionId"),
-    requireString(source.entryId, "source.entryId"),
-    requireString(source.partType, "source.partType"),
-    source.partIndex,
-  ];
-  if (!Number.isSafeInteger(source.partIndex) || source.partIndex < 0) {
-    throw new TypeError("source.partIndex must be a non-negative safe integer");
+  if (!source || typeof source !== "object") throw new TypeError("recordedEventId requires a source");
+  if (source.system === "pi") {
+    if (!Number.isSafeInteger(source.partIndex) || source.partIndex < 0) {
+      throw new TypeError("source.partIndex must be a non-negative safe integer");
+    }
+    return stableId("evt", [
+      EVENT_DOMAIN,
+      RECORDED_EVENT_IDENTITY_VERSION,
+      "pi",
+      requireString(source.sessionId, "source.sessionId"),
+      requireString(source.entryId, "source.entryId"),
+      requireString(source.partType, "source.partType"),
+      source.partIndex,
+    ]);
   }
-  return stableId("evt", identity);
+  if (source.system === "pi-openviking") {
+    return stableId("evt", [
+      EVENT_DOMAIN,
+      RECORDED_EVENT_IDENTITY_VERSION,
+      source.system,
+      requireString(source.sourceId, "source.sourceId"),
+      requireString(source.sourceType, "source.sourceType"),
+    ]);
+  }
+  throw new TypeError("recordedEventId source system is not supported");
 }
 
 export function contentHash(payload) {
   return `sha256:${sha256Hex(canonicalJsonBytes(payload))}`;
+}
+
+export function buildProducedRecordedEvent({ system, sourceId, sourceType, parentId = null, occurredAt, payload }) {
+  const source = {
+    system,
+    sourceId: requireString(sourceId, "sourceId"),
+    sourceType: requireString(sourceType, "sourceType"),
+  };
+  const eventPayload = jsonClone(payload);
+  if (parentId !== null) requireString(parentId, "parentId");
+  requireString(occurredAt, "occurredAt");
+  return {
+    schemaVersion: RECORDED_EVENT_SCHEMA_VERSION,
+    eventId: recordedEventId(source),
+    parentId,
+    contentHash: contentHash(eventPayload),
+    occurredAt,
+    source,
+    payload: eventPayload,
+  };
 }
 
 export function recordedEventBytes(event) {

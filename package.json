@@ -1,7 +1,7 @@
 {
   "name": "pi-openviking",
   "version": "0.3.7",
-  "description": "Pi extension for append-only OpenViking event recording, reliable replay, and memory recall.",
+  "description": "Pi extension for append-only event recording, atomic archives, VLM checkpoints, and memory recall.",
   "keywords": [
     "pi-package"
   ],
@@ -18,7 +18,8 @@
     "dev": "node scripts/dev.mjs",
     "verify:observability:live": "node test/live/observability-live.mjs",
     "verify:phase0:live": "node test/live/phase0-live.mjs",
-    "verify:phase1:live": "node test/live/phase1-live.mjs"
+    "verify:phase1:live": "node test/live/phase1-live.mjs",
+    "verify:phase2a:live": "node test/live/phase2a-live.mjs"
   },
   "pi": {
     "extensions": [

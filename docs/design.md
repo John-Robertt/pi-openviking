@@ -44,7 +44,7 @@
 
 - 将 Pi entry/content part 投影为 `RecordedEventV1`；
 - 保留 message envelope、原始 part、错误和终止状态；
-- 生成 event/turn/step identity、parent 关系和内容 hash；
+- 生成 Pi event/turn/step identity，以及自产 request/failure/checkpoint event identity、parent 关系和内容 hash；
 - 以独立常量维护事件 schema 与 identity 版本，普通依赖升级不改变协议身份；
 - 不清洗、过滤、截断或解释 payload。
 
@@ -86,6 +86,26 @@ adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
 - 按 `archiveId` 确定性读取，并沿事件 `parentId` 链 materialize 与重新验证；
 - 发布 Archive 提交状态；失败只转为待重试，不改变事件与 ACK。
 
+### `shared/checkpoint.mjs`
+
+- 维护 checkpoint、attempt task 及 request/failure/checkpoint 事件的版本化身份和严格解析；failure 只接受代码拥有的稳定分类、错误码与通用消息；
+- 把 OpenViking Working Memory 正向投影为 narrative、completed、openItems、nextEntry 与 retrievalCues；
+- 构造绑定来源 Archive、前一 checkpoint 与媒体摘要的 VLM 输入；嵌入图片正文只在临时媒体处理边界使用。
+
+### `shared/checkpoint-processor.mjs`
+
+- 使用 OpenViking 公开 Session/Task API 提交或恢复一次 VLM 处理，不接触 VLM 凭证；
+- 将嵌入图片写入 attempt 专属临时 Resource；每个媒体获得非空 abstract 后才把摘要交给 checkpoint 输入，否则保持 pending；
+- 只把 OpenViking task 的明确终态作为成功或失败；网络与进程中断保留 pending，供相同 task 恢复；
+- 对终态 attempt 幂等删除所属 Session 与媒体根，并分别回读确认二者不存在；清理结果不成为产品事实。
+
+### `shared/checkpoint-store.mjs`
+
+- 按当前分支的已提交 Archive 顺序派生未消费范围、积压 Archive/token 与 caught-up/processing/lagging/failed 状态；
+- 在 VLM 前追加 request，明确失败时追加 failure，成功时追加唯一 checkpoint；回读时验证 Archive、前一 checkpoint、连续 attempt、parent 与无 failure 的完整链，并在并发冲突时采用首个通过该校验的事实；
+- 每个 Archive 最多执行三个确定性 attempt；重启从 request/failure/checkpoint 与 OpenViking 持久 task 恢复，并从终态事实重新执行未确认的临时清理，不依赖本地队列；
+- 顺序驱动一个在途 Archive，并发布失败、落后与恢复通知；失败不改变 raw event、ACK 或 Archive。
+
 ### `shared/sync-ack.mjs`
 
 - 保存最小 `acknowledgedLeaves`；
@@ -106,9 +126,12 @@ ACK 文件不包含 transcript 或事件 payload。丢失 ACK 只会触发幂等
 4. 调用 Content adapter；
 5. 只有全部事件确认后推进 entry ACK；
 6. 在当前分支已确认的事件前缀上驱动 Archive 形成；
-7. 发布 source、capability、pending、Archive 和 failure 状态。
+7. 把当前分支已提交 Archive 交给 checkpoint manager 异步消费；
+8. 发布 source、capability、pending、Archive、checkpoint 和 failure 状态。
 
-它只持久化 `SyncAck`，不持久化待发送事件副本；Archive 由来源事件重算，同样没有第二份本地状态。
+`SyncManager` 自身只持久化 `SyncAck`，不持久化待发送事件副本；Archive 由来源事件重算。checkpoint manager
+把 request/failure/checkpoint 写成现有 event namespace 内的追加事实，积压与通知状态均从这些事实和当前 Archive 重建，
+没有第二份本地队列状态。
 Archive 只取当前分支：跨 sibling branch 的范围没有对应的上下文。
 
 ### `shared/openviking-api.mjs`
@@ -119,7 +142,7 @@ Archive 只取当前分支：跨 sibling branch 的范围没有对应的上下�
 ### `client.ts`
 
 - 提供认证、account/user/peer header 和 loopback proxy 隔离；
-- 提供 Content batch-write、raw download、stat 和 mkdir transport；
+- 提供 Content batch-write、raw download、stat、mkdir，以及 checkpoint 使用的 Session/Task transport；
 - 不决定 event identity、ACK 或重放策略。
 
 ### `config.ts` 与 `shared/config-schema.mjs`
@@ -148,7 +171,15 @@ sync-ack
         │ acknowledged entry leaves
         ▼
 archive ──► archive-store ───► content-objects ───► OpenViking Content API
-        │ committed archive manifests
+        │ committed archive descriptors
+        ▼
+checkpoint-store ───► checkpoint-processor ───► OpenViking Session/Task API
+        │                    │ embedded image semantic processing
+        │                    └──────────────────► temporary Content Resource
+        │ request / failure / checkpoint RecordedEventV1
+        ▼
+recorded-event-adapter ────────────────────────► OpenViking Content API
+        │ derived checkpoint/backlog state
         ▼
 /viking diagnostics
 ```
@@ -174,6 +205,7 @@ archive ──► archive-store ───► content-objects ───► OpenVi
 - `test/content-objects.test.mjs`：协议限制、批次拆分、目录链与 409 分类；
 - `test/recorded-event-adapter.test.mjs`：127/128/129 项、8/16 MiB、冲突和 chunk/commit 边界；
 - `test/archive.test.mjs`：Archive 身份、manifest 自证、边界选择、提交/恢复/冲突与 expand；
+- `test/checkpoint.test.mjs`、`test/checkpoint-processor.test.mjs`：checkpoint 身份/事实链、结构化投影、并发首写、三次重试、恢复清理、媒体失败与 Session/Task 边界；
 - `test/client-content.test.mjs`：HTTP transport；
 - `test/openviking-api.test.mjs`：版本前缀与相对路径组合；
 - `test/sync-manager.test.mjs`：重启、ACK 丢失、分支和 fail-open；
@@ -185,6 +217,7 @@ archive ──► archive-store ───► content-objects ───► OpenVi
 - `test/viking-status.test.mjs`：运行诊断。
 
 真实边界由各 live gate 覆盖，各 gate 的断言范围见
-[`docs/verification.md`](./verification.md)。三个 gate 共用 `test/live/live-support.mjs` 的 Pi 驱动、身份核对、
-ownership、清理与 summary 骨架；observability gate 的观察采集经骨架的 capture 选项接入，
+[`docs/verification.md`](./verification.md)。Phase 0、Phase 1、Phase 2A 与 observability 四个 gate 共用
+`test/live/live-support.mjs` 的身份核对、ownership、清理与 summary 骨架；Pi 驱动由需要 lifecycle 的 gate 使用，
+observability gate 的 Pi 观察采集经骨架的 capture 选项接入，Phase 2A 直接为 Archive/VLM 边界建立同一 schema 的完整 run；
 tool-uri-rejection 的 guard 触发由 `test/live/scripted-provider.mjs` 的确定性脚本 provider 承担。

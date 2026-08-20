@@ -168,8 +168,11 @@ export class RecordedEventAdapter {
     const chunked = [];
     for (const event of events) {
       requireEventId(event?.eventId);
-      if (event?.source?.sessionId !== sessionId) {
+      if (event?.source?.system === "pi" && event.source.sessionId !== sessionId) {
         throw new ContentWriteError(`RecordedEvent session mismatch: ${event?.eventId || "unknown"}`);
+      }
+      if (!event?.source || !["pi", "pi-openviking"].includes(event.source.system)) {
+        throw new ContentWriteError(`RecordedEvent source is not supported: ${event?.eventId || "unknown"}`);
       }
       const bytes = recordedEventBytes(event);
       const location = recordedEventStorageLocation(this.userRoot, sessionId, event.eventId);
@@ -210,6 +213,12 @@ export class RecordedEventAdapter {
    * 外部写入不在信任边界内，claim 因此不能作为可信的位置来源。
    */
   async readEvent(sessionId, eventId) {
+    const stored = await this.readEventIfExists(sessionId, eventId);
+    if (!stored) throw new ContentWriteError(`RecordedEvent is not stored: ${eventId}`);
+    return stored;
+  }
+
+  async readEventIfExists(sessionId, eventId) {
     const location = recordedEventStorageLocation(this.userRoot, sessionId, requireEventId(eventId));
     const [direct, commit] = await Promise.all([
       this.statRepresentation(location.directUri),
@@ -225,7 +234,7 @@ export class RecordedEventAdapter {
       }
       return { event: verifyRecordedEventBytes(response.bytes, eventId), bytes: response.bytes };
     }
-    if (!commit) throw new ContentWriteError(`RecordedEvent is not stored: ${eventId}`);
+    if (!commit) return null;
 
     const commitResponse = await this.transport.downloadBytes(location.commitUri);
     const claimResponse = await this.transport.downloadBytes(location.claimUri);

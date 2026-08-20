@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { OVClient } from "./client.js";
 import type { ArchiveManifestV1 } from "./shared/archive.mjs";
 import { ArchiveManager } from "./shared/archive-store.mjs";
+import { CheckpointManager, type CheckpointStatus } from "./shared/checkpoint-store.mjs";
 import { parsePiSessionJsonl } from "./shared/pi-session-source.mjs";
 import { observation, type Observation } from "./shared/observe.mjs";
 import { RecordedEventAdapter } from "./shared/recorded-event-adapter.mjs";
@@ -41,12 +42,14 @@ export interface SyncStatus {
   pendingEntries: number;
   lastFailure: string | null;
   archive: ArchiveStatus;
+  checkpoint: CheckpointStatus;
 }
 
 interface SyncManagerOptions {
   ackPathForSession?: (sessionId: string) => string | null;
   adapterFactory?: (client: OVClient, userRoot: string) => RecordedEventAdapter;
   observation?: Observation;
+  notify?: (message: string, level: "info" | "warning") => void;
 }
 
 
@@ -66,6 +69,7 @@ export class SyncManager {
   private piSessionId: string | null = null;
   private adapter: RecordedEventAdapter | null = null;
   private archives: ArchiveManager | null = null;
+  private checkpoints: CheckpointManager | null = null;
   private ack: SyncAck = { acknowledgedLeaves: [] };
   private ackPath: string | null = null;
   private knownParents = new Map<string, string | null>();
@@ -77,6 +81,10 @@ export class SyncManager {
     pendingEntries: 0,
     lastFailure: null,
     archive: { committed: 0, lastArchiveId: null, pending: 0, lastFailure: null },
+    checkpoint: {
+      mode: "caught_up", consumed: 0, pending: 0, backlogTokens: 0,
+      lastCheckpointId: null, currentArchiveId: null, lastFailure: null,
+    },
   };
 
   constructor(client: OVClient, options: SyncManagerOptions = {}) {
@@ -92,6 +100,7 @@ export class SyncManager {
       ...this.syncStatus,
       acknowledgedLeaves: [...this.syncStatus.acknowledgedLeaves],
       archive: this.archives ? this.archives.status : { ...this.syncStatus.archive },
+      checkpoint: this.checkpoints ? this.checkpoints.status : { ...this.syncStatus.checkpoint },
     };
   }
 
@@ -99,6 +108,7 @@ export class SyncManager {
     this.observe.emit("sync_capability", "snapshot", this.syncStatus.capability);
     this.observe.emit("sync_ack", "snapshot", this.ack, null, this.syncStatus.pendingEntries);
     this.archives?.observeFinalState();
+    this.checkpoints?.observeFinalState();
   }
 
   /**
@@ -114,6 +124,7 @@ export class SyncManager {
 
   async ensureSession(piSessionId: string): Promise<boolean> {
     if (this.piSessionId === piSessionId && this.adapter) return true;
+    if (this.checkpoints) await this.checkpoints.stop();
     // in-memory 父子映射只描述当前会话的 entry 树，换会话即失效。
     if (this.piSessionId !== piSessionId) this.knownParents.clear();
     this.piSessionId = piSessionId;
@@ -133,6 +144,12 @@ export class SyncManager {
       adapter: this.adapter,
       budgets: this.client.cfg.archive,
       observation: this.observe,
+    });
+    this.checkpoints = new CheckpointManager(this.client, {
+      adapter: this.adapter,
+      archiveManager: this.archives,
+      observation: this.observe,
+      notify: this.options.notify,
     });
 
     this.ackPath = this.options.ackPathForSession
@@ -178,6 +195,9 @@ export class SyncManager {
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }
+  async stopBackground(): Promise<void> {
+    await this.checkpoints?.stop();
   }
 
   private async sessionSource(sessionManager: any): Promise<{
@@ -366,7 +386,8 @@ export class SyncManager {
     }
     if (acknowledged.size === 0) return;
     const branchEvents = events.filter((event) => acknowledged.has(event.source.entryId));
-    await this.archives.formArchives(this.piSessionId, branchEvents);
+    const result = await this.archives.formArchives(this.piSessionId, branchEvents);
+    if (result.archives.length > 0) void this.checkpoints?.schedule(this.piSessionId, result.archives);
   }
 
   private setCapability(next: SyncStatus["capability"]): void {

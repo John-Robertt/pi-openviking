@@ -8,6 +8,8 @@ import { RecallManager } from "../recall.ts";
 import { SyncManager } from "../sync.ts";
 import { archiveManifestBytes, buildArchiveManifest, planArchives } from "../shared/archive.mjs";
 import { ArchiveManager, archiveStorageLocation } from "../shared/archive-store.mjs";
+import { OpenVikingCheckpointProcessor } from "../shared/checkpoint-processor.mjs";
+import { CheckpointManager } from "../shared/checkpoint-store.mjs";
 import { OBSERVATION_STAGE_REGISTRY, createObservation, validateObservationRecord } from "../shared/observe.mjs";
 import { RecordedEventAdapter } from "../shared/recorded-event-adapter.mjs";
 import { ARCHIVE_USER_ROOT, MemoryContentTransport, archiveEvents } from "./fixtures/archive-fixtures.mjs";
@@ -337,6 +339,62 @@ test("tool 可用性和 URI 权限只记录枚举与计数，拒绝路径不发�
   assert.ok(records.some((record) => record.stage === "tool_scope" && record.data.branch === "deny"));
   assert.ok(records.some((record) => record.stage === "tool_scope" && record.data.branch === "clamp"));
   assert.ok(records.some((record) => record.stage === "tool_scope" && record.data.branch === "filter"));
+});
+
+test("checkpoint 请求、VLM 边界、状态与失败只记录安全计数和协议 hash", async () => {
+  const { path, observation } = observationFor("checkpoint");
+  const sessionId = "private-checkpoint-session";
+  const events = archiveEvents(sessionId, [{ role: "user", chars: 4000 }, { role: "user", chars: 4000 }]);
+  const transport = new MemoryContentTransport();
+  const adapter = new RecordedEventAdapter(transport, { userRoot: ARCHIVE_USER_ROOT, observation });
+  await adapter.writeEvents(sessionId, events);
+  const archives = new ArchiveManager(transport, {
+    userRoot: ARCHIVE_USER_ROOT, adapter,
+    budgets: { chunkTokenBudget: 1000, rawTailTokenBudget: 1000 }, observation,
+  });
+  const formed = await archives.formArchives(sessionId, events);
+  const descriptor = formed.archives[0];
+  const taskId = `cptask_${"d".repeat(64)}`;
+
+  const boundaryProcessor = new OpenVikingCheckpointProcessor({
+    userRoot: ARCHIVE_USER_ROOT,
+    async getSession() { return { ok: true, result: { message_count: 0, commit_count: 0 } }; },
+    async addMessage() { return true; },
+    async commitSession() { return { ok: true, result: { task_id: "provider-task" } }; },
+    async getTask() { return { ok: true, result: { status: "completed", result: { token_usage: { llm: { total_tokens: 1 } } } } }; },
+    async getSessionContext() { return { ok: true, result: { latest_archive_overview: "## Current State\nready" } }; },
+  }, { observation });
+  const expanded = await archives.expand(sessionId, descriptor.manifest.archiveId);
+  assert.equal((await boundaryProcessor.advance({
+    taskId, manifest: descriptor.manifest, events: expanded.events, previousCheckpoint: null,
+  })).status, "completed");
+
+  let first = true;
+  let tick = 0;
+  const manager = new CheckpointManager(transport, {
+    adapter, archiveManager: archives, observation, pollIntervalMs: 1,
+    now: () => `2026-08-20T00:00:${String(tick++).padStart(2, "0")}.000Z`,
+    processor: {
+      async advance() {
+        if (first) {
+          first = false;
+          return { status: "failed", error: { errorClass: "protocol", errorCode: "task_failed", message: "private provider failure" } };
+        }
+        return { status: "completed", overview: "## Current State\nready" };
+      },
+      async cleanup() { return true; },
+    },
+  });
+  await manager.schedule(sessionId, [descriptor]);
+  manager.observeFinalState();
+  await observation.finish();
+
+  const { raw, records } = readRun(path);
+  assert.doesNotMatch(raw, /private-checkpoint-session|private provider failure|provider-task/);
+  assert.ok(records.some((record) => record.stage === "checkpoint_request" && record.data.branch === "submit"));
+  assert.ok(records.some((record) => record.stage === "checkpoint_process" && record.data.outcome === "completed"));
+  assert.ok(records.some((record) => record.stage === "checkpoint_state" && record.data.status === "caught_up"));
+  assert.ok(records.some((record) => record.stage === "checkpoint_failure" && record.data.errorCode === "task_failed"));
 });
 
 test("registry 每个 active stage 在唯一 owner 中有当前调用点且无第二套观察输出", () => {

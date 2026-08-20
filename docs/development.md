@@ -67,6 +67,7 @@ npm run dev -- status
 
 # 5. 重跑受影响阶段的 live gate
 npm run verify:phase0:live
+npm run verify:phase2a:live
 npm run verify:observability:live
 ```
 
@@ -208,6 +209,12 @@ OV_OBSERVE=test/.artifacts/manual-observation/run.jsonl npm run dev -- pi
 文件必须尚不存在；另一种方式由父进程预开 `0600` 空文件并只向子进程继承 `OV_OBSERVE_FD`。两种变量不得同时
 设置。`/viking` 只读显示 `disabled`、`ready` 或 `incomplete` 以及 accepted/dropped；观察失败不改变 Pi、同步或
 recall 结果。记录 schema、脱敏、完整 run 与清理条件只由 [`docs/observability.md`](./observability.md) 定义。
+
+`npm run verify:phase2a:live` 使用真实 Content/Session/Task API 和开发 VLM，覆盖文本、嵌入图片、明确失败后的真实
+VLM 重试、request/task 恢复与双 Archive 积压；配套 deterministic checks 覆盖完整事实链、并发首写、每个 Archive
+三次 attempt、媒体失败、外部错误脱敏和终态清理恢复。受管服务必须已启动且 VLM credential 为 ready。gate 只写
+随机所属 namespace；生产协调器先从终态事实清理所属 Session/媒体根，gate 最后再取消仍在途的测试 task，并按
+ownership marker 契约删除全部临时对象和 checkpoint 事实。
 
 `npm run verify:observability:live` 是常驻横切 gate。它要求隔离服务已由 `dev up` 启动，并会使用开发模型、随机
 session namespace、受控 409 对象及 URI 拒绝 workload；执行前必须取得真实模型调用和所属测试 namespace 写入/删除

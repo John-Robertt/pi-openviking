@@ -74,8 +74,12 @@ const HTTP_ROUTES = [
     "/search/recall",
     "/search/search",
     "/sessions",
+    "/sessions/{id}",
     "/sessions/{id}/commit",
+    "/sessions/{id}/context",
     "/sessions/{id}/messages",
+    "/tasks",
+    "/tasks/{id}",
     "/system/status",
   ].map(openVikingApiPath),
   "other",
@@ -265,6 +269,55 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
     committed: INTEGER(),
     pending: INTEGER(),
   }, FAILURE_OPTIONAL)),
+  checkpoint_request: stage("shared/checkpoint-store.mjs", "decision", schema({
+    branch: ENUM(["submit", "resume", "complete"]),
+    attempt: INTEGER(1, 3),
+    pending: INTEGER(),
+  })),
+  checkpoint_process: stage("shared/checkpoint-processor.mjs", "boundary", variants("phase", {
+    begin: schema({ phase: PHASE_BEGIN, events: INTEGER(), media: INTEGER() }),
+    end: schema({
+      phase: PHASE_END,
+      outcome: ENUM(["completed", "processing", "failed"]),
+      durationMs: NUMBER(),
+    }),
+  })),
+  checkpoint_state: stage("shared/checkpoint-store.mjs", "state", variants("mode", {
+    snapshot: schema({
+      mode: MODE_SNAPSHOT,
+      status: ENUM(["caught_up", "processing", "lagging", "failed"]),
+      currentArchive: NULLABLE_HASH,
+      checkpoint: NULLABLE_HASH,
+      consumed: INTEGER(),
+      pending: INTEGER(),
+      backlogTokens: INTEGER(),
+    }),
+    change: schema({
+      mode: MODE_CHANGE,
+      fromStatus: ENUM(["caught_up", "processing", "lagging", "failed"]),
+      toStatus: ENUM(["caught_up", "processing", "lagging", "failed"]),
+      fromCurrentArchive: NULLABLE_HASH,
+      toCurrentArchive: NULLABLE_HASH,
+      fromCheckpoint: NULLABLE_HASH,
+      toCheckpoint: NULLABLE_HASH,
+      fromConsumed: INTEGER(),
+      toConsumed: INTEGER(),
+      fromPending: INTEGER(),
+      toPending: INTEGER(),
+      fromBacklogTokens: INTEGER(),
+      toBacklogTokens: INTEGER(),
+    }),
+  })),
+  checkpoint_failure: stage("shared/checkpoint-store.mjs", "failure", schema({
+    ...FAILURE_BASE,
+    errorCode: ENUM([
+      "cleanup", "empty_output", "media_prepare", "message_add", "reconcile", "session_commit", "session_create",
+      "session_read", "task_cancelled", "task_failed", "task_list", "task_missing", "task_read",
+    ]),
+    branch: ENUM(["pending_retry", "retry_attempt", "retry_exhausted", "retain_fact"]),
+    pending: INTEGER(),
+    backlogTokens: INTEGER(),
+  }, FAILURE_OPTIONAL)),
   recall_request: stage("recall.ts", "decision", schema({
     queryChars: INTEGER(),
     branch: ENUM(["cache", "skip_short", "search"]),
@@ -418,6 +471,49 @@ const ENCODERS = Object.freeze({
     ...failureData(error, errorCode, disposition, branch),
     committed: safeInteger(committed),
     pending: safeInteger(pending),
+  }),
+  checkpoint_request: (branch, attempt, pending) => ({
+    branch,
+    attempt: safeInteger(attempt),
+    pending: safeInteger(pending),
+  }),
+  checkpoint_process: {
+    begin: (events, media) => ({
+      phase: "begin",
+      events: safeInteger(events),
+      media: safeInteger(media),
+    }),
+    end: (outcome, durationMs) => ({ phase: "end", outcome, durationMs }),
+  },
+  checkpoint_state: (mode, from, to) => mode === "snapshot"
+    ? {
+        mode,
+        status: from?.mode ?? "caught_up",
+        currentArchive: archiveDigest(from?.currentArchiveId),
+        checkpoint: checkpointDigest(from?.lastCheckpointId),
+        consumed: safeInteger(from?.consumed),
+        pending: safeInteger(from?.pending),
+        backlogTokens: safeInteger(from?.backlogTokens),
+      }
+    : {
+        mode,
+        fromStatus: from?.mode ?? "caught_up",
+        toStatus: to?.mode ?? "caught_up",
+        fromCurrentArchive: archiveDigest(from?.currentArchiveId),
+        toCurrentArchive: archiveDigest(to?.currentArchiveId),
+        fromCheckpoint: checkpointDigest(from?.lastCheckpointId),
+        toCheckpoint: checkpointDigest(to?.lastCheckpointId),
+        fromConsumed: safeInteger(from?.consumed),
+        toConsumed: safeInteger(to?.consumed),
+        fromPending: safeInteger(from?.pending),
+        toPending: safeInteger(to?.pending),
+        fromBacklogTokens: safeInteger(from?.backlogTokens),
+        toBacklogTokens: safeInteger(to?.backlogTokens),
+      },
+  checkpoint_failure: (error, errorCode, disposition, branch, pending, backlogTokens) => ({
+    ...failureData(error, errorCode, disposition, branch),
+    pending: safeInteger(pending),
+    backlogTokens: safeInteger(backlogTokens),
   }),
   recall_request: (branch, query) => ({ branch, queryChars: safeLength(query) }),
   recall_source: (branch, resultCount) => ({ branch, resultCount: safeInteger(resultCount) }),
@@ -918,6 +1014,10 @@ function archiveDigest(value) {
   return /^arc_[0-9a-f]{64}$/.test(String(value ?? "")) ? String(value).slice(4) : null;
 }
 
+function checkpointDigest(value) {
+  return /^chk_[0-9a-f]{64}$/.test(String(value ?? "")) ? String(value).slice(4) : null;
+}
+
 function failureData(error, errorCode, disposition, branch) {
   const status = Number(error?.status || 0);
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
@@ -953,12 +1053,21 @@ function routeTemplate(path) {
   const sessionPrefix = `${OPENVIKING_API_PREFIX}/sessions/`;
   if (pathname.startsWith(sessionPrefix)) {
     const parts = pathname.slice(sessionPrefix.length).split("/");
+    if (parts.length === 1 && parts[0]) return openVikingApiPath("/sessions/{id}");
     if (parts.length === 2 && parts[0] && parts[1] === "messages") {
       return openVikingApiPath("/sessions/{id}/messages");
     }
     if (parts.length === 2 && parts[0] && parts[1] === "commit") {
       return openVikingApiPath("/sessions/{id}/commit");
     }
+    if (parts.length === 2 && parts[0] && parts[1] === "context") {
+      return openVikingApiPath("/sessions/{id}/context");
+    }
+  }
+  const taskPrefix = `${OPENVIKING_API_PREFIX}/tasks/`;
+  if (pathname.startsWith(taskPrefix)) {
+    const parts = pathname.slice(taskPrefix.length).split("/");
+    if (parts.length === 1 && parts[0]) return openVikingApiPath("/tasks/{id}");
   }
   return HTTP_ROUTES.includes(pathname) ? pathname : "other";
 }

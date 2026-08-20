@@ -262,6 +262,55 @@ export class OVClient {
     return response.ok;
   }
 
+  async getSession(sessionId: string): Promise<OVResponse<any>> {
+    return this.fetchJSON<any>(
+      openVikingApiPath(`/sessions/${encodeURIComponent(sessionId)}`),
+      undefined,
+      10000,
+    );
+  }
+
+  async commitSession(sessionId: string): Promise<OVResponse<any>> {
+    return this.fetchJSON<any>(
+      openVikingApiPath(`/sessions/${encodeURIComponent(sessionId)}/commit`),
+      { method: "POST", body: JSON.stringify({ keep_recent_count: 0 }) },
+      30000,
+    );
+  }
+
+  async getTask(taskId: string): Promise<OVResponse<any>> {
+    return this.fetchJSON<any>(
+      openVikingApiPath(`/tasks/${encodeURIComponent(taskId)}`),
+      undefined,
+      10000,
+    );
+  }
+
+  async listTasks(resourceId: string): Promise<OVResponse<any[]>> {
+    return this.fetchJSON<any[]>(
+      openVikingApiPath(`/tasks?task_type=session_commit&resource_id=${encodeURIComponent(resourceId)}&limit=20`),
+      undefined,
+      10000,
+    );
+  }
+
+
+  async getSessionContext(sessionId: string, tokenBudget = 16000): Promise<OVResponse<any>> {
+    return this.fetchJSON<any>(
+      openVikingApiPath(`/sessions/${encodeURIComponent(sessionId)}/context?token_budget=${Math.max(0, Math.floor(tokenBudget))}`),
+      undefined,
+      10000,
+    );
+  }
+
+  async deleteSession(sessionId: string): Promise<OVResponse<any>> {
+    return this.fetchJSON<any>(
+      openVikingApiPath(`/sessions/${encodeURIComponent(sessionId)}`),
+      { method: "DELETE" },
+      10000,
+    );
+  }
+
   // ========== Search ==========
 
   /** Basic vector search. */
