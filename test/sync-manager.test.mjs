@@ -414,3 +414,27 @@ test("Archive 失败不阻断事件同步与 ACK 推进", async () => {
     assert.ok(transport.files.has(recordedEventStorageLocation(ARCHIVE_USER_ROOT, sessionId, event.eventId).directUri));
   }
 });
+
+
+test("某个 entry 永久无法同步时，已确认前缀仍然形成 Archive", async () => {
+  const sessionId = "blocked-entry";
+  const shape = Array.from({ length: 6 }, () => ({ role: "assistant", chars: 4000 }));
+  const branch = archiveEntryChain(shape);
+  const transport = new MemoryContentTransport();
+  const client = contentClient(transport);
+  const blocked = branch.at(-1).id;
+  // 最后一个 entry 的事件对象已被外部写入不同字节：这是 SPEC 定义的永久完整性冲突。
+  const blockedEvent = projectPiEntries(sessionId, branch).find((event) => event.source.entryId === blocked);
+  transport.files.set(
+    recordedEventStorageLocation(ARCHIVE_USER_ROOT, sessionId, blockedEvent.eventId).directUri,
+    Buffer.from("foreign bytes"),
+  );
+
+  const sync = new SyncManager(client, { ackPathForSession: () => null });
+  await sync.ensureSession(sessionId);
+  const result = await sync.syncSession({ isPersisted: () => false, getEntries: () => branch, getBranch: () => branch });
+  assert.equal(result.allDelivered, false, "冲突 entry 必须停止 ACK 推进");
+  assert.ok(result.pending > 0);
+  assert.ok(sync.status.archive.committed > 0, "已确认前缀的 Archive 不得被下游 entry 的冲突阻断");
+  assert.equal(sync.status.archive.lastFailure, null);
+});

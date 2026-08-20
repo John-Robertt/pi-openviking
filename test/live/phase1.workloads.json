@@ -94,7 +94,8 @@
     "vikingCommand": "发送 /viking 后等待 extension_ui_request(method=notify)；其 message 含“Archive：已提交 N 个，待提交 M 个（最近 <archiveId>）”",
     "syncCompleteRule": "发送 /viking sync 后等待 notify；info 表示同步完成，warning 表示存在待重放",
     "archiveNamespace": "archiveStorageLocation 推导 sessionRoot；逐 shard ls 得到全部 manifest 对象",
-    "sessionJsonl": "get_state 返回的 sessionFile；parsePiSessionJsonl + projectPiEntries 重建分支事件序列作为 Archive 的对照来源"
+    "sessionJsonl": "get_state 返回的 sessionFile；parsePiSessionJsonl + projectPiEntries 重建分支事件序列作为 Archive 的对照来源",
+    "independentExpand": "verifier 不调用被验实现的读路径：按 event ID 推导 directUri 逐个下载并沿 parentId 回溯。该路径只适用于 8 MiB 以内的事件，因此先断言分支中不存在 chunked 事件；chunked 事件进入 Archive 的正确性由 deterministic checks 承担"
   },
 
   "workloads": [

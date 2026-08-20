@@ -26,6 +26,7 @@ import { archiveSessionRoot, archiveStorageLocation } from "../../shared/archive
 import { openVikingApiPath } from "../../shared/openviking-api.mjs";
 import { parsePiSessionJsonl } from "../../shared/pi-session-source.mjs";
 import { projectPiEntries, recordedEventBytes } from "../../shared/recorded-event.mjs";
+import { BATCH_MAX_FILE_BYTES } from "../../shared/content-objects.mjs";
 import { recordedEventStorageLocation } from "../../shared/recorded-event-adapter.mjs";
 import { probeServerHealth } from "../../shared/server-health.mjs";
 import { isEntryAcknowledged, readSyncAck } from "../../shared/sync-ack.mjs";
@@ -146,6 +147,11 @@ async function archiveSnapshot(ctx, branch) {
  */
 async function verifyArchives(log, ctx, archiveIds, branch, label) {
   const w = ctx.workloadId;
+  // expand 独立于被验实现：直接按 event ID 推导 URI 下载 direct 对象。该路径只对
+  // 8 MiB 以内的事件成立，因此把这个前提变成显式断言，而不是沉默假设。
+  const chunked = branch.filter((event) => recordedEventBytes(event).length > BATCH_MAX_FILE_BYTES).length;
+  log.check(w, `${label}.branch-events-are-direct`, 0, chunked, chunked === 0,
+    "本 gate 的独立 expand 只读 direct 表示；出现 chunked 事件时该路径不再适用");
   const indexOf = new Map(branch.map((event, index) => [event.eventId, index]));
   const failures = [];
   const ranges = [];

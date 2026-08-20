@@ -35,6 +35,10 @@ Archive 形成、崩溃残留恢复、受管重启幂等和完整性冲突 fail-
 **待收敛项**：`test/live/observability-live.mjs` 仍保留自己的 Pi 驱动、身份核对、ownership 与清理实现，
 未使用 `test/live/live-support.mjs` 的统一骨架；修复上述 workload 时一并收敛。
 
+**环境注意**：服务端队列可能因既往强制终止留下 `status=processing` 且不再完成的条目，此时
+`/api/v1/system/wait` 必然超时、受管重启会变慢。`.dev/runs/openviking/data` 是可重建运行态，删除后
+`npm run dev -- up` 即恢复。
+
 **当前工作是 Phase 2A 的基线调查；Phase 2A 实现尚未开始。**
 
 ## 实施顺序

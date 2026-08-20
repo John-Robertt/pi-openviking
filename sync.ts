@@ -334,6 +334,9 @@ export class SyncManager {
           added,
           this.syncStatus.pendingEntries,
         );
+        // 已确认前缀的 Archive 不依赖后面这个 entry：某个事件的永久完整性冲突不应让
+        // 整个会话此后不再产生任何 Archive。
+        await this.formArchives(branch, parentById, events);
         return { added, allDelivered: false, pending: this.syncStatus.pendingEntries, failure };
       }
     }
