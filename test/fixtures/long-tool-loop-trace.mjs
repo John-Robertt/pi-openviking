@@ -11,8 +11,8 @@ function entry(id, parentId, timestamp, value) {
   return { id, parentId, timestamp, ...value };
 }
 
-export function buildPhase0LongTrace() {
-  const sessionId = "phase0-session";
+export function buildLongToolLoopTrace() {
+  const sessionId = "long-tool-loop-session";
   const base = Date.parse("2026-08-17T00:00:00.000Z");
   const at = (offset) => new Date(base + offset).toISOString();
   const messageAt = (offset) => base + offset;

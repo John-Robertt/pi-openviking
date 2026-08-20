@@ -217,7 +217,7 @@ recorded-event-adapter ───────────────────
 - `test/viking-status.test.mjs`：运行诊断。
 
 真实边界由各 live gate 覆盖，各 gate 的断言范围见
-[`docs/verification.md`](./verification.md)。Phase 0、Phase 1、Phase 2A 与 observability 四个 gate 共用
+[`docs/verification.md`](./verification.md)。sync、archive、checkpoint 与 observability 四个 gate 共用
 `test/live/live-support.mjs` 的身份核对、ownership、清理与 summary 骨架；Pi 驱动由需要 lifecycle 的 gate 使用，
-observability gate 的 Pi 观察采集经骨架的 capture 选项接入，Phase 2A 直接为 Archive/VLM 边界建立同一 schema 的完整 run；
+observability gate 的 Pi 观察采集经骨架的 capture 选项接入，checkpoint gate 直接为 Archive/VLM 边界建立同一 schema 的完整 run；
 tool-uri-rejection 的 guard 触发由 `test/live/scripted-provider.mjs` 的确定性脚本 provider 承担。

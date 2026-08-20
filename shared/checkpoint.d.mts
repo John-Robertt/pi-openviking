@@ -3,7 +3,7 @@ import type { PiRecordedEventV1, ProducedRecordedEventV1 } from "./recorded-even
 
 export const CHECKPOINT_SCHEMA_VERSION: 1;
 export const CHECKPOINT_IDENTITY_VERSION: 1;
-export const CHECKPOINT_PROMPT_VERSION: "phase2a-checkpoint-v1";
+export const CHECKPOINT_PROMPT_VERSION: "checkpoint-v1";
 export const CHECKPOINT_MODEL: "openviking/session-working-memory-v2";
 export const CHECKPOINT_MAX_ATTEMPTS: 3;
 

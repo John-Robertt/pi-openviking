@@ -13,7 +13,7 @@ import { CheckpointManager } from "../shared/checkpoint-store.mjs";
 import { OBSERVATION_STAGE_REGISTRY, createObservation, validateObservationRecord } from "../shared/observe.mjs";
 import { RecordedEventAdapter } from "../shared/recorded-event-adapter.mjs";
 import { ARCHIVE_USER_ROOT, MemoryContentTransport, archiveEvents } from "./fixtures/archive-fixtures.mjs";
-import { buildPhase0LongTrace } from "./fixtures/phase0-long-trace.mjs";
+import { buildLongToolLoopTrace } from "./fixtures/long-tool-loop-trace.mjs";
 import { registerTools } from "../tools.ts";
 import { guardVikingUriToolCall } from "../lib/uri-guard-adapter.mjs";
 
@@ -161,7 +161,7 @@ test("owner failure stage 生成脱敏记录并按白名单区分 transport、ti
 
 test("sync 成功推进与失败保持待重放由同一责任模块解释，产品结果保持原语义", async () => {
   const { path, observation } = observationFor("sync");
-  const trace = buildPhase0LongTrace();
+  const trace = buildLongToolLoopTrace();
   let calls = 0;
   const adapter = {
     async writeEvents(_sessionId, events) {

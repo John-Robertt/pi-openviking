@@ -66,14 +66,14 @@ npm run dev -- bootstrap
 npm run dev -- up
 npm run dev -- status
 
-# 5. 重跑受影响阶段的 live gate
-npm run verify:phase0:live
-npm run verify:phase2a:live
+# 5. 重跑受影响保证的 live gate
+npm run verify:sync:live
+npm run verify:checkpoint:live
 npm run verify:observability:live
 ```
 
-第 3 步的 manifest 更新不是形式手续。manifest 声明的是“该阶段的结论在哪一组真实身份上成立”，
-gate 的 preflight 会用真实 `/health` 逐字核对；服务版本变化意味着该阶段的基线需要按
+第 3 步的 manifest 更新不是形式手续。manifest 声明的是“该 gate 的结论在哪一组真实身份上成立”，
+gate 的 preflight 会用真实 `/health` 逐字核对；服务版本变化意味着该 gate 的基线需要按
 [`docs/roadmap.md`](./roadmap.md)“实施顺序”的调查闭环重新建立，其规则见
 [`docs/verification.md`](./verification.md)。固定 hash 使这一步必须是有意识的动作。该精确身份只表示最近一次
 已经通过的证据快照，不构成对后续版本的支持上限。
@@ -203,7 +203,7 @@ OV_OBSERVE=test/.artifacts/manual-observation/run.jsonl npm run dev -- pi
 设置。`/viking` 只读显示 `disabled`、`ready` 或 `incomplete` 以及 accepted/dropped；观察失败不改变 Pi、同步或
 recall 结果。记录 schema、脱敏、完整 run 与清理条件只由 [`docs/observability.md`](./observability.md) 定义。
 
-`npm run verify:phase2a:live` 使用真实 Content/Session/Task API 和开发 VLM，覆盖文本、嵌入图片、明确失败后的真实
+`npm run verify:checkpoint:live` 使用真实 Content/Session/Task API 和开发 VLM，覆盖文本、嵌入图片、明确失败后的真实
 VLM 重试、request/task 恢复与双 Archive 积压；配套 deterministic checks 覆盖完整事实链、并发首写、每个 Archive
 三次 attempt、媒体失败、外部错误脱敏和终态清理恢复。受管服务必须已启动且 VLM credential 为 ready。gate 只写
 随机所属 namespace；生产协调器先从终态事实清理所属 Session/媒体根，gate 最后再取消仍在途的测试 task，并按

@@ -109,9 +109,9 @@ export function createRpcLineParser() {
 // ---------------------------------------------------------------------------
 // Live gate 运行骨架
 //
-// Phase 0 与 Phase 1 是同一套真实边界的两个出口：Pi 子进程驱动、身份核对、本地/远端
+// 各 live gate 共享同一套真实边界：Pi 子进程驱动、身份核对、本地/远端
 // ownership、清理与 summary 的契约由 docs/verification.md 统一规定，因此由本模块承担。
-// 各阶段只提供自己的 workload、断言和“本次写入了哪些远端对象”。
+// 各 gate 只提供自己的 workload、断言和“本次写入了哪些远端对象”。
 // ---------------------------------------------------------------------------
 
 export const LIVE_REPO = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
@@ -679,7 +679,6 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
   const summary = {
     schemaVersion: 1,
     gate: manifest.gate,
-    phase: manifest.phase,
     runId,
     startedAt: new Date(t0).toISOString(),
     durationMs: Date.now() - t0,

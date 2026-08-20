@@ -1,8 +1,7 @@
 {
   "schemaVersion": 1,
-  "gate": "verify:phase2a:live",
-  "phase": "2A",
-  "purpose": "Phase 2A 真实验收门禁：使用真实 OpenViking Content API 已提交且可 expand 的 Archive 与开发模型身份中的 VLM，机器断言 request/failure/checkpoint 追加事实、来源/hash、自证、重试、进程恢复、积压派生、多模态理解和吞吐。",
+  "gate": "verify:checkpoint:live",
+  "purpose": "checkpoint 生产真实验收门禁：使用真实 OpenViking Content API 已提交且可 expand 的 Archive 与开发模型身份中的 VLM，机器断言 request/failure/checkpoint 追加事实、来源/hash、自证、重试、进程恢复、积压派生、多模态理解和吞吐。",
   "mechanism": {
     "selected": "Archive 回读证明 + OpenViking Session/Task 公开 API + ProducedRecordedEventV1 追加事实",
     "evidence": "当前开发模型身份在固定 240000ms 质量边界下连续三次通过 114/114；accepted baseline 最慢观测为 72942ms。deterministic checks 证明孤立 checkpoint 被拒绝、并发事实首写者收敛、三个 Archive 各三次 attempt 可追平、终态清理跨重启恢复、媒体缺少摘要保持 pending，且外部错误正文不进入事实。受管服务持有 VLM 凭证，扩展进程不读取或转发凭证。",
@@ -13,7 +12,7 @@
       "覆盖同一 checkpoint 对象保存重试状态：会破坏 append-only 与响应丢失后的内容确定性"
     ],
     "modelField": "Checkpoint.model 记录可执行且版本化的生成管线 openviking/session-working-memory-v2；gate 另以 modelProfile hash 和受管 ov.conf 指纹固定实际 VLM provider/model，避免从非结构化 observer 文本猜测服务配置。",
-    "promptVersion": "phase2a-checkpoint-v1",
+    "promptVersion": "checkpoint-v1",
     "retry": "每个 Archive 最多三个确定性 attempt；request 先持久化，只有 OpenViking task 明确 failed/cancelled 才追加代码拥有的失败分类与通用消息，网络中断保留同一 request 供下次恢复；并发事实写入采用首个通过完整链校验的对象。",
     "multimodal": "嵌入图片按内容 hash 写入 attempt 专属临时 Resource；只有每个媒体都经真实 VLM 得到非空 abstract 才提交 Working Memory，输入只保留 hash/长度/摘要而不复制 base64。终态 request/failure/checkpoint 事实跨重启派生清理义务，直到临时 Session 与媒体 Resource 都确认不存在。"
   },
@@ -55,7 +54,7 @@
     "isolation": "每个 workload 使用随机 sessionScoped user namespace；本地 run、owner marker 和 summary 由 live-support 统一管理。",
     "credentials": "taskModel key 仅供统一 preflight；真实 VLM key 只存在于已核验的受管 OpenViking 进程，不进入扩展、Archive、checkpoint、artifact 或 summary。",
     "archiveBudgets": { "chunkTokenBudget": 1000, "rawTailTokenBudget": 1000 },
-    "source": "verifier 以确定性 Pi RecordedEvent 投影写入真实 Content API，再由生产 ArchiveManager 提交、自证和 expand；Phase 1 live gate 已独立证明 Pi lifecycle 到同一 Archive 机制的接线。"
+    "source": "verifier 以确定性 Pi RecordedEvent 投影写入真实 Content API，再由生产 ArchiveManager 提交、自证和 expand；verify:archive:live 已独立证明 Pi lifecycle 到同一 Archive 机制的接线。"
   },
   "observationPoints": {
     "facts": "按确定性 eventId 回读 request/failure/checkpoint 规范字节并复算 source Archive 身份/hash",
@@ -143,8 +142,8 @@
         { "scenario": "双 Archive request/task 重启恢复", "archiveTokens": 2000, "wallMs": 49193, "totalTokens": 25565, "checkpointCount": 2 }
       ],
       "expectedChange": "request 在 VLM 前持久化；只有来源与完整 request/failure 链可核验的 completed task 形成 checkpoint；明确失败进入下一 attempt；进程重建与并发进程复用首个有效 request/task；终态事实恢复清理；两个未消费 Archive 派生 lagging 并在追平时恢复。",
-      "falsification": "任一来源/hash/事实链/唯一性/并发恢复/积压/终态清理断言失败，媒体无摘要仍形成 checkpoint，外部错误正文进入事实，或真实 VLM/媒体处理超过阈值，即重新打开 Phase 2A 约束。",
-      "thresholdRationale": "checkpointWallMs 保持 240000ms 质量边界；当前开发模型身份的 accepted baseline 最慢观测为 72942ms，保留约 3.29 倍余量，同一边界连续三次均通过 114/114。正确性使用确定性身份、规范字节、完整事实链、集合和状态等值断言，Phase 3 再以多个 100k+ workload 校准发布预算。"
+      "falsification": "任一来源/hash/事实链/唯一性/并发恢复/积压/终态清理断言失败，媒体无摘要仍形成 checkpoint，外部错误正文进入事实，或真实 VLM/媒体处理超过阈值，即重新打开 checkpoint 生产约束。",
+      "thresholdRationale": "checkpointWallMs 保持 240000ms 质量边界；当前开发模型身份的 accepted baseline 最慢观测为 72942ms，保留约 3.29 倍余量，同一边界连续三次均通过 114/114。正确性使用确定性身份、规范字节、完整事实链、集合和状态等值断言，端到端预算校准阶段再以多个 100k+ workload 校准发布预算。"
     }
   }
 }

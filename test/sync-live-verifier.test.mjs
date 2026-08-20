@@ -1,4 +1,4 @@
-// test/live-verifier.test.mjs — verify:phase0:live 的确定性静态检查。
+// test/sync-live-verifier.test.mjs — verify:sync:live 的确定性静态检查。
 //
 // live gate 的正确性由真实运行证明；这里只覆盖不依赖真实边界的部分：
 // manifest 与固定 hash 的一致性（防止 manifest 被改而未重新固定）、manifest 引用
@@ -11,7 +11,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { seededString } from "./live/phase0-live.mjs";
+import { seededString } from "./live/sync-live.mjs";
 import {
   ackFileKey,
   buildLivePiInvocation,
@@ -25,11 +25,11 @@ import { canonicalJsonBytes } from "../shared/canonical-json.mjs";
 import { TOOLCHAIN } from "../shared/toolchain.mjs";
 
 const REPO = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
-const manifestBytes = readFileSync(join(REPO, "test/live/phase0.workloads.json"));
+const manifestBytes = readFileSync(join(REPO, "test/live/sync.workloads.json"));
 const manifest = JSON.parse(manifestBytes.toString("utf8"));
 
 test("manifest 字节 hash 与固定 .sha256 文件一致", () => {
-  const hashText = readFileSync(join(REPO, "test/live/phase0.workloads.sha256"), "utf8");
+  const hashText = readFileSync(join(REPO, "test/live/sync.workloads.sha256"), "utf8");
   assert.ok(checkManifestHash(manifestBytes, hashText), "manifest 被修改后必须重新固定 hash");
 });
 
@@ -44,7 +44,7 @@ test("manifest 引用的路径与身份在当前仓库存在", () => {
   const piPkg = JSON.parse(readFileSync(join(REPO, "node_modules", manifest.identities.pi.package, "package.json"), "utf8"));
   assert.equal(piPkg.version, manifest.identities.pi.version);
   const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
-  assert.equal(pkg.scripts["verify:phase0:live"], "node test/live/phase0-live.mjs");
+  assert.equal(pkg.scripts["verify:sync:live"], "node test/live/sync-live.mjs");
   // manifest 声明的服务身份必须与安装 pin 一致。gate 的 preflight 会用真实 /health 再核一次，
   // 这里把同一事实提前到 npm test，使升级 pin 后立即知道 manifest 需要随基线一并重做。
   assert.equal(

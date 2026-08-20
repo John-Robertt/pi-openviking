@@ -17,9 +17,9 @@
     "test": "node --test 'test/*.test.mjs'",
     "dev": "node scripts/dev.mjs",
     "verify:observability:live": "node test/live/observability-live.mjs",
-    "verify:phase0:live": "node test/live/phase0-live.mjs",
-    "verify:phase1:live": "node test/live/phase1-live.mjs",
-    "verify:phase2a:live": "node test/live/phase2a-live.mjs"
+    "verify:sync:live": "node test/live/sync-live.mjs",
+    "verify:archive:live": "node test/live/archive-live.mjs",
+    "verify:checkpoint:live": "node test/live/checkpoint-live.mjs"
   },
   "pi": {
     "extensions": [

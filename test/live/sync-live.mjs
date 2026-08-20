@@ -1,10 +1,10 @@
-// verify:phase0:live — Phase 0 真实验收门禁。
+// verify:sync:live — 可靠同步真实验收门禁。
 //
 // 在真实 Pi CLI（RPC 模式）、真实 SessionManager、受管 OpenViking 0.4.15 与开发模型
-// 身份上执行 test/live/phase0.workloads.json 声明的四个 workload，机器断言
+// 身份上执行 test/live/sync.workloads.json 声明的四个 workload，机器断言
 // Pi JSONL → RecordedEvent → direct/chunked 对象 → entry ACK 逐项对应，以及重放、
 // 409、断线、shutdown 与清理成立。manifest 字节 hash 在实现前固定于
-// test/live/phase0.workloads.sha256；不匹配即拒绝运行。
+// test/live/sync.workloads.sha256；不匹配即拒绝运行。
 //
 // 产物边界：本地数据只在 test/.artifacts/live/<runId>/（gitignored）；passed 时整体
 // 删除，失败时删除 segment（raw provider payload）后保留白名单脱敏诊断。远端 namespace
@@ -399,12 +399,12 @@ const WORKLOAD_RUNNERS = {
   "w4-disconnect-restart": w4,
 };
 
-const MANIFEST_PATH = join(REPO, "test/live/phase0.workloads.json");
-const MANIFEST_HASH_PATH = join(REPO, "test/live/phase0.workloads.sha256");
+const MANIFEST_PATH = join(REPO, "test/live/sync.workloads.json");
+const MANIFEST_HASH_PATH = join(REPO, "test/live/sync.workloads.sha256");
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   runLiveGate({
-    gate: "phase0",
+    gate: "sync",
     manifestPath: MANIFEST_PATH,
     manifestHashPath: MANIFEST_HASH_PATH,
     runners: WORKLOAD_RUNNERS,

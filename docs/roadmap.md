@@ -9,47 +9,47 @@
 **职责边界**：本文只描述路径与位置。目标机制和契约引用 `docs/spec.md`，不在此复制；证据标准和门禁
 契约引用 [`docs/verification.md`](./verification.md)，不在此复制；当前代码结构见
 [`docs/design.md`](./design.md)。本文随每次工作推进更新，因而与架构规范分离——使进度变化与架构变化
-在评审中始终可区分。
+在评审中始终可区分。各阶段以所建立的系统保证命名，gate 命名契约见 `docs/verification.md`。
 
 ## 实施状态
 
-**Phase 0 阶段出口已关闭。** 事件投影、身份、确认前沿与重放在真实 Pi lifecycle、真实
-`SessionManager` 和受管 OpenViking 上成立：`npm test` 提供 deterministic 证据，`verify:phase0:live`
-提供真实边界证据。该门禁断言的范围见 [`docs/verification.md`](./verification.md) 的阶段门禁表；
-workload、身份与阈值由 `test/live/phase0.workloads.json` 及其固定 hash 承载。
+**完整记录与可靠同步的出口已关闭。** 事件投影、身份、确认前沿与重放在真实 Pi lifecycle、真实
+`SessionManager` 和受管 OpenViking 上成立：`npm test` 提供 deterministic 证据，`verify:sync:live`
+提供真实边界证据。该门禁断言的范围见 [`docs/verification.md`](./verification.md) 的门禁表；
+workload、身份与阈值由 `test/live/sync.workloads.json` 及其固定 hash 承载。
 
 **可观测性基线出口已关闭。** `shared/observe.mjs` 的 active stage registry 是现行点位唯一清单；关闭零工作、
 sink/schema fail-open、字节一致性和职责模块接点由 deterministic checks 证明，`verify:observability:live` 在固定
 manifest/hash 下覆盖成功 recall/同步、断线、409 冲突、URI 拒绝和持久清理。该 gate 此后作为每个阶段的常驻出口条件。
 
-**Phase 1 阶段出口已关闭。** Archive 的原子机制由真实 0.4.15 上的基线调查选定，机制、实测证据与
-被证伪的候选记录在 `test/live/phase1.workloads.json` 的 `mechanism`。`npm test` 提供 deterministic 证据，
-`verify:phase1:live` 在真实 Pi lifecycle 与受管 OpenViking 上覆盖 Archive 形成、崩溃残留恢复、受管重启
+**原子 Archive 的出口已关闭。** Archive 的原子机制由真实 0.4.15 上的基线调查选定，机制、实测证据与
+被证伪的候选记录在 `test/live/archive.workloads.json` 的 `mechanism`。`npm test` 提供 deterministic 证据，
+`verify:archive:live` 在真实 Pi lifecycle 与受管 OpenViking 上覆盖 Archive 形成、崩溃残留恢复、受管重启
 幂等和完整性冲突 fail-open；常驻 `verify:observability:live` 全量通过。
 
-**Phase 2A 阶段出口已关闭。** checkpoint request、代码拥有的明确 failure 与结构化 checkpoint 作为自产
+**checkpoint 生产的出口已关闭。** checkpoint request、代码拥有的明确 failure 与结构化 checkpoint 作为自产
 `RecordedEventV1` 进入既有 immutable event namespace；消费状态、完整 parent/attempt 链、积压和终态清理
 义务只从 Archive 与这些事实派生。deterministic checks 证明孤立 checkpoint 拒绝、并发首写者收敛、逐 Archive
 三次 attempt、媒体失败 pending、外部错误脱敏和跨重启清理。
 
-`verify:phase2a:live` 在当前开发模型身份和受管 OpenViking 上覆盖文本、多模态、明确失败后的真实 VLM 重试及
+`verify:checkpoint:live` 在当前开发模型身份和受管 OpenViking 上覆盖文本、多模态、明确失败后的真实 VLM 重试及
 双 Archive 重启恢复，固定 240000ms 质量边界连续三次均通过 114/114；accepted baseline、身份、阈值和成功
-标准由 `test/live/phase2a.workloads.json` 及其固定 hash 承载。常驻 `verify:observability:live` 覆盖现行 registry。
+标准由 `test/live/checkpoint.workloads.json` 及其固定 hash 承载。常驻 `verify:observability:live` 覆盖现行 registry。
 
-**当前工作是建立 Phase 2B 的基线、manifest 与 `ActiveContext` 最小实现；takeover 在 Phase 2C 前保持 inactive。**
+**当前工作是建立活动上下文的基线、manifest 与 `ActiveContext` 最小实现；真实接管在上下文切换阶段前保持 inactive。**
 
 ## 实施顺序
 
-Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依次建立 checkpoint、`ActiveContext`
-和真实上下文切换；Phase 3 校准多 workload/model 组合；Phase 4 建立检索与诊断。下一阶段只消费
-已通过上一阶段 deterministic checks 与 live gate 的状态。
+可靠同步建立事件与同步事实；原子 Archive 建立原子对象；checkpoint 与上下文接管依次建立 checkpoint、
+`ActiveContext` 和真实上下文切换；预算校准校准多 workload/model 组合；检索与诊断建立检索与诊断体验。
+每一阶段只消费已通过上一阶段 deterministic checks 与 live gate 的状态。
 
 每个阶段按同一调查闭环执行：
 
 1. 在实现前建立 manifest，固定阶段成功标准、当前可重现现象、与目标的差距、证伪条件、输入和机器
    观察点；观察点按 [`docs/observability.md`](./observability.md) 的分类和必带字段声明；
 2. 对真实边界运行最小基线探针，用同一标准的观察记录收集足以区分候选机制的证据，把 baseline、
-   阈值和预期变化写回 manifest 并固定 hash；Phase 1 的原子机制选择必须先完成该调查；
+   阈值和预期变化写回 manifest 并固定 hash；原子 Archive 的机制选择必须先完成该调查；
 3. 选择当前主导约束，实施能闭合该约束的最小结构，并先运行聚焦 deterministic checks；
 4. 运行阶段 live verifier，把结果与基线和预期变化逐项比较；结果偏离时回到步骤 1，重新调查并识别
    主导约束；
@@ -61,10 +61,10 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 
 ### 可观测性基线（横切）
 
-观察点是横切能力，不是产品阶段，因此不进入 Phase 编号。它由两部分组成：一次性收敛既有代码路径，
+观察点是横切能力，不进入实施顺序编号。它由两部分组成：一次性收敛既有代码路径，
 以及成为此后每个阶段的常驻出口条件（见上文步骤 5）。
 
-收敛先于 Phase 1 的基线调查完成，因为该调查是观察记录的第一个消费者：步骤 2 要求用观察记录区分
+收敛先于原子 Archive 的基线调查完成，因为该调查是观察记录的第一个消费者：步骤 2 要求用观察记录区分
 候选的原子机制，缺少统一记录就只能依赖一次性探针。
 
 - 建立 `shared/observe.mjs`：实现唯一 active stage registry（owner/kind/schema/outcome）、版本化 run/record、会话 hash、
@@ -85,9 +85,9 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
   boundary；
 - 仓库内不存在第二套运行过程观察。
 
-### Phase 0：完整记录与最小可靠同步
+### 完整记录与可靠同步
 
-#### Phase 0A：事件投影与身份
+#### 事件投影与身份
 
 - 实现“目标配置”定义的唯一配置 schema 和未知字段校验；
 - 完整捕获不透明或大型 payload，并保留 tool result 的真实完成和错误状态；
@@ -106,7 +106,7 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 - 同一源事件重复投影得到相同 event ID、规范字节和 content hash，相同内容的不同事件得到不同
   event ID；event/parent/source/part/turn/step 字段与 Pi JSONL 可逐项重算。
 
-#### Phase 0B：确认前沿与重放
+#### 确认前沿与重放
 
 - 以持久 Pi JSONL 提供完整 entry tree，根据 `id/parentId` 同步所有未确认分支并恢复当前 leaf；
 - 实现 OpenViking Content API adapter：探测 capability、幂等建立绑定用户的隐藏 Resource、
@@ -138,13 +138,13 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 - health 后网络退化或大事件传输仍在进行时，Pi lifecycle 不等待同步完成；shutdown 最多等待
   500ms 后取消 transport。
 
-### Phase 1：原子 Archive
+### 原子 Archive
 
 - 调查 OpenViking 可用于 Archive 原子绑定的公开操作及崩溃语义，以实践结果选择最小机制；
 - 从已经确认的 immutable event 对象选择完整 event/step 范围，生成确定性 `archiveId`；
 - 回读事件并重算 event identity、顺序和内容 hash，manifest 记录 event/step 边界、数量和聚合
   hash；
-- 固定所选原子机制的数据结构、接受证明、冲突和恢复规则；Phase 0 的事件 commit marker 不得代替
+- 固定所选原子机制的数据结构、接受证明、冲突和恢复规则；事件对象的 commit marker 不得代替
   Archive 接受证明；
 - 提供按 `archiveId` 的确定性读取和 expand，按 manifest materialize 事件并重新验证全部 hash；
 - 根据单个用户轮次内的 token/step 压力生成有效 Archive；
@@ -163,18 +163,18 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
   Archive；
 - 各真实 Pi workload 的 Archive 均满足 manifest、event/step 边界、hash 和 expand 完整性。
 
-### Phase 2：单一 checkpoint 与上下文接管
+### checkpoint 与上下文接管
 
-#### Phase 2A：checkpoint 生产
+#### checkpoint 生产
 
 - 每个 Archive 异步生成一个统一的结构化 checkpoint；
 - checkpoint 保存模型版本、prompt 版本、输入 Archive 身份和 hash；
 - 以 request、代码拥有的明确 failure 和 checkpoint 事件表达 VLM 运行事实，并验证完整 parent/attempt 链；
 - 从未消费 Archive 派生处理中、落后、恢复和积压 token，并实现对应通知；
 - `/viking` 展示 VLM 积压、失败、checkpoint ID 和来源 Archive；
-- 校验 checkpoint 身份、hash、重试和跨重启恢复，并将有效 checkpoint 作为 Phase 2B 输入；
-- 用 golden 固定输出回归身份，以独立生成的重试/失败/积压场景验证状态不变量，并让 Phase 1 的多种
-  真实 Archive 工作负载分别经过固定 VLM。
+- 校验 checkpoint 身份、hash、重试和跨重启恢复，并将有效 checkpoint 作为活动上下文构造的输入；
+- 用 golden 固定输出回归身份，以独立生成的重试/失败/积压场景验证状态不变量，并让原子 Archive 阶段的
+  多种真实工作负载分别经过固定 VLM。
 
 **验收**：
 
@@ -185,10 +185,10 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 - Archive、request、checkpoint 和失败事件能够完整派生 VLM 状态、失败原因、积压 token 及终态 attempt 的临时清理义务；
 - 媒体未获得非空摘要时保持同一 request pending；终态 Session 与媒体根跨重启重试，二者都确认不存在才完成清理；
 - VLM 失败不改变已经持久化的事件和 raw Archive；
-- Phase 1 的各真实 Archive 工作负载均产生来源和 hash 可核验的 checkpoint，并分别满足固定 VLM
+- 原子 Archive 阶段的各真实工作负载均产生来源和 hash 可核验的 checkpoint，并分别满足固定 VLM
   吞吐要求。
 
-#### Phase 2B：活动上下文构造
+#### 活动上下文构造
 
 - 选择已确认 checkpoint 和原子的 raw-tail 边界，形成并持久化最小 `ActiveContext`；
 - 跨重启恢复 `ActiveContext`，分支变化时只复用来源边界仍在当前祖先链上的上下文；
@@ -209,7 +209,7 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 - 高水位公式结果非正时 takeover eligibility 为 inactive，`/viking` 给出 capacity mismatch 和
   fallback 诊断。
 
-#### Phase 2C：上下文切换与 fail-open
+#### 上下文切换与 fail-open
 
 - 通过 `context` hook 原子切换 provider 可见上下文，并冻结到下一次接管；
 - 每次高水位只替换一次 `ActiveContext`，后续事件追加在稳定前缀之后；
@@ -221,16 +221,17 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 **验收**：
 
 - 每次上下文高水位原子替换一次 `ActiveContext`，并保持到下一次上下文高水位；
-- provider 实际 payload 与 Phase 2B 验证的构造一致，后续事件追加在稳定前缀之后；
+- provider 实际 payload 与活动上下文构造验证的构造一致，后续事件追加在稳定前缀之后；
 - 无有效 `ActiveContext`、OpenViking/VLM 降级或容量不匹配时，provider 使用完整 Pi 上下文；
 - 单个用户指令后的长工具循环能够安全归档和接管；
 - Pi 是 compaction 的唯一触发方；`ActiveContext` 不可用时执行原生 split-turn compaction，扩展
   仅返回生命周期钩子结果并保持运行中的 agent 可用。
 
-### Phase 3：固定模型端到端预算校准
+### 固定模型端到端预算校准
 
-- 在 Phase 0–2 逐阶段通过后，使用开发模型身份中的任务模型和 VLM 运行“验证策略”
-  定义的多个独立 100k+ 工作负载，每个 workload 至少独立重复三次；token 数取自 Pi/provider 实际计量；
+- 在可靠同步、原子 Archive、checkpoint 与上下文接管逐段通过后，使用开发模型身份中的任务模型和
+  VLM 运行“验证策略”定义的多个独立 100k+ 工作负载，每个 workload 至少独立重复三次；token 数取自
+  Pi/provider 实际计量；
 - 对照原始事件检查 Archive 边界、raw tail、checkpoint 和接管上下文；
 - 使用 Pi 报告的固定任务模型容量验证高水位公式两侧的 fit 与 capacity mismatch 行为；
 - 根据 step 原子性、raw-tail 完整性和上下文容量调整候选预算并重跑；
@@ -247,7 +248,7 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 - 固定任务模型容量在 eligibility 边界两侧分别得到 active 和 capacity mismatch 结果；
 - 通过上述验收的固定模型身份、预算和 eligibility 规则写入发布配置。
 
-### Phase 4：检索与诊断体验
+### 检索与诊断体验
 
 - 语义搜索 raw events 与 checkpoint，并显示来源类型；
 - 支持按 session、branch、Archive 和 event ID 的组合过滤、browse 和 expand；
@@ -265,7 +266,7 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 
 ## 下一实施入口
 
-当前入口是建立 Phase 2B 基线：先固定 `ActiveContext` 身份、checkpoint/raw-tail/用户指令 anchor 边界、分支复用
-条件、容量计算和 dry-run payload 的成功标准与证伪条件，再以 Phase 2A 已确认 checkpoint 调查可重放的数据形状并
+当前入口是建立活动上下文基线：先固定 `ActiveContext` 身份、checkpoint/raw-tail/用户指令 anchor 边界、分支复用
+条件、容量计算和 dry-run payload 的成功标准与证伪条件，再以已确认 checkpoint 调查可重放的数据形状并
 建立 manifest/hash。基线成立后实现最小 `ActiveContext` 持久化、恢复和 dry-run materialize；provider 继续使用完整
-Pi 上下文，真实上下文切换只在 Phase 2C 实施。
+Pi 上下文，真实上下文切换只在上下文切换阶段实施。

@@ -238,7 +238,7 @@ Archive 的原子性不依赖服务端写入语义，而由三条规则共同提
 1. **唯一提交点**——manifest 是 Archive 唯一持久化的对象，只在全部引用事件已被接受后写入；不得把
    一次 `batch-write` 或客户端先后写入直接当作 Archive 已提交。
 2. **接受证明**——写入 manifest 前逐项回读被引用事件，复算 event identity、规范字节与聚合
-   `contentHash`；Phase 0 的事件 commit marker 不能代替该证明。
+   `contentHash`；事件对象的 commit marker 不能代替该证明。
 3. **内容自证**——只有能解析、能复算出同一 `archiveId` 且规范字节与读到的字节完全一致的内容才是
    Archive。崩溃残留因此等价于不存在：它从来不是已接受对象，恢复时按其实际 hash 就地替换；已自证
    但绑定不同内容的 manifest 才是完整性冲突，保留原对象并返回可诊断失败。
@@ -349,7 +349,7 @@ split-turn compaction。扩展通过生命周期钩子提供可用上下文，�
 
 ### 8. 检索与恢复
 
-隐藏 raw event 对象是检索派生物的数据源，但不直接进入普通 Resource 的语义刷新。Phase 4 从
+隐藏 raw event 对象是检索派生物的数据源，但不直接进入普通 Resource 的语义刷新。检索从
 已确认 raw events 和 checkpoint 建立独立派生索引，标明原始记录或 VLM 理解、时间、模型、
 event ID、内容 hash 和来源 URI；删除索引不影响权威事件，并可从事件对象重建。Archive manifest
 提供范围过滤、browse、expand 和完整性校验。每个搜索结果都能按来源 URI 展开到原始事件。
@@ -416,14 +416,14 @@ VLM request 和明确失败是追加式 `RecordedEvent`。summary、索引、通
 - `takeover.checkpointTokenBudget` 控制接管时装载的 VLM checkpoint 上限；
 - `takeover.enabled` 控制任务模型上下文替换，事件记录和 Archive 独立持续运行。
 
-Archive 与 takeover 预算是 Phase 3 的候选值。预算根据 Archive step 边界、raw-tail 完整性和
+Archive 与 takeover 预算是端到端预算校准（见 [`docs/roadmap.md`](./roadmap.md)）的候选值。预算根据 Archive step 边界、raw-tail 完整性和
 接管后上下文大小验证。开发和真实验收统一使用 [`docs/development.md`](./development.md#开发模型身份与凭证桥接)
 定义的开发模型身份；凭证桥接和持续调用授权边界也以该处为准。
 VLM 消费能力必须针对该固定模型形成真实证据，不能在运行时静默选择其他模型。
 
 `contextTokenThreshold=0` 使用“任务模型上下文容量减去 system、工具、provider 安全余量、
 checkpoint 和 raw tail”计算高水位。高水位必须为正且能够容纳目标上下文；容量不匹配时
-保持 takeover inactive，并由 `/viking` 报告。先调整候选预算并重新通过 Phase 3 验证；如果固定模型仍
+保持 takeover inactive，并由 `/viking` 报告。先调整候选预算并重新通过端到端预算校准；如果固定模型仍
 无法提供安全余量，则保持 inactive。改变 provider 或 model 属于新的战略决定，必须重新获得用户决定并重跑
 相关阶段。可外置的大型 payload 使用完整存储和可追溯引用；非外置原子输入的支持上限由固定任务模型的
 剩余容量决定，超出时拒绝接管或缩小源输入。

@@ -1,7 +1,6 @@
 {
   "schemaVersion": 1,
   "gate": "verify:observability:live",
-  "phase": "observability",
   "purpose": "在真实 Pi lifecycle、真实同步、受支持 OpenViking 以及受控断线、URI 拒绝和 409 冲突上，证明统一观察 run 完整、安全、只观察且能够复原当前全链路。",
   "identities": {
     "pi": {

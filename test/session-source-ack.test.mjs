@@ -9,7 +9,7 @@ import {
   readSyncAck,
   writeSyncAck,
 } from "../shared/sync-ack.mjs";
-import { buildPhase0LongTrace } from "./fixtures/phase0-long-trace.mjs";
+import { buildLongToolLoopTrace } from "./fixtures/long-tool-loop-trace.mjs";
 
 function jsonl(sessionId, entries) {
   return [
@@ -20,7 +20,7 @@ function jsonl(sessionId, entries) {
 }
 
 test("持久 Pi JSONL 按 leaf 恢复当前分支和完整 parent tree", () => {
-  const trace = buildPhase0LongTrace();
+  const trace = buildLongToolLoopTrace();
   const allEntries = [...trace.main, ...trace.equalReplacement.slice(4)];
   const source = parsePiSessionJsonl(jsonl(trace.sessionId, allEntries), {
     sessionId: trace.sessionId,
@@ -48,7 +48,7 @@ test("持久 Pi JSONL 按 leaf 恢复当前分支和完整 parent tree", () => {
 });
 
 test("SyncAck 在共同祖先、等长替换和短分支上保持最小 leaves", () => {
-  const trace = buildPhase0LongTrace();
+  const trace = buildLongToolLoopTrace();
   const allEntries = [...trace.main, ...trace.equalReplacement.slice(4)];
   const { parentById } = parsePiSessionJsonl(jsonl(trace.sessionId, allEntries));
 

@@ -1,11 +1,11 @@
-// verify:phase1:live — Phase 1 真实验收门禁。
+// verify:archive:live — 原子 Archive 真实验收门禁。
 //
-// 在真实 Pi lifecycle 与受管 OpenViking 0.4.15 上执行 test/live/phase1.workloads.json
+// 在真实 Pi lifecycle 与受管 OpenViking 0.4.15 上执行 test/live/archive.workloads.json
 // 声明的四个 workload，机器断言 Archive 的原子可见、幂等恢复、确定 expand、event/step
 // 边界原子，以及完整性冲突不覆盖既有对象且 Pi 主任务 fail-open。manifest 字节 hash
-// 固定于 test/live/phase1.workloads.sha256；不匹配即拒绝运行。
+// 固定于 test/live/archive.workloads.sha256；不匹配即拒绝运行。
 //
-// 产物与凭证边界同 Phase 0，由 live-support 的统一骨架承担。
+// 产物与凭证边界同 verify:sync:live，由 live-support 的统一骨架承担。
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -539,9 +539,9 @@ const WORKLOAD_RUNNERS = {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   runLiveGate({
-    gate: "phase1",
-    manifestPath: join(REPO, "test/live/phase1.workloads.json"),
-    manifestHashPath: join(REPO, "test/live/phase1.workloads.sha256"),
+    gate: "archive",
+    manifestPath: join(REPO, "test/live/archive.workloads.json"),
+    manifestHashPath: join(REPO, "test/live/archive.workloads.sha256"),
     runners: WORKLOAD_RUNNERS,
     collectObjectUris,
   }).catch((error) => {

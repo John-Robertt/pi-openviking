@@ -9,12 +9,12 @@ import { TOOLCHAIN } from "../shared/toolchain.mjs";
 import { checkManifestHash, sha256Hex } from "./live/live-support.mjs";
 
 const REPO = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
-const manifestPath = join(REPO, "test/live/phase2a.workloads.json");
-const hashPath = join(REPO, "test/live/phase2a.workloads.sha256");
+const manifestPath = join(REPO, "test/live/checkpoint.workloads.json");
+const hashPath = join(REPO, "test/live/checkpoint.workloads.sha256");
 const bytes = readFileSync(manifestPath);
 const manifest = JSON.parse(bytes.toString("utf8"));
 
-test("Phase 2A manifest/hash、身份与 live 入口一致", () => {
+test("checkpoint manifest/hash、身份与 live 入口一致", () => {
   assert.ok(checkManifestHash(bytes, readFileSync(hashPath, "utf8")));
   assert.equal(manifest.identities.openviking.version, TOOLCHAIN.openvikingVersion);
   const profile = readFileSync(join(REPO, manifest.identities.modelProfile.path));
@@ -22,11 +22,11 @@ test("Phase 2A manifest/hash、身份与 live 入口一致", () => {
   assert.ok(manifest.mechanism.modelField.includes(CHECKPOINT_MODEL));
   assert.equal(manifest.mechanism.promptVersion, CHECKPOINT_PROMPT_VERSION);
   const pkg = JSON.parse(readFileSync(join(REPO, "package.json")));
-  assert.equal(pkg.scripts["verify:phase2a:live"], "node test/live/phase2a-live.mjs");
-  assert.ok(existsSync(join(REPO, "test/live/phase2a-live.mjs")));
+  assert.equal(pkg.scripts["verify:checkpoint:live"], "node test/live/checkpoint-live.mjs");
+  assert.ok(existsSync(join(REPO, "test/live/checkpoint-live.mjs")));
 });
 
-test("Phase 2A workload 固定成功、证伪、真实 VLM 与阈值", () => {
+test("checkpoint workload 固定成功、证伪、真实 VLM 与阈值", () => {
   assert.deepEqual(manifest.workloads.map((workload) => workload.id), [
     "w1-checkpoint-formation",
     "w2-multimodal-checkpoint",

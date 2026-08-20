@@ -1,4 +1,4 @@
-// verify:phase2a:live — Phase 2A checkpoint 真实验收门禁。
+// verify:checkpoint:live — checkpoint 生产真实验收门禁。
 import { mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -37,8 +37,8 @@ function productClient(ctx, observation) {
     apiKey: "",
     account: ov.account,
     user: ctx.storageUser,
-    peerId: "phase2a-live",
-    userAgent: "pi-openviking/phase2a-live",
+    peerId: "checkpoint-live",
+    userAgent: "pi-openviking/checkpoint-live",
   }, observation);
 }
 
@@ -48,7 +48,7 @@ function sourceEntries(ctx, { textEntries = 2, image = false } = {}) {
   for (let index = 0; index < textEntries; index++) {
     const id = `entry-${index}`;
     const prefix = index === 0
-      ? "Phase 2A source: checkpoint must preserve completed work, decisions, open issues and restart recovery. "
+      ? "Checkpoint source: checkpoint must preserve completed work, decisions, open issues and restart recovery. "
       : `Archive continuation ${index}: next implement and verify the remaining checkpoint chain. `;
     const text = prefix.padEnd(4000, String(index));
     const content = image && index === 0
@@ -428,9 +428,9 @@ const RUNNERS = {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   runLiveGate({
-    gate: "phase2a",
-    manifestPath: join(REPO, "test/live/phase2a.workloads.json"),
-    manifestHashPath: join(REPO, "test/live/phase2a.workloads.sha256"),
+    gate: "checkpoint",
+    manifestPath: join(REPO, "test/live/checkpoint.workloads.json"),
+    manifestHashPath: join(REPO, "test/live/checkpoint.workloads.sha256"),
     runners: RUNNERS,
     collectObjectUris,
     collectTaskResources,

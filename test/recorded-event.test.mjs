@@ -7,7 +7,7 @@ import {
   projectPiEntries,
   recordedEventId,
 } from "../shared/recorded-event.mjs";
-import { buildPhase0LongTrace } from "./fixtures/phase0-long-trace.mjs";
+import { buildLongToolLoopTrace } from "./fixtures/long-tool-loop-trace.mjs";
 
 function groupByEntry(events) {
   const grouped = new Map();
@@ -58,7 +58,7 @@ test("事件、内容、turn 和 step 身份符合固定协议向量", () => {
 });
 
 test("长轨迹逐 part 完整投影并保留错误、aborted、image、thinking 和未知 part", () => {
-  const trace = buildPhase0LongTrace();
+  const trace = buildLongToolLoopTrace();
   assert.ok(trace.longText.length / 4 > 100_000);
 
   const events = projectPiEntries(trace.sessionId, trace.main);
@@ -100,7 +100,7 @@ test("长轨迹逐 part 完整投影并保留错误、aborted、image、thinking
 });
 
 test("事件身份、内容 hash、parent、turn 和 step 可确定重算", () => {
-  const trace = buildPhase0LongTrace();
+  const trace = buildLongToolLoopTrace();
   const first = projectPiEntries(trace.sessionId, trace.main);
   const replay = projectPiEntries(trace.sessionId, JSON.parse(JSON.stringify(trace.main)));
   assert.deepEqual(replay, first);
@@ -137,7 +137,7 @@ test("事件身份、内容 hash、parent、turn 和 step 可确定重算", () =
 });
 
 test("等长替换、较短分支和相同内容不同 entry 不依赖数组长度", () => {
-  const trace = buildPhase0LongTrace();
+  const trace = buildLongToolLoopTrace();
   const main = projectPiEntries(trace.sessionId, trace.main);
   const replacement = projectPiEntries(trace.sessionId, trace.equalReplacement);
   const shorter = projectPiEntries(trace.sessionId, trace.shorter);

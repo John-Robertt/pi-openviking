@@ -8,7 +8,7 @@ import { archiveStorageLocation } from "../shared/archive-store.mjs";
 import { recordedEventStorageLocation } from "../shared/recorded-event-adapter.mjs";
 import { projectPiEntries } from "../shared/recorded-event.mjs";
 import { ARCHIVE_USER_ROOT, MemoryContentTransport, archiveEntryChain } from "./fixtures/archive-fixtures.mjs";
-import { buildPhase0LongTrace } from "./fixtures/phase0-long-trace.mjs";
+import { buildLongToolLoopTrace } from "./fixtures/long-tool-loop-trace.mjs";
 
 class MemoryEventStore {
   constructor() {
@@ -75,7 +75,7 @@ test("SyncManager 用 entry ACK 处理等长替换、短分支和 ACK 丢失重�
   await rm(root, { recursive: true, force: true });
   await mkdir(root, { recursive: true });
   try {
-    const trace = buildPhase0LongTrace();
+    const trace = buildLongToolLoopTrace();
     const store = new MemoryEventStore();
     const first = manager(store, ackPath);
     await first.ensureSession(trace.sessionId);
@@ -113,7 +113,7 @@ test("并发同步按 session 串行化且只推进一次 ACK", async () => {
   await rm(root, { recursive: true, force: true });
   await mkdir(root, { recursive: true });
   try {
-    const trace = buildPhase0LongTrace();
+    const trace = buildLongToolLoopTrace();
     const store = new MemoryEventStore();
     const sync = manager(store, ackPath);
     await sync.ensureSession(trace.sessionId);
@@ -130,7 +130,7 @@ test("shutdown grace 只等待固定期限内的同步", async () => {
   await rm(root, { recursive: true, force: true });
   await mkdir(root, { recursive: true });
   try {
-    const trace = buildPhase0LongTrace();
+    const trace = buildLongToolLoopTrace();
     const fastStore = new MemoryEventStore();
     fastStore.delayMs = 5;
     const fast = manager(fastStore, `${root}/fast.json`);
@@ -158,7 +158,7 @@ test("ACK 持久化失败时不推进内存 frontier，修复后通过 unchanged
   await rm(root, { recursive: true, force: true });
   await mkdir(ackPath, { recursive: true });
   try {
-    const trace = buildPhase0LongTrace();
+    const trace = buildLongToolLoopTrace();
     const store = new MemoryEventStore();
     const sync = manager(store, ackPath);
     await sync.ensureSession(trace.sessionId);
@@ -184,7 +184,7 @@ test("SyncManager 从持久 JSONL 读取当前 leaf，失败时不推进 ACK 且
   await rm(root, { recursive: true, force: true });
   await mkdir(root, { recursive: true });
   try {
-    const trace = buildPhase0LongTrace();
+    const trace = buildLongToolLoopTrace();
     const allEntries = [...trace.main, ...trace.equalReplacement.slice(4)];
     await writeFile(sessionPath, sessionJsonl(trace, allEntries));
     const store = new MemoryEventStore();
@@ -223,7 +223,7 @@ test("Content API capability 不匹配时保持待重放并进入可诊断状态
   await rm(root, { recursive: true, force: true });
   await mkdir(root, { recursive: true });
   try {
-    const trace = buildPhase0LongTrace();
+    const trace = buildLongToolLoopTrace();
     const store = new MemoryEventStore();
     store.failNext = true;
     store.failureStatus = 404;

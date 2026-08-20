@@ -14,7 +14,7 @@ import {
   recordedEventStorageLocation,
 } from "../shared/recorded-event-adapter.mjs";
 import { contentHash, projectPiEntries, recordedEventBytes, recordedEventId } from "../shared/recorded-event.mjs";
-import { buildPhase0LongTrace } from "./fixtures/phase0-long-trace.mjs";
+import { buildLongToolLoopTrace } from "./fixtures/long-tool-loop-trace.mjs";
 
 const OPENVIKING_MAX_OPERATIONS = 128;
 const OPENVIKING_MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -146,7 +146,7 @@ test("adapter 限制符合 OpenViking 0.4.15 Content API 协议值", () => {
 });
 
 test("direct 事件按确定性隐藏 URI 写入并同字节幂等重放", async () => {
-  const trace = buildPhase0LongTrace();
+  const trace = buildLongToolLoopTrace();
   const event = projectPiEntries(trace.sessionId, trace.shorter)[0];
   const transport = new MemoryContentTransport();
   const writer = adapter(transport);
@@ -212,7 +212,7 @@ test("direct 事件在 8 MiB 和 16 MiB 的前一值、边界值、后一值拆�
 });
 
 test("同 event ID 不同规范字节返回完整性冲突且严格拒绝缺失确认", async () => {
-  const trace = buildPhase0LongTrace();
+  const trace = buildLongToolLoopTrace();
   const event = projectPiEntries(trace.sessionId, trace.shorter)[0];
   const transport = new MemoryContentTransport();
   const writer = adapter(transport);

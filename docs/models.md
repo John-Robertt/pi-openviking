@@ -128,7 +128,7 @@ OAuth 身份把 `credentialKind` 改为 `oauth` 并省略 `apiKeyEnv`。任务�
 ### 6. 应用、验证与回退
 
 ```bash
-node --test test/dev-bootstrap.test.mjs test/dev-lifecycle.test.mjs test/live-verifier.test.mjs
+node --test test/dev-bootstrap.test.mjs test/dev-lifecycle.test.mjs test/sync-live-verifier.test.mjs
 npm run dev -- down
 npm run dev -- bootstrap
 npm run dev -- up
