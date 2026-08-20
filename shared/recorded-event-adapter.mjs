@@ -53,18 +53,22 @@ export function recordedEventStorageLocation(userRoot, sessionId, eventId) {
   };
 }
 
+/** 存储对象的 JSON 解析：崩溃残留必须表现为本模块的域错误，而不是裸 SyntaxError。 */
+function parseStoredJson(bytes, uri) {
+  try {
+    return JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new ContentConflictError("stored OpenViking object is not valid JSON", uri);
+  }
+}
+
 /**
  * 逐项复算事件身份与内容 hash。
  *
  * 回读校验必须独立于写出路径：写出时的正确性不能证明读到的字节仍是同一个事件。
  */
 export function verifyRecordedEventBytes(bytes, expectedEventId) {
-  let event;
-  try {
-    event = JSON.parse(bytes.toString("utf8"));
-  } catch (error) {
-    throw new ContentWriteError(`stored RecordedEvent is not valid JSON: ${expectedEventId}`);
-  }
+  const event = parseStoredJson(bytes, expectedEventId);
   if (recordedEventId(event?.source) !== expectedEventId) {
     throw new ContentConflictError("stored RecordedEvent identity does not match its location", expectedEventId);
   }
@@ -101,10 +105,11 @@ export class RecordedEventAdapter {
     for (const directory of new Set(objects.map((object) => parentUri(object.uri)))) {
       await ensureDirectoryChain(this.transport, this.resourceRoot, directory, this.createdDirectories);
     }
-    const result = await writeContentObjects(this.transport, rootUri, objects);
-    if (result.updated.size !== 0) {
-      throw new ContentConflictError("OpenViking replaced an existing RecordedEvent object", [...result.updated][0]);
-    }
+    await writeContentObjects(this.transport, rootUri, objects, (batch) => {
+      if (batch.updated.size !== 0) {
+        throw new ContentConflictError("OpenViking replaced an existing RecordedEvent object", [...batch.updated][0]);
+      }
+    });
   }
 
   async downloadVerified(uri, expectedLength, expectedHash) {
@@ -200,39 +205,56 @@ export class RecordedEventAdapter {
   /**
    * 按 event ID 回读已接受事件，direct 与 chunked 两种表示都复算到规范字节。
    *
-   * 没有有效 commit marker 的 chunked 事件不是已接受事件，因此这里只承认
-   * commit marker 存在且 claim 与全部 chunk 都校验通过的结果。
+   * 没有有效 commit marker 的 chunked 事件不是已接受事件。读路径与写路径对称：
+   * chunk 位置由 event ID 确定性推导，而不是采信 claim 里写着的 URI——具有相同凭证的
+   * 外部写入不在信任边界内，claim 因此不能作为可信的位置来源。
    */
   async readEvent(sessionId, eventId) {
     const location = recordedEventStorageLocation(this.userRoot, sessionId, requireEventId(eventId));
-    const direct = await this.transport.statUri(location.directUri);
-    if (!direct?.ok) throw new ContentWriteError(`OpenViking stat failed: ${location.directUri}`, { status: direct?.status || 0 });
-    if (direct.exists) {
+    const [direct, commit] = await Promise.all([
+      this.statRepresentation(location.directUri),
+      this.statRepresentation(location.commitUri),
+    ]);
+    if (direct && commit) {
+      throw new ContentConflictError("direct and chunked representations coexist for event", location.directUri);
+    }
+    if (direct) {
       const response = await this.transport.downloadBytes(location.directUri);
       if (!response?.ok || !Buffer.isBuffer(response.bytes)) {
         throw new ContentWriteError(`OpenViking download failed: ${location.directUri}`);
       }
       return { event: verifyRecordedEventBytes(response.bytes, eventId), bytes: response.bytes };
     }
-
-    const commit = await this.transport.statUri(location.commitUri);
-    if (!commit?.ok) throw new ContentWriteError(`OpenViking stat failed: ${location.commitUri}`, { status: commit?.status || 0 });
-    if (!commit.exists) throw new ContentWriteError(`RecordedEvent is not stored: ${eventId}`);
+    if (!commit) throw new ContentWriteError(`RecordedEvent is not stored: ${eventId}`);
 
     const commitResponse = await this.transport.downloadBytes(location.commitUri);
     const claimResponse = await this.transport.downloadBytes(location.claimUri);
     if (!commitResponse?.ok || !claimResponse?.ok) throw new ContentWriteError(`OpenViking download failed: ${eventId}`);
-    const marker = JSON.parse(commitResponse.bytes.toString("utf8"));
-    const claim = JSON.parse(claimResponse.bytes.toString("utf8"));
+    const marker = parseStoredJson(commitResponse.bytes, location.commitUri);
+    const claim = parseStoredJson(claimResponse.bytes, location.claimUri);
     if (marker?.eventId !== eventId || marker?.claimHash !== sha256(claimResponse.bytes) || claim?.eventId !== eventId) {
       throw new ContentConflictError("stored RecordedEvent commit marker does not match its claim", location.commitUri);
     }
+    if (!Array.isArray(claim.chunks) || claim.chunks.length === 0) {
+      throw new ContentConflictError("stored RecordedEvent claim does not list chunks", location.claimUri);
+    }
     const parts = [];
-    for (const chunk of claim.chunks) parts.push(await this.downloadVerified(chunk.uri, chunk.byteLength, chunk.contentHash));
+    for (const [index, chunk] of claim.chunks.entries()) {
+      if (chunk?.index !== index || chunk?.uri !== location.chunkUri(index)) {
+        throw new ContentConflictError("stored RecordedEvent chunk is not at its derived location", location.claimUri);
+      }
+      parts.push(await this.downloadVerified(chunk.uri, chunk.byteLength, chunk.contentHash));
+    }
     const bytes = Buffer.concat(parts);
     if (bytes.length !== claim.byteLength || sha256(bytes) !== claim.eventHash) {
       throw new ContentConflictError("stored RecordedEvent chunks do not reassemble to the claimed event", location.claimUri);
     }
     return { event: verifyRecordedEventBytes(bytes, eventId), bytes };
+  }
+
+  async statRepresentation(uri) {
+    const status = await this.transport.statUri(uri);
+    if (!status?.ok) throw new ContentWriteError(`OpenViking stat failed: ${uri}`, { status: status?.status || 0 });
+    return status.exists === true;
   }
 }

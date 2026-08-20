@@ -187,7 +187,7 @@ function snapToStepBoundary(events, endIndex) {
 export function planArchives(events, { chunkTokenBudget, rawTailTokenBudget }) {
   if (!Array.isArray(events) || events.length === 0) return [];
   if (!Number.isFinite(chunkTokenBudget) || chunkTokenBudget <= 0) throw new TypeError("chunkTokenBudget must be positive");
-  if (!Number.isFinite(rawTailTokenBudget) || rawTailTokenBudget < 0) throw new TypeError("rawTailTokenBudget must not be negative");
+  if (!Number.isFinite(rawTailTokenBudget) || rawTailTokenBudget <= 0) throw new TypeError("rawTailTokenBudget must be positive");
 
   const series = pressureSeries(events);
   const total = series.at(-1);

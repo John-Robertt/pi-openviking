@@ -279,6 +279,54 @@ test("切换分支后重算：另一条分支上的 Archive 必须全部提交�
   }
 });
 
+test("单个 Archive 的完整性冲突只停下它自己，后续独立 Archive 继续提交", async () => {
+  const events = eventsOf();
+  const { transport, manager } = await storedManager(events);
+  const plans = planArchives(events, BUDGETS);
+  assert.ok(plans.length >= 3, "需要多个独立 Archive 才能证明失败被隔离");
+  const blocked = buildArchiveManifest(SESSION, events.slice(plans[0].startIndex, plans[0].endIndex + 1));
+  const location = archiveStorageLocation(USER_ROOT, SESSION, blocked.archiveId);
+  transport.directories.add(location.shardRoot);
+  transport.files.set(location.manifestUri, archiveManifestBytes({ ...blocked, contentHash: `sha256:${"c".repeat(64)}` }));
+
+  const result = await manager.formArchives(SESSION, events);
+  assert.equal(result.committed, plans.length - 1, "只有冲突的那一个 Archive 应当停下");
+  assert.equal(result.pending, 1);
+  assert.match(result.lastFailure, /ArchiveIntegrityError/);
+  for (const plan of plans.slice(1)) {
+    const id = buildArchiveManifest(SESSION, events.slice(plan.startIndex, plan.endIndex + 1)).archiveId;
+    assert.ok(transport.files.has(archiveStorageLocation(USER_ROOT, SESSION, id).manifestUri), `${id} 未提交`);
+  }
+});
+
+test("另一进程写入完全相同的字节时，unchanged 是接受证明而不是完整性错误", async () => {
+  const events = eventsOf();
+  const { transport, manager } = await storedManager(events);
+  const plan = planArchives(events, BUDGETS)[0];
+  const range = events.slice(plan.startIndex, plan.endIndex + 1);
+  const expected = buildArchiveManifest(SESSION, range);
+  const location = archiveStorageLocation(USER_ROOT, SESSION, expected.archiveId);
+
+  // 读到“不存在”之后、写入之前，另一进程提交了同一字节。
+  const original = transport.readManifestForTest ?? null;
+  let raced = false;
+  const realStat = transport.statUri.bind(transport);
+  transport.statUri = async (uri) => {
+    const status = await realStat(uri);
+    if (uri === location.manifestUri && !raced) {
+      raced = true;
+      transport.directories.add(location.shardRoot);
+      transport.files.set(uri, archiveManifestBytes(expected));
+      return { ok: true, exists: false, isDir: false, status: 200 };
+    }
+    return status;
+  };
+  const result = await manager.commit(SESSION, range);
+  assert.equal(result.archiveId, expected.archiveId);
+  assert.deepEqual(transport.files.get(location.manifestUri), archiveManifestBytes(expected));
+  assert.equal(original, null);
+});
+
 test("路径占用是可重试失败：Archive 保持待提交，已确认事件不受影响", async () => {
   const events = eventsOf();
   const { transport, manager } = await storedManager(events);

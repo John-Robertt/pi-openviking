@@ -63,9 +63,10 @@
   },
 
   "pressureSource": {
-    "mechanism": "verifier 通过真实 SessionManager 向持久 JSONL 追加 pressureEntries 个确定性 custom entry；它们与真实 Pi 轮次一起构成分支事件链。",
+    "mechanism": "verifier 通过真实 SessionManager 向持久 JSONL 追加确定性 entry：先是一个由 assistant toolCall 与 toolResults 组成的真实多事件 step，再是 pressureEntries 个 custom entry；它们与真实 Pi 轮次一起构成分支事件链。多事件 step 使“边界不拆 step”成为可证伪断言。",
     "rationale": "Archive 压力轴度量的是事件进入上下文的重量（每 4 字节约 1 token，沿用 Pi 的保守估算），不是一次请求的累计 usage。开发模型身份的 provider 在 RPC 流与持久 JSONL 中报告的 usage 恒为全零（实测），因此以请求累计值作为压力轴在真实边界上不可用；权重度量同时避免把请求总量（含 system prompt 与工具定义）当作事件范围的重量。发布预算的真实 token 校准属于 Phase 3。",
     "pressureEntries": 3,
+    "toolResults": 2,
     "blobChars": 8000
   },
 
@@ -115,13 +116,15 @@
         "Archive 命名空间内至少 1 个 manifest 对象；对象数等于 /viking 报告的已提交数",
         "每个 manifest 字节可 parseArchiveManifest 自证（复算 archiveId 与规范字节一致）",
         "按 archiveId expand：沿 parentId 回溯 eventCount 步到达 firstEventId，逐事件规范字节与本地投影一致，聚合 contentHash 与 manifest 相等",
-        "每个 Archive 的末事件所属 step 不延续到分支中的下一事件（边界不拆 step）",
-        "各 Archive 范围在分支事件序列上连续且互不重叠"
+        "分支中至少存在一个跨事件 step（否则边界断言恒真）；每个 Archive 的末事件所属 step 不延续到分支中的下一事件",
+        "保留的 raw tail 压力不低于 archive.rawTailTokenBudget",
+        "各 Archive 范围在分支事件序列上严格连续：相邻 Archive 首尾相接，不重叠也不遗漏事件"
       ],
       "falsification": [
         "manifest 无法自证、expand 链断裂或聚合 hash 不符",
         "Archive 边界拆开一个 assistant/tool step",
-        "命名空间内出现非 manifest 对象或重复逻辑对象"
+        "Archive 命名空间的普通 ls 返回任何对象（隐藏文件泄露）",
+        "从来源重算出的某个 archiveId 在远端缺失或字节不符"
       ]
     },
     {
@@ -154,7 +157,7 @@
       "summary": "受管服务重启后的幂等：run A 形成 Archive，dev down/up 后 run B 继续同一会话，既有 manifest 字节不变、archiveId 不变，新 Archive 只做追加。",
       "steps": [
         "run A：prompt P1 → /viking sync → 退出；verifier 注入压力 entry 后由 run 内同步形成 Archive，快照全部 manifest URI 与字节",
-        "verifier：POST /api/v1/system/wait 让服务排空异步语义刷新，使重启时间不受无关积压支配",
+        "verifier：POST /api/v1/system/wait 有界地排空异步语义刷新（尽力而为，不作为断言）",
         "node scripts/dev.mjs down（核对服务确实停止）",
         "node scripts/dev.mjs up（等待 /health 就绪）",
         "run B：prompt P2 → /viking sync → /viking → 退出"
@@ -216,7 +219,7 @@
     "syncNotifyMs": 90000,
     "devUpMs": 180000,
     "cleanupSettleMs": 60000,
-    "quiesceSeconds": 300,
+    "quiesceSeconds": 60,
     "minArchivesPerSession": 1,
     "baseline": {
       "measuredAt": "2026-08-19",
@@ -230,14 +233,16 @@
         { "id": "S7", "observed": "语义刷新期间 DELETE 返回 path_busy，重试 3 次内成功，最终 stat 404" },
         { "id": "S8", "observed": "并发同 tree 写入：409 CONFLICT / conflict_type=path_busy / retryable=true" }
       ],
+      "gateWallMs": 150886,
       "runs": [
-        { "scenario": "w1 压力注入前后两次真实 Pi 运行", "runWallMs": [1106, 1107], "archives": 3, "exitCode": 0, "extensionErrors": 0 },
-        { "scenario": "w2 残留注入与后续会话修复", "runWallMs": [1351, 2156, 14461], "archives": 3, "exitCode": 0, "extensionErrors": 0 },
-        { "scenario": "w3 受管重启前后", "runWallMs": [5891, 1072, 1170], "archives": 3, "exitCode": 0, "extensionErrors": 0 },
-        { "scenario": "w4 自证冲突注入与后续会话", "runWallMs": [1602, 706, 14042], "archives": 3, "exitCode": 0, "extensionErrors": 0 }
+        { "scenario": "w1 压力注入前后两次真实 Pi 运行", "runWallMs": [2327, 1154], "archives": 4, "multiEventSteps": 1, "rawTailRetained": 2213, "exitCode": 0, "extensionErrors": 0 },
+        { "scenario": "w2 残留注入与后续会话修复", "runWallMs": [1933, 645, 1096], "archives": 4, "multiEventSteps": 1, "rawTailRetained": 2213, "exitCode": 0, "extensionErrors": 0 },
+        { "scenario": "w3 受管重启前后", "runWallMs": [1643, 664, 974], "archives": 4, "multiEventSteps": 1, "rawTailRetained": 1826, "exitCode": 0, "extensionErrors": 0 },
+        { "scenario": "w4 自证冲突注入与后续会话", "runWallMs": [1435, 623, 789], "archives": 4, "exitCode": 0, "extensionErrors": 0 }
       ],
       "thresholdRationale": "数值阈值取基线实测最大值的约 8 倍并取整，只作为失控保护；全部正确性断言为确定性等值/集合比较，不依赖阈值。minArchivesPerSession=1 只保证机制被真实触发，具体条数由分支事件权重决定，不作为断言。quiesceSeconds 只约束受管重启前的排空等待，不参与任何正确性判定。",
-      "flakinessObserved": "未先排空即执行受管重启时，dev up 被 spawnSync 超时终止（实测一次 972s 的运行中 dev-up status=null），断言退化为环境噪声；加入 system/wait 后消除。"
+      "flakinessObserved": "未先排空即执行受管重启时，dev up 被 spawnSync 超时终止（实测一次 972s 的运行中 dev-up status=null），断言退化为环境噪声；重启前有界排空后消除。",
+      "environmentNote": "服务端队列可能因既往强制终止留下 status=processing 且不再完成的条目（实测 9 条），此时 /api/v1/system/wait 必然超时。这属于 `.dev/` 可重建运行态的问题：重建数据目录即恢复，gate 不把它判为失败。"
     }
   }
 }

@@ -3,6 +3,11 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import test from "node:test";
 
 import { SyncManager } from "../sync.ts";
+import { buildArchiveManifest, planArchives } from "../shared/archive.mjs";
+import { archiveStorageLocation } from "../shared/archive-store.mjs";
+import { recordedEventStorageLocation } from "../shared/recorded-event-adapter.mjs";
+import { projectPiEntries } from "../shared/recorded-event.mjs";
+import { ARCHIVE_USER_ROOT, MemoryContentTransport, archiveEntryChain } from "./fixtures/archive-fixtures.mjs";
 import { buildPhase0LongTrace } from "./fixtures/phase0-long-trace.mjs";
 
 class MemoryEventStore {
@@ -246,7 +251,7 @@ test("Content API capability 不匹配时保持待重放并进入可诊断状态
     conflictStore.failNext = true;
     conflictStore.failureError = Object.assign(
       new Error("RecordedEvent bytes conflict with an existing OpenViking object"),
-      { name: "RecordedEventConflictError", uri: "viking://user/dev--pi-x/resources/.pi-openviking/recorded-events/v1/ab/cd/.evt_x.json" },
+      { name: "ContentConflictError", uri: "viking://user/dev--pi-x/resources/.pi-openviking/recorded-events/v1/ab/cd/.evt_x.json" },
     );
     const conflictSync = manager(conflictStore, `${root}/conflict.json`);
     await conflictSync.ensureSession(`${trace.sessionId}-conflict`);
@@ -280,4 +285,132 @@ test("未配置用户时把解析空间同时绑定到 URI、header 和 ACK targ
   await sync.ensureSession("resolved-session");
   assert.equal(adapterRoot, "viking://user/resolved-user");
   assert.equal(resolvingClient.recordedEventTarget.user, "resolved-user");
+});
+
+
+// --- sync → Archive 接线 -----------------------------------------------------
+//
+// 这里不注入 adapter：让 SyncManager 构造真实的 RecordedEventAdapter 与 ArchiveManager，
+// 由内存 Content 边界承担传输，从而覆盖整条接线而不是它的替身。
+
+const ARCHIVE_BUDGETS = { chunkTokenBudget: 1000, rawTailTokenBudget: 1000 };
+
+function contentClient(transport) {
+  return {
+    connected: true,
+    userRoot: ARCHIVE_USER_ROOT,
+    cfg: { archive: ARCHIVE_BUDGETS },
+    resolveUserSpace: async () => "test",
+    statUri: (uri) => transport.statUri(uri),
+    mkdirUri: (uri) => transport.mkdirUri(uri),
+    batchWrite: (request) => transport.batchWrite(request),
+    downloadBytes: (uri) => transport.downloadBytes(uri),
+  };
+}
+
+/** 共同前缀 A→B，其后分叉出 main 与 sibling 两条链。 */
+function forkedTree(sessionId) {
+  const shape = Array.from({ length: 5 }, () => ({ role: "assistant", chars: 4000 }));
+  const base = archiveEntryChain(shape);
+  const main = base.map((entry, index) => (index < 2 ? entry : {
+    ...entry, id: `m-${entry.id}`, parentId: index === 2 ? base[1].id : `m-${base[index - 1].id}`,
+  }));
+  const sibling = base.slice(2).map((entry, index) => ({
+    ...entry, id: `s-${entry.id}`, parentId: index === 0 ? base[1].id : `s-${base[index + 1].id}`,
+  }));
+  return { main, sibling, tree: [...main, ...sibling] };
+}
+
+function archivedIds(sessionId, branch, transport) {
+  const events = projectPiEntries(sessionId, branch);
+  return planArchives(events, ARCHIVE_BUDGETS)
+    .map((plan) => buildArchiveManifest(sessionId, events.slice(plan.startIndex, plan.endIndex + 1)).archiveId)
+    .filter((id) => transport.files.has(archiveStorageLocation(ARCHIVE_USER_ROOT, sessionId, id).manifestUri));
+}
+
+test("进程内来源的 Archive 只覆盖当前 leaf 的祖先链，不收录 sibling 分支", async () => {
+  const sessionId = "in-memory-fork";
+  const { main, sibling, tree } = forkedTree(sessionId);
+  const transport = new MemoryContentTransport();
+  const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => null });
+  await sync.ensureSession(sessionId);
+
+  const result = await sync.syncSession({
+    isPersisted: () => false,
+    getEntries: () => tree,
+    getBranch: () => main,
+  });
+  assert.equal(result.allDelivered, true, result.failure ?? "");
+  assert.equal(sync.status.archive.lastFailure, null, "整棵树被当作分支时会产生不连续错误");
+
+  const onMain = archivedIds(sessionId, main, transport);
+  assert.ok(onMain.length > 0);
+  assert.equal(sync.status.archive.committed, onMain.length);
+  assert.equal(sync.status.archive.pending, 0);
+  // sibling 上独有的事件不得出现在任何已提交 Archive 的范围内。
+  const siblingOnly = new Set(projectPiEntries(sessionId, [...main.slice(0, 2), ...sibling])
+    .filter((event) => event.source.entryId.startsWith("s-")).map((event) => event.eventId));
+  for (const id of onMain) {
+    const manifest = JSON.parse(transport.files.get(archiveStorageLocation(ARCHIVE_USER_ROOT, sessionId, id).manifestUri).toString("utf8"));
+    assert.equal(siblingOnly.has(manifest.firstEventId) || siblingOnly.has(manifest.lastEventId), false);
+  }
+});
+
+test("持久 JSONL 切换到较短 sibling leaf 后，Archive 描述新分支且复用共同前缀身份", async () => {
+  const sessionId = "jsonl-fork";
+  const { main, sibling, tree } = forkedTree(sessionId);
+  const transport = new MemoryContentTransport();
+  const root = "test/.artifacts/sync-manager-archive-fork";
+  await rm(root, { recursive: true, force: true });
+  await mkdir(root, { recursive: true });
+  try {
+    const file = `${root}/session.jsonl`;
+    await writeFile(file, [
+      JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-08-20T00:00:00.000Z", cwd: "/w" }),
+      ...tree.map((entry) => JSON.stringify(entry)),
+      "",
+    ].join("\n"));
+    const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => `${root}/ack.json` });
+    await sync.ensureSession(sessionId);
+
+    const onMainLeaf = { isPersisted: () => true, getSessionFile: () => file, getLeafId: () => main.at(-1).id };
+    assert.equal((await sync.syncSession(onMainLeaf)).allDelivered, true);
+    const mainIds = archivedIds(sessionId, main, transport);
+    assert.equal(sync.status.archive.committed, mainIds.length);
+
+    const onSiblingLeaf = { isPersisted: () => true, getSessionFile: () => file, getLeafId: () => sibling.at(-1).id };
+    assert.equal((await sync.syncSession(onSiblingLeaf)).allDelivered, true);
+    const siblingBranch = [...main.slice(0, 2), ...sibling];
+    const siblingIds = archivedIds(sessionId, siblingBranch, transport);
+    assert.equal(sync.status.archive.committed, siblingIds.length, "计数必须描述当前分支");
+    assert.equal(sync.status.archive.lastFailure, null);
+    // 共同前缀上的 Archive 身份不变，因此只有分叉之后的部分是新对象。
+    assert.ok(siblingIds.some((id) => mainIds.includes(id)), "共同前缀的 archiveId 应当复用");
+    assert.ok(siblingIds.some((id) => !mainIds.includes(id)), "分叉之后应当产生新 Archive");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Archive 失败不阻断事件同步与 ACK 推进", async () => {
+  const sessionId = "archive-failure-isolated";
+  const { main } = forkedTree(sessionId);
+  const transport = new MemoryContentTransport();
+  const client = contentClient(transport);
+  // Archive 命名空间不可达；事件命名空间照常工作。
+  client.mkdirUri = async (uri) => (uri.includes("/archives/") ? { ok: false, status: 503 } : transport.mkdirUri(uri));
+  const sync = new SyncManager(client, { ackPathForSession: () => null });
+  await sync.ensureSession(sessionId);
+
+  const result = await sync.syncSession({ isPersisted: () => false, getEntries: () => main, getBranch: () => main });
+  assert.equal(result.allDelivered, true);
+  assert.equal(result.failure, null);
+  assert.equal(sync.status.pendingEntries, 0);
+  assert.equal(sync.status.acknowledgedLeaves.length, 1);
+  assert.ok(sync.status.archive.lastFailure, "Archive 失败必须可诊断");
+  assert.equal(sync.status.archive.committed, 0);
+  const events = projectPiEntries(sessionId, main);
+  for (const event of events) {
+    assert.ok(transport.files.has(recordedEventStorageLocation(ARCHIVE_USER_ROOT, sessionId, event.eventId).directUri));
+  }
 });

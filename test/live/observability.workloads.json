@@ -23,7 +23,7 @@
     },
     "registry": {
       "schemaVersion": 1,
-      "sha256": "04f5023ca8911e7d44ca40c65137fd06d76d06a26f210519b46b165332a55b28"
+      "sha256": "8643268ab335b532334a30dc96f1db596719d6598728e426d55a7f0352b2b98d"
     },
     "extensionLoadOrder": ["index.ts"]
   },

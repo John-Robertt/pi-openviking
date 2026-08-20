@@ -232,7 +232,8 @@ test("Archive 提交与失败由同一责任模块解释，只记录分支、计
     contentHash: `sha256:${"c".repeat(64)}`,
   }));
   const failed = await conflicting.formArchives(sessionId, events);
-  assert.equal(failed.committed, 0);
+  // 冲突只停下它自己的那一个 Archive，其余独立 Archive 照常提交。
+  assert.equal(failed.pending, 1);
   manager.observeFinalState();
   await observation.finish();
 
@@ -248,7 +249,7 @@ test("Archive 提交与失败由同一责任模块解释，只记录分支、计
   const failure = records.find((record) => record.stage === "archive_failure");
   assert.equal(failure.data.errorCode, "manifest_integrity");
   assert.equal(failure.data.errorClass, "integrity");
-  assert.equal(failure.data.branch, "pending_retry");
+  assert.equal(failure.data.branch, "skip_archive");
 });
 
 test("recall 只记录来源、数量与注入结果，不记录 query、内容或 URI", async () => {

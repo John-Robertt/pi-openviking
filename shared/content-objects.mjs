@@ -151,7 +151,7 @@ export async function ensureDirectoryChain(transport, resourceRoot, directoryUri
  * `precondition` 缺省为 `create_if_absent`；调用方通过对象上的 `precondition`
  * 表达自己的收录规则。返回合并后的结果分组。
  */
-export async function writeContentObjects(transport, rootUri, objects) {
+export async function writeContentObjects(transport, rootUri, objects, onBatchAccepted) {
   const created = new Set();
   const updated = new Set();
   const unchanged = new Set();
@@ -166,6 +166,8 @@ export async function writeContentObjects(transport, rootUri, objects) {
       wait: false,
     });
     const result = acceptBatchResult(response, rootUri, batch.map((object) => object.uri));
+    // 调用方的收录规则在每批之后立即生效：违约后继续写入后续批次会削弱 fail-fast。
+    onBatchAccepted?.(result);
     for (const uri of result.created) created.add(uri);
     for (const uri of result.updated) updated.add(uri);
     for (const uri of result.unchanged) unchanged.add(uri);

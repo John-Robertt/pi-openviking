@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -257,4 +258,61 @@ test("8 MiB + 1 byte 事件只在 chunks 回读验证和 commit marker 后确认
   });
   assert.equal(transport.files.has(location.commitUri), true);
   assert.equal(transport.files.has(location.directUri), false);
+});
+
+
+test("readEvent 回读 direct 与 chunked 表示，并复算到规范字节", async () => {
+  const sessionId = "read-back";
+  const small = generatedEvent(sessionId, 0, "small");
+  const large = eventWithByteLength(sessionId, 1, OPENVIKING_MAX_FILE_BYTES + 4096);
+  const transport = new MemoryContentTransport();
+  const writer = adapter(transport);
+  await writer.writeEvents(sessionId, [small, large]);
+
+  for (const event of [small, large]) {
+    const readBack = await writer.readEvent(sessionId, event.eventId);
+    assert.deepEqual(readBack.bytes, recordedEventBytes(event));
+    assert.equal(readBack.event.eventId, event.eventId);
+  }
+  await assert.rejects(
+    () => writer.readEvent(sessionId, generatedEvent(sessionId, 9, "absent").eventId),
+    ContentWriteError,
+  );
+});
+
+test("chunked 读路径拒绝残留 marker、越位 chunk 与双表示", async () => {
+  const sessionId = "read-back-integrity";
+  const event = eventWithByteLength(sessionId, 0, OPENVIKING_MAX_FILE_BYTES + 4096);
+  const location = recordedEventStorageLocation("viking://user/test", sessionId, event.eventId);
+
+  const withStore = async (mutate) => {
+    const transport = new MemoryContentTransport();
+    const writer = adapter(transport);
+    await writer.writeEvents(sessionId, [event]);
+    mutate(transport);
+    return writer;
+  };
+
+  // 崩溃残留的 commit marker：必须是本模块的域错误，不是裸 SyntaxError。
+  let writer = await withStore((t) => t.files.set(location.commitUri, Buffer.alloc(0)));
+  await assert.rejects(() => writer.readEvent(sessionId, event.eventId), ContentConflictError);
+
+  // claim 指向命名空间外的 chunk：位置只能由 event ID 推导，不采信 claim。
+  writer = await withStore((t) => {
+    const claim = JSON.parse(t.files.get(location.claimUri).toString("utf8"));
+    const stray = "viking://user/test/resources/elsewhere/stray.bin";
+    t.files.set(stray, Buffer.from("stray"));
+    claim.chunks[0] = { ...claim.chunks[0], uri: stray };
+    const bytes = Buffer.from(JSON.stringify(claim));
+    t.files.set(location.claimUri, bytes);
+    t.files.set(location.commitUri, Buffer.from(JSON.stringify({
+      schemaVersion: 1, type: "recorded-event-commit", eventId: event.eventId,
+      claimHash: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+    })));
+  });
+  await assert.rejects(() => writer.readEvent(sessionId, event.eventId), ContentConflictError);
+
+  // direct 与 chunked 同时存在是完整性冲突。
+  writer = await withStore((t) => t.files.set(location.directUri, recordedEventBytes(event)));
+  await assert.rejects(() => writer.readEvent(sessionId, event.eventId), ContentConflictError);
 });

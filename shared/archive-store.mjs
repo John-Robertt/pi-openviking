@@ -98,36 +98,42 @@ export class ArchiveManager {
         ),
       }));
       planned = plans.length;
+      // lastFailure 描述本轮：本轮出现的任何失败都会重新写入，因此持续存在的冲突会被
+      // 持续报告，而不会被同一轮里其他 Archive 的成功抹掉。
+      this.state.lastFailure = null;
       this.state.committed = plans.filter((plan) => this.confirmed.has(plan.archiveId)).length;
       this.state.pending = planned - this.state.committed;
       this.observe.emit("archive_plan", planned, this.state.pending, events.length);
       for (const plan of plans) {
         if (this.confirmed.has(plan.archiveId)) continue;
-        const result = await this.commit(sessionId, events.slice(plan.startIndex, plan.endIndex + 1));
-        this.confirmed.add(result.archiveId);
-        this.state.committed += 1;
-        this.state.pending = Math.max(0, this.state.pending - 1);
-        this.state.lastArchiveId = result.archiveId;
-        this.state.lastFailure = null;
-        if (result.branch !== "already_committed") created++;
+        try {
+          const result = await this.commit(sessionId, events.slice(plan.startIndex, plan.endIndex + 1));
+          this.confirmed.add(result.archiveId);
+          this.state.committed += 1;
+          this.state.pending = Math.max(0, this.state.pending - 1);
+          this.state.lastArchiveId = result.archiveId;
+          if (result.branch !== "already_committed") created++;
+        } catch (error) {
+          // 各 Archive 是彼此独立的自证对象，范围互不重叠。绑定到某一个 archiveId 的
+          // 完整性冲突只让那一个 Archive 停下；传输类失败对后续必然同样失败，中止本轮。
+          if (!(error instanceof ArchiveIntegrityError)) throw error;
+          this.recordFailure(error, "manifest_integrity", "skip_archive");
+        }
       }
     } catch (error) {
-      // Archive 失败不改变已经持久化的事件和 ACK：状态退回待重试，Pi 主任务继续。
-      this.state.lastFailure = `${error?.name || "Error"}: ${error?.message || String(error)}`;
-      this.observe.emit(
-        "archive_failure",
-        error,
-        error instanceof ArchiveIntegrityError ? "manifest_integrity" : "commit",
-        "abort_operation",
-        "pending_retry",
-        this.state.committed,
-        this.state.pending,
-      );
+      this.recordFailure(error, "commit", "pending_retry");
     }
     if (previous.committed !== this.state.committed || previous.pending !== this.state.pending) {
       this.observe.emit("archive_state", "change", previous, this.state);
     }
     return { planned, created, ...this.status };
+  }
+
+  /** Archive 失败不改变已经持久化的事件和 ACK：只记录处置，Pi 主任务继续。 */
+  recordFailure(error, errorCode, branch) {
+    this.state.lastFailure = `${error?.name || "Error"}: ${error?.message || String(error)}`;
+    this.observe.emit("archive_failure", error, errorCode, "abort_operation", branch,
+      this.state.committed, this.state.pending);
   }
 
   async commit(sessionId, events) {
@@ -166,8 +172,11 @@ export class ArchiveManager {
     const result = await writeContentObjects(this.transport, location.sessionRoot, [
       { uri: location.manifestUri, bytes, precondition },
     ]);
-    if (existing ? result.updated.size !== 1 : result.created.size !== 1) {
-      throw new ArchiveIntegrityError("Archive manifest was not accepted as the expected write", manifest.archiveId);
+    // create_if_absent 返回 unchanged 表示另一进程已写入完全相同的字节；这正是最强的
+    // 接受证明，不是完整性错误。读回自证仍然照常执行。
+    const accepted = existing ? result.updated.size === 1 : result.created.size + result.unchanged.size === 1;
+    if (!accepted) {
+      throw new ContentWriteError(`OpenViking did not accept the Archive manifest write: ${location.manifestUri}`);
     }
 
     const stored = await this.readManifestBytes(location.manifestUri);

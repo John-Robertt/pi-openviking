@@ -61,16 +61,38 @@ const archiveBudgets = (ctx) => ctx.manifest.environment.extensionConfig.content
  * 因此 Archive 仍然只消费真实存在的事件。
  */
 async function seedPressure(ctx, sessionFile) {
-  const { pressureEntries, blobChars } = ctx.manifest.pressureSource;
-  const manager = await SessionManager.open(sessionFile);
-  for (let index = 0; index < pressureEntries; index++) {
-    let blob = "";
-    let digest = createHash("sha256").update(`${ctx.sessionId}/${index}`).digest("base64url");
-    while (blob.length < blobChars) {
-      blob += digest;
+  const { pressureEntries, blobChars, toolResults } = ctx.manifest.pressureSource;
+  const manager = SessionManager.open(sessionFile);
+  const filler = (seed, length) => {
+    let text = "";
+    let digest = createHash("sha256").update(`${ctx.sessionId}/${seed}`).digest("base64url");
+    while (text.length < length) {
+      text += digest;
       digest = createHash("sha256").update(digest).digest("base64url");
     }
-    manager.appendCustomEntry("ov-live-blob", { index, blob: blob.slice(0, blobChars) });
+    return text.slice(0, length);
+  };
+
+  // 先追加一个真实的多事件 step：assistant 的 toolCall 与其后的 toolResult 共享同一
+  // stepId，使“边界不拆 step”成为可证伪断言，而不是恒真的空断言。
+  const callId = `ov-live-call-${ctx.sessionId.slice(0, 8)}`;
+  manager.appendMessage({
+    role: "assistant",
+    content: [
+      { type: "text", text: filler("step-text", blobChars) },
+      { type: "toolCall", id: callId, name: "ov_live_probe", arguments: { seeded: true } },
+    ],
+  });
+  for (let index = 0; index < toolResults; index++) {
+    manager.appendMessage({
+      role: "toolResult",
+      toolCallId: callId,
+      toolName: "ov_live_probe",
+      content: [{ type: "text", text: filler(`step-result-${index}`, blobChars) }],
+    });
+  }
+  for (let index = 0; index < pressureEntries; index++) {
+    manager.appendCustomEntry("ov-live-blob", { index, blob: filler(index, blobChars) });
   }
 }
 const sessionArchiveRoot = (ctx) => archiveSessionRoot(ctx.userRoot, ctx.sessionId);
@@ -196,9 +218,18 @@ async function verifyArchives(log, ctx, archiveIds, branch, label) {
     `${ranges.length} ok`, archiveIds.length > 0 && failures.length === 0, failures.slice(0, 5).join(" | "));
 
   ranges.sort((a, b) => a.startIndex - b.startIndex);
-  const disjoint = ranges.every((range, index) => index === 0 || range.startIndex > ranges[index - 1].endIndex);
-  log.check(w, `${label}.archive-ranges-disjoint`, true, disjoint, disjoint,
-    ranges.map((r) => `${r.startIndex}-${r.endIndex}`).join(","));
+  const contiguous = ranges.every((range, index) => index === 0 || range.startIndex === ranges[index - 1].endIndex + 1);
+  log.check(w, `${label}.archive-ranges-contiguous`, true, contiguous, contiguous,
+    `${ranges.map((r) => `${r.startIndex}-${r.endIndex}`).join(",")}（相邻 Archive 必须连续、不重叠、不遗漏事件）`);
+
+  // step 原子性断言只有在分支确实存在跨事件 step 时才有意义。
+  const stepSizes = new Map();
+  for (const event of branch) {
+    if (typeof event.stepId === "string") stepSizes.set(event.stepId, (stepSizes.get(event.stepId) ?? 0) + 1);
+  }
+  const multiEventSteps = [...stepSizes.values()].filter((size) => size > 1).length;
+  log.check(w, `${label}.multi-event-step-present`, ">=1", multiEventSteps, multiEventSteps >= 1,
+    "分支必须含跨事件 step，否则边界不拆 step 的断言恒真");
 
   // 独立于计划器的结果检查：保留的 raw tail 压力不得低于配置预算。
   const budgets = archiveBudgets(ctx);
@@ -358,14 +389,16 @@ async function w3(log, ctx) {
   log.check(ctx.workloadId, "runA.archives-formed", ">=1", before.archives.size, before.archives.size >= 1);
   recordWrittenObjects(ctx, branchA, [...before.archives.keys()]);
 
-  // 受管重启前先让服务排空异步处理：写入返回后服务端仍在做语义刷新，带着积压重启会
-  // 让启动时间受无关因素支配，把“重启后 Archive 是否稳定”的断言淹没在超时里。
+  // 受管重启前尽力让服务排空异步语义刷新：带着积压重启会让启动时间受无关因素支配。
+  // 这是一个有界的前置条件而不是断言——服务端队列可能因既往崩溃留下无法完成的条目，
+  // 那属于 `.dev/` 运行态问题，不应把“重启后 Archive 是否稳定”的结论改判为失败。
+  const quiesceMs = ctx.manifest.thresholds.quiesceSeconds * 1000;
   const quiesced = await ctx.cleanupClient.fetchJSON(
     openVikingApiPath("/system/wait"),
     { method: "POST", body: JSON.stringify({ timeout: ctx.manifest.thresholds.quiesceSeconds }) },
-    ctx.manifest.thresholds.quiesceSeconds * 1000 + 30000,
+    quiesceMs + 30000,
   );
-  log.check(ctx.workloadId, "service-quiesced", true, quiesced.ok, quiesced.ok);
+  process.stderr.write(`  · [${ctx.workloadId}] service-quiesced: ${quiesced.ok ? "drained" : "backlog remains"}\n`);
 
   // 服务停机期间失败也必须把服务交还给后续 workload 与清理。
   try {

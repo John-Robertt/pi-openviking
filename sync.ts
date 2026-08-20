@@ -3,10 +3,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { OVClient } from "./client.js";
+import type { ArchiveManifestV1 } from "./shared/archive.mjs";
 import { ArchiveManager } from "./shared/archive-store.mjs";
 import { parsePiSessionJsonl } from "./shared/pi-session-source.mjs";
 import { observation, type Observation } from "./shared/observe.mjs";
 import { RecordedEventAdapter } from "./shared/recorded-event-adapter.mjs";
+import type { PiRecordedEventV1 } from "./shared/recorded-event.mjs";
 import { projectPiEntries } from "./shared/recorded-event.mjs";
 import { deriveHarnessSessionId } from "./shared/session-model.mjs";
 import {
@@ -105,7 +107,7 @@ export class SyncManager {
    * Archive 位置由当前 Pi session 推导，因此调用方无法寻址其他会话的 Archive——
    * 会话边界来自命名空间本身，不依赖调用方传入的标识。
    */
-  async expandArchive(archiveId: string): Promise<{ manifest: any; events: any[] }> {
+  async expandArchive(archiveId: string): Promise<{ manifest: ArchiveManifestV1; events: PiRecordedEventV1[] }> {
     if (!this.archives || !this.piSessionId) throw new Error("archive expansion is not initialized");
     return this.archives.expand(this.piSessionId, archiveId);
   }
@@ -204,9 +206,15 @@ export class SyncManager {
       if (typeof entry?.id === "string") this.knownParents.set(entry.id, entry.parentId ?? null);
     }
     this.observe.emit("sync_source", "in_memory", Array.isArray(entries) ? entries.length : 0);
-    const observed = Array.isArray(entries) ? entries : [];
-    // 进程内来源只提供已观察到的一条链，没有 sibling branch 事实可分。
-    return { entries: observed, branch: observed, parentById: this.knownParents, source: "in-memory" };
+    // `getEntries()` 是整棵树，同步需要它；Archive 需要的是当前 leaf 的祖先链，只能由
+    // `getBranch()` 给出。两者混用会让 Archive 收录到已放弃分支上的事件。
+    const branch = typeof sessionManager?.getBranch === "function" ? sessionManager.getBranch() : [];
+    return {
+      entries: Array.isArray(entries) ? entries : [],
+      branch: Array.isArray(branch) ? branch : [],
+      parentById: this.knownParents,
+      source: "in-memory",
+    };
   }
 
   async observeSession(sessionManager: any, failure = "OpenViking unavailable"): Promise<SyncBranchResult> {

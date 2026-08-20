@@ -261,7 +261,7 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
   archive_failure: stage("shared/archive-store.mjs", "failure", schema({
     ...FAILURE_BASE,
     errorCode: ENUM(["commit", "manifest_integrity"]),
-    branch: ENUM(["pending_retry"]),
+    branch: ENUM(["pending_retry", "skip_archive"]),
     committed: INTEGER(),
     pending: INTEGER(),
   }, FAILURE_OPTIONAL)),
