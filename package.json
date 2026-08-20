@@ -16,8 +16,9 @@
   "scripts": {
     "test": "node --test 'test/*.test.mjs'",
     "dev": "node scripts/dev.mjs",
+    "verify:observability:live": "node test/live/observability-live.mjs",
     "verify:phase0:live": "node test/live/phase0-live.mjs",
-    "verify:observability:live": "node test/live/observability-live.mjs"
+    "verify:phase1:live": "node test/live/phase1-live.mjs"
   },
   "pi": {
     "extensions": [

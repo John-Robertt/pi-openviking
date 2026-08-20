@@ -236,6 +236,35 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
     chunked: INTEGER(),
     branch: ENUM(["direct", "chunked", "mixed", "empty"]),
   })),
+  archive_plan: stage("shared/archive-store.mjs", "decision", schema({
+    planned: INTEGER(),
+    pending: INTEGER(),
+    events: INTEGER(),
+    branch: ENUM(["form", "idle"]),
+  })),
+  archive_commit: stage("shared/archive-store.mjs", "decision", schema({
+    branch: ENUM(["already_committed", "created", "repaired_residue"]),
+    eventCount: INTEGER(),
+  })),
+  archive_state: stage("shared/archive-store.mjs", "state", variants("mode", {
+    snapshot: schema({ mode: MODE_SNAPSHOT, current: NULLABLE_HASH, committed: INTEGER(), pending: INTEGER() }),
+    change: schema({
+      mode: MODE_CHANGE,
+      from: NULLABLE_HASH,
+      to: NULLABLE_HASH,
+      fromCommitted: INTEGER(),
+      toCommitted: INTEGER(),
+      fromPending: INTEGER(),
+      toPending: INTEGER(),
+    }),
+  })),
+  archive_failure: stage("shared/archive-store.mjs", "failure", schema({
+    ...FAILURE_BASE,
+    errorCode: ENUM(["commit", "manifest_integrity"]),
+    branch: ENUM(["pending_retry", "skip_archive"]),
+    committed: INTEGER(),
+    pending: INTEGER(),
+  }, FAILURE_OPTIONAL)),
   recall_request: stage("recall.ts", "decision", schema({
     queryChars: INTEGER(),
     branch: ENUM(["cache", "skip_short", "search"]),
@@ -362,6 +391,34 @@ const ENCODERS = Object.freeze({
           : "empty";
     return { direct: directCount, chunked: chunkedCount, branch };
   },
+  archive_plan: (planned, pending, events) => ({
+    planned: safeInteger(planned),
+    pending: safeInteger(pending),
+    events: safeInteger(events),
+    branch: safeInteger(pending) > 0 ? "form" : "idle",
+  }),
+  archive_commit: (branch, eventCount) => ({ branch, eventCount: safeInteger(eventCount) }),
+  archive_state: (mode, from, to) => mode === "snapshot"
+    ? {
+        mode,
+        current: archiveDigest(from?.lastArchiveId),
+        committed: safeInteger(from?.committed),
+        pending: safeInteger(from?.pending),
+      }
+    : {
+        mode,
+        from: archiveDigest(from?.lastArchiveId),
+        to: archiveDigest(to?.lastArchiveId),
+        fromCommitted: safeInteger(from?.committed),
+        toCommitted: safeInteger(to?.committed),
+        fromPending: safeInteger(from?.pending),
+        toPending: safeInteger(to?.pending),
+      },
+  archive_failure: (error, errorCode, disposition, branch, committed, pending) => ({
+    ...failureData(error, errorCode, disposition, branch),
+    committed: safeInteger(committed),
+    pending: safeInteger(pending),
+  }),
   recall_request: (branch, query) => ({ branch, queryChars: safeLength(query) }),
   recall_source: (branch, resultCount) => ({ branch, resultCount: safeInteger(resultCount) }),
   recall_result: (operation, state, value) => ({
@@ -856,6 +913,11 @@ function leafCount(value) {
   return Array.isArray(value?.acknowledgedLeaves) ? value.acknowledgedLeaves.length : 0;
 }
 
+/** `archiveId` 的 digest 已经是协议自身的域分隔 hash，可原样记录。 */
+function archiveDigest(value) {
+  return /^arc_[0-9a-f]{64}$/.test(String(value ?? "")) ? String(value).slice(4) : null;
+}
+
 function failureData(error, errorCode, disposition, branch) {
   const status = Number(error?.status || 0);
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
@@ -874,9 +936,11 @@ function classifyError(error, status) {
   const code = String(error?.code || "").toUpperCase();
   if (name.includes("abort") || code === "ABORT_ERR" || code === "UND_ERR_ABORTED") return "aborted";
   if (name.includes("timeout") || TIMEOUT_ERROR_CODES.has(code)) return "timeout";
-  if (name.includes("conflict") || status === 409) return "integrity";
+  // 服务端用同一个 409 表达路径占用和字节冲突；只有前者可重试，因此先于完整性判定。
+  if (name.includes("busy")) return "http";
+  if (name.includes("conflict") || name.includes("integrity") || status === 409) return "integrity";
   if (status >= 400) return "http";
-  if (name.includes("recordedeventsync")) return "protocol";
+  if (name.includes("contentwrite")) return "protocol";
   if (name.includes("syntax") || name.includes("type")) return "source";
   if (FILESYSTEM_ERROR_CODES.has(code)) return "filesystem";
   if (error) return "transport";

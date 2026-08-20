@@ -1,10 +1,10 @@
 {
   "taskVlm": {
-    "provider": "deepseek",
+    "provider": "opencode-go",
     "model": "deepseek-v4-flash",
-    "apiBase": "https://api.deepseek.com",
+    "apiBase": "https://opencode.ai/zen/go/v1",
     "credentialKind": "api_key",
-    "apiKeyEnv": "DEEPSEEK_API_KEY"
+    "apiKeyEnv": "OPENCODE_API_KEY"
   },
   "embedding": {
     "dense": {

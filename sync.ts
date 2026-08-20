@@ -3,9 +3,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { OVClient } from "./client.js";
+import type { ArchiveManifestV1 } from "./shared/archive.mjs";
+import { ArchiveManager } from "./shared/archive-store.mjs";
 import { parsePiSessionJsonl } from "./shared/pi-session-source.mjs";
 import { observation, type Observation } from "./shared/observe.mjs";
 import { RecordedEventAdapter } from "./shared/recorded-event-adapter.mjs";
+import type { PiRecordedEventV1 } from "./shared/recorded-event.mjs";
 import { projectPiEntries } from "./shared/recorded-event.mjs";
 import { deriveHarnessSessionId } from "./shared/session-model.mjs";
 import {
@@ -24,12 +27,20 @@ export interface SyncBranchResult {
   failure: string | null;
 }
 
+export interface ArchiveStatus {
+  committed: number;
+  lastArchiveId: string | null;
+  pending: number;
+  lastFailure: string | null;
+}
+
 export interface SyncStatus {
   source: "persistent-jsonl" | "in-memory" | "none";
   capability: "unknown" | "ready" | "mismatch";
   acknowledgedLeaves: string[];
   pendingEntries: number;
   lastFailure: string | null;
+  archive: ArchiveStatus;
 }
 
 interface SyncManagerOptions {
@@ -54,6 +65,7 @@ export class SyncManager {
   private ovSessionId: string | null = null;
   private piSessionId: string | null = null;
   private adapter: RecordedEventAdapter | null = null;
+  private archives: ArchiveManager | null = null;
   private ack: SyncAck = { acknowledgedLeaves: [] };
   private ackPath: string | null = null;
   private knownParents = new Map<string, string | null>();
@@ -64,6 +76,7 @@ export class SyncManager {
     acknowledgedLeaves: [],
     pendingEntries: 0,
     lastFailure: null,
+    archive: { committed: 0, lastArchiveId: null, pending: 0, lastFailure: null },
   };
 
   constructor(client: OVClient, options: SyncManagerOptions = {}) {
@@ -73,11 +86,30 @@ export class SyncManager {
   }
 
   get sessionId(): string | null { return this.ovSessionId; }
-  get status(): SyncStatus { return { ...this.syncStatus, acknowledgedLeaves: [...this.syncStatus.acknowledgedLeaves] }; }
+
+  get status(): SyncStatus {
+    return {
+      ...this.syncStatus,
+      acknowledgedLeaves: [...this.syncStatus.acknowledgedLeaves],
+      archive: this.archives ? this.archives.status : { ...this.syncStatus.archive },
+    };
+  }
 
   observeFinalState(): void {
     this.observe.emit("sync_capability", "snapshot", this.syncStatus.capability);
     this.observe.emit("sync_ack", "snapshot", this.ack, null, this.syncStatus.pendingEntries);
+    this.archives?.observeFinalState();
+  }
+
+  /**
+   * 展开本会话的一个 Archive。
+   *
+   * Archive 位置由当前 Pi session 推导，因此调用方无法寻址其他会话的 Archive——
+   * 会话边界来自命名空间本身，不依赖调用方传入的标识。
+   */
+  async expandArchive(archiveId: string): Promise<{ manifest: ArchiveManifestV1; events: PiRecordedEventV1[] }> {
+    if (!this.archives || !this.piSessionId) throw new Error("archive expansion is not initialized");
+    return this.archives.expand(this.piSessionId, archiveId);
   }
 
   async ensureSession(piSessionId: string): Promise<boolean> {
@@ -96,6 +128,12 @@ export class SyncManager {
     this.adapter = this.options.adapterFactory
       ? this.options.adapterFactory(this.client, userRoot)
       : new RecordedEventAdapter(this.client, { userRoot, observation: this.observe });
+    this.archives = new ArchiveManager(this.client, {
+      userRoot,
+      adapter: this.adapter,
+      budgets: this.client.cfg.archive,
+      observation: this.observe,
+    });
 
     this.ackPath = this.options.ackPathForSession
       ? this.options.ackPathForSession(piSessionId)
@@ -144,6 +182,7 @@ export class SyncManager {
 
   private async sessionSource(sessionManager: any): Promise<{
     entries: any[];
+    branch: any[];
     parentById: Map<string, string | null>;
     source: SyncStatus["source"];
   }> {
@@ -155,7 +194,7 @@ export class SyncManager {
         leafId: typeof sessionManager.getLeafId === "function" ? sessionManager.getLeafId() : null,
       });
       this.observe.emit("sync_source", "persistent_jsonl", parsed.entries.length);
-      return { entries: parsed.entries, parentById: parsed.parentById, source: "persistent-jsonl" };
+      return { entries: parsed.entries, branch: parsed.branch, parentById: parsed.parentById, source: "persistent-jsonl" };
     }
 
     const entries = typeof sessionManager?.getEntries === "function"
@@ -167,8 +206,12 @@ export class SyncManager {
       if (typeof entry?.id === "string") this.knownParents.set(entry.id, entry.parentId ?? null);
     }
     this.observe.emit("sync_source", "in_memory", Array.isArray(entries) ? entries.length : 0);
+    // `getEntries()` 是整棵树，同步需要它；Archive 需要的是当前 leaf 的祖先链，只能由
+    // `getBranch()` 给出。两者混用会让 Archive 收录到已放弃分支上的事件。
+    const branch = typeof sessionManager?.getBranch === "function" ? sessionManager.getBranch() : [];
     return {
       entries: Array.isArray(entries) ? entries : [],
+      branch: Array.isArray(branch) ? branch : [],
       parentById: this.knownParents,
       source: "in-memory",
     };
@@ -185,8 +228,8 @@ export class SyncManager {
       const pending = entries.filter((entry) => !isEntryAcknowledged(this.ack, entry.id, parentById)).length;
       const previousPending = this.syncStatus.pendingEntries;
       this.syncStatus = {
+        ...this.syncStatus,
         source,
-        capability: this.syncStatus.capability,
         acknowledgedLeaves: [...this.ack.acknowledgedLeaves],
         pendingEntries: pending,
         lastFailure: pending > 0 ? failure : null,
@@ -208,8 +251,8 @@ export class SyncManager {
   private async syncSessionNow(sessionManager: any): Promise<SyncBranchResult> {
     if (!this.piSessionId || !this.adapter) return this.uninitializedResult();
     try {
-      const { entries, parentById, source } = await this.sessionSource(sessionManager);
-      return await this.syncSource(entries, parentById, source);
+      const { entries, branch, parentById, source } = await this.sessionSource(sessionManager);
+      return await this.syncSource(entries, branch, parentById, source);
     } catch (error: any) {
       this.observe.emit("sync_failure", error, "source", "abort_operation", "pending_replay", 0, this.syncStatus.pendingEntries);
       return this.failResult(error?.message || String(error));
@@ -218,6 +261,7 @@ export class SyncManager {
 
   private async syncSource(
     entries: any[],
+    branch: any[],
     parentById: Map<string, string | null>,
     source: SyncStatus["source"],
   ): Promise<SyncBranchResult> {
@@ -239,8 +283,8 @@ export class SyncManager {
     const pendingEntries = entries.filter((entry) => !isEntryAcknowledged(this.ack, entry.id, parentById));
     const previousPending = this.syncStatus.pendingEntries;
     this.syncStatus = {
+      ...this.syncStatus,
       source,
-      capability: this.syncStatus.capability,
       acknowledgedLeaves: [...this.ack.acknowledgedLeaves],
       pendingEntries: pendingEntries.length,
       lastFailure: null,
@@ -290,12 +334,39 @@ export class SyncManager {
           added,
           this.syncStatus.pendingEntries,
         );
+        // 已确认前缀的 Archive 不依赖后面这个 entry：某个事件的永久完整性冲突不应让
+        // 整个会话此后不再产生任何 Archive。
+        await this.formArchives(branch, parentById, events);
         return { added, allDelivered: false, pending: this.syncStatus.pendingEntries, failure };
       }
     }
 
+    await this.formArchives(branch, parentById, events);
     this.publishStatus();
     return { added, allDelivered: true, pending: 0, failure: null };
+  }
+
+  /**
+   * 在当前分支已确认的事件前缀上形成 Archive。
+   *
+   * 只取分支而不是整棵树：Archive 表达任务模型走过的一条上下文，跨 sibling branch 的
+   * 范围没有对应的上下文。Archive 失败不改变 ACK，也不使同步结果失败——事件已经是
+   * 事实源，Archive 在下一次同步重试。
+   */
+  private async formArchives(
+    branch: any[],
+    parentById: Map<string, string | null>,
+    events: any[],
+  ): Promise<void> {
+    if (!this.archives || !this.piSessionId || branch.length === 0) return;
+    const acknowledged = new Set<string>();
+    for (const entry of branch) {
+      if (!isEntryAcknowledged(this.ack, entry.id, parentById)) break;
+      acknowledged.add(entry.id);
+    }
+    if (acknowledged.size === 0) return;
+    const branchEvents = events.filter((event) => acknowledged.has(event.source.entryId));
+    await this.archives.formArchives(this.piSessionId, branchEvents);
   }
 
   private setCapability(next: SyncStatus["capability"]): void {

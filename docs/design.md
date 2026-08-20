@@ -54,17 +54,37 @@
 - 生成 RFC 8785 规范 JSON 和 UTF-8 字节；
 - 拒绝非有限数字、孤立 surrogate、稀疏数组、循环和非 JSON 类型。
 
+### `shared/content-objects.mjs`
+
+- 维护 OpenViking Content API 的请求限制、批次拆分与目录链准备；
+- 严格核对 `batch-write` 响应形状，并返回按 created/updated/unchanged 分组的 URI；
+- 把 409 区分为不可覆盖的字节冲突与可重试的路径占用；
+- 不拥有任何收录规则：是否允许 `updated`、用哪种 precondition 由调用方决定。
+
 ### `shared/recorded-event-adapter.mjs`
 
 - 将规范事件映射到绑定用户下的 dot-prefixed event files；
-- 幂等创建目录；
-- 按 Content API 限制拆分 `batch-write`；
-- 核对每个响应 URI；
-- 处理 direct 或 claim/chunks/commit 表示；
+- 处理 direct 或 claim/chunks/commit 表示，并按 event ID 回读校验到规范字节；
 - 独立维护存储身份、claim/commit schema 与路径版本；
+- 以“任何 `updated` 都是既有事件被改写”表达事件命名空间的 append-only 约束；
 - 将冲突、transport failure 和 capability mismatch 返回同步层。
 
-adapter 不读取 Pi session、不持久化 ACK，也不创建 Archive。
+adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
+
+### `shared/archive.mjs`
+
+- 生成 `archiveId`、聚合 `contentHash` 与 manifest 规范字节；
+- 从字节复原 manifest 并要求其自证（复算 `archiveId`、拒绝未知字段与非规范编码）；
+- 按事件自身的上下文权重确定 Archive 边界，并把候选边界退回 step 起点之前；
+- 不接触传输，也不持久化任何状态。
+
+### `shared/archive-store.mjs`
+
+- 维护 Archive manifest 的存储位置与身份版本；
+- 提交前逐项回读被引用事件并复算聚合 hash，作为 Archive 的接受证明；
+- 以单个 manifest 对象为唯一提交点，按残留/已提交/冲突三种情形决定写入方式；
+- 按 `archiveId` 确定性读取，并沿事件 `parentId` 链 materialize 与重新验证；
+- 发布 Archive 提交状态；失败只转为待重试，不改变事件与 ACK。
 
 ### `shared/sync-ack.mjs`
 
@@ -85,9 +105,11 @@ ACK 文件不包含 transcript 或事件 payload。丢失 ACK 只会触发幂等
 3. 投影该 entry 的全部事件；
 4. 调用 Content adapter；
 5. 只有全部事件确认后推进 entry ACK；
-6. 发布 source、capability、pending 和 failure 状态。
+6. 在当前分支已确认的事件前缀上驱动 Archive 形成；
+7. 发布 source、capability、pending、Archive 和 failure 状态。
 
-它只持久化 `SyncAck`，不持久化待发送事件副本。
+它只持久化 `SyncAck`，不持久化待发送事件副本；Archive 由来源事件重算，同样没有第二份本地状态。
+Archive 只取当前分支：跨 sibling branch 的范围没有对应的上下文。
 
 ### `shared/openviking-api.mjs`
 
@@ -119,11 +141,14 @@ pi-session-source
 recorded-event
         │ canonical RecordedEventV1
         ▼
-recorded-event-adapter ───► OpenViking Content API
+recorded-event-adapter ───► content-objects ───► OpenViking Content API
         │ accepted event IDs
         ▼
 sync-ack
         │ acknowledged entry leaves
+        ▼
+archive ──► archive-store ───► content-objects ───► OpenViking Content API
+        │ committed archive manifests
         ▼
 /viking diagnostics
 ```
@@ -146,7 +171,9 @@ sync-ack
 - `test/generated-session-invariants.test.mjs`：版本化 seed、源 entry 重建、树/上下文/ACK 不变量和长工具循环；
 - `test/pi-session-runtime.test.mjs`：真实 Pi `SessionManager` 的持久 JSONL、分支、重启和投影；
 - `test/session-source-ack.test.mjs`：JSONL golden 分支恢复和树形 ACK；
+- `test/content-objects.test.mjs`：协议限制、批次拆分、目录链与 409 分类；
 - `test/recorded-event-adapter.test.mjs`：127/128/129 项、8/16 MiB、冲突和 chunk/commit 边界；
+- `test/archive.test.mjs`：Archive 身份、manifest 自证、边界选择、提交/恢复/冲突与 expand；
 - `test/client-content.test.mjs`：HTTP transport；
 - `test/openviking-api.test.mjs`：版本前缀与相对路径组合；
 - `test/sync-manager.test.mjs`：重启、ACK 丢失、分支和 fail-open；
@@ -157,4 +184,7 @@ sync-ack
 - `test/observation-evidence.test.mjs`、`test/observability-live-verifier.test.mjs`：完整 run 与 manifest 契约；
 - `test/viking-status.test.mjs`：运行诊断。
 
-真实边界由 `npm run verify:observability:live` 覆盖成功 recall/同步、断线、409 冲突、URI 拒绝与持久清理。
+真实边界由 `npm run verify:observability:live` 与 `npm run verify:phase1:live` 覆盖；各 gate 的断言范围见
+[`docs/verification.md`](./verification.md)。`verify:phase0:live` 与 `verify:phase1:live` 共用
+`test/live/live-support.mjs` 的 Pi 驱动、身份核对、ownership、清理与 summary 骨架；
+`test/live/observability-live.mjs` 仍保留自己的同职能实现，尚未收敛到该骨架。

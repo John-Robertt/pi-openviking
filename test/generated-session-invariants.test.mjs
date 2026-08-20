@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  archiveContentHash,
+  archiveManifestBytes,
+  buildArchiveManifest,
+  parseArchiveManifest,
+  planArchives,
+} from "../shared/archive.mjs";
 import { parsePiSessionJsonl } from "../shared/pi-session-source.mjs";
 import { contentHash, projectPiEntries, recordedEventBytes, recordedEventId } from "../shared/recorded-event.mjs";
 import { advanceSyncAck, isAncestorEntry, isEntryAcknowledged } from "../shared/sync-ack.mjs";
@@ -214,5 +221,42 @@ test("生成树的 SyncAck 对确认顺序不敏感并始终保持最小叶集�
         if (left !== right) assert.equal(isAncestorEntry(left, right, parentById), false, `seed=${seed}`);
       }
     }
+  }
+});
+
+test("生成的长工具循环在单个用户轮次内形成连续、原子且可复算的 Archive", () => {
+  const budgets = { chunkTokenBudget: 8, rawTailTokenBudget: 16 };
+  for (const seed of GENERATED_SESSION_SEEDS) {
+    const sample = buildGeneratedToolLoop(seed);
+    const events = projectPiEntries(sample.sessionId, jsonClone(sample.entries));
+    const plans = planArchives(events, budgets);
+    assert.ok(plans.length > 0, `seed=${seed} 未形成 Archive`);
+
+    const identities = new Set();
+    let expectedStart = 0;
+    for (const plan of plans) {
+      assert.equal(plan.startIndex, expectedStart, `seed=${seed} Archive 范围不连续`);
+      assert.ok(plan.endIndex >= plan.startIndex);
+      expectedStart = plan.endIndex + 1;
+
+      const boundary = events[plan.endIndex];
+      const next = events[plan.endIndex + 1];
+      assert.ok(
+        !next || !boundary.stepId || next.stepId !== boundary.stepId,
+        `seed=${seed} Archive 边界拆开了一个 step`,
+      );
+
+      const range = events.slice(plan.startIndex, plan.endIndex + 1);
+      const manifest = buildArchiveManifest(sample.sessionId, range);
+      assert.deepEqual(parseArchiveManifest(archiveManifestBytes(manifest)), manifest, `seed=${seed}`);
+      assert.equal(manifest.contentHash, archiveContentHash(range));
+      assert.equal(identities.has(manifest.archiveId), false, `seed=${seed} 重复 archiveId`);
+      identities.add(manifest.archiveId);
+    }
+    assert.ok(expectedStart <= events.length);
+
+    // 继续生成的事件不移动已有边界：重启后重算得到同一组 Archive。
+    const grown = projectPiEntries(sample.sessionId, jsonClone(buildGeneratedToolLoop(seed, { steps: 96 }).entries));
+    assert.deepEqual(planArchives(grown, budgets).slice(0, plans.length), plans, `seed=${seed} 边界随后续事件漂移`);
   }
 });

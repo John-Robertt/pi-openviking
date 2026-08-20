@@ -19,8 +19,9 @@
 thinking、tool call/result、真实错误和 aborted 状态、未知 part、custom entry 及 Pi compaction。
 扩展不清洗、过滤或截断原始 payload。
 
-当前阶段不创建目标 Archive、checkpoint 或 `ActiveContext`，也不替换 Pi 上下文。Pi 是 compaction
-唯一触发方。
+已确认事件按 `archive` 预算归入 Archive：一段事件与一份 manifest 原子绑定，可按 `archiveId`
+确定性展开回原始事件。当前阶段不创建 checkpoint 或 `ActiveContext`，也不替换 Pi 上下文。Pi 是
+compaction 唯一触发方。
 
 ## 2. 前置条件
 
@@ -121,8 +122,9 @@ npx pi-openviking@latest credentials
 }
 ```
 
-`archive` 和 `takeover` 当前用于固定后续阶段的目标策略；在有效 Archive 和 `ActiveContext` 实现并
-通过验收前，不会触发归档或上下文替换。
+`archive.chunkTokenBudget` 控制每次 Archive 的目标增量，`archive.rawTailTokenBudget` 控制归档后保留
+的最近原始上下文。`takeover` 用于固定后续阶段的目标策略；在 `ActiveContext` 实现并通过验收前，不会
+替换上下文。
 
 ### 受管服务代理
 
@@ -160,11 +162,12 @@ sanitize(baseUser || "default")--pi-sanitize(piSessionId)
 配置用户或服务解析的当前用户。
 
 开启时，`viking_*` 工具把命名空间作为执行边界：读取、删除和浏览只接受绑定根本身或其子路径，
-越界调用被拒绝且不发出请求；搜索范围夹回绑定根，返回结果按同一规则过滤；`viking_archive_expand`
-只展开本会话自己的 OV session。关闭该选项后不施加这一边界。
+越界调用被拒绝且不发出请求；搜索范围夹回绑定根，返回结果按同一规则过滤。`viking_archive_expand`
+的 Archive 位置由当前会话推导，跨会话展开在命名空间层面不可寻址，与该选项无关。关闭该选项后不
+施加读取、删除和浏览的边界。
 
-原始 event files 使用 dot-prefixed 名称，普通 shard 列表不返回这些文件；上层 dot directory 仍可能
-可见。语义处理过滤 dot event files。客户端仅持久化最小 ACK：
+原始 event files 与 Archive manifest 都使用 dot-prefixed 名称，普通 shard 列表不返回这些文件；上层
+dot directory 仍可能可见。语义处理过滤 dot files。客户端仅持久化最小 ACK：
 
 ```text
 ~/.pi/openviking/sync-ack/<target-and-session-hash>.json
@@ -185,7 +188,8 @@ ACK 文件不包含 transcript。删除 ACK 只会使下一次从 Pi JSONL 幂�
 - Content adapter capability：待探测、可用或不兼容；
 - ACK frontier leaves；
 - 待重放 entry；
-- 最近同步失败及 fail-open 状态；
+- Archive 已提交数、待提交数与最近 `archiveId`；
+- 最近同步失败、最近 Archive 失败及 fail-open 状态；
 - 独立观察状态：未启用、就绪或不完整，以及 accepted/dropped 计数。
 
 立即重放：
@@ -206,7 +210,7 @@ ACK 文件不包含 transcript。删除 ACK 只会使下一次从 Pi JSONL 幂�
 | `viking_remember`       | 显式提交一条待抽取记忆             |
 | `viking_forget`         | 删除 URI 或高置信匹配              |
 | `viking_add_resource`   | 导入 HTTP URL                      |
-| `viking_archive_expand` | 展开服务中已有的 session Archive   |
+| `viking_archive_expand` | 按 `archiveId` 展开本会话 Archive  |
 
 原始事件同步不经过这些工具。
 
