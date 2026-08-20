@@ -70,6 +70,9 @@ schema version、run、seq 范围、stage/kind/outcome 计数、accepted/dropped
 引用同一 registry，只增加本阶段 workload 的预期，不复制观察 schema；产品责任变化时更新当前 observability manifest，
 已关闭阶段仍验证其现行产品保证，但不得要求已被替换或删除的观察点。一个入口可以组合多个聚焦脚本，但每个出口只
 引用自己的入口。live verifier 是相应实现的一部分，mock、内存 transport、合成模型输出和人工检查不构成门禁替代品。
+workload 内部允许以确定性脚本输入驱动被测行为（例如由脚本化 provider 固定触发一次工具调用），前提是被测
+行为经过的真实边界——Pi lifecycle、hook 接线、OpenViking 与观察链路——不因此被替换，且驱动方式在 manifest
+中声明。
 
 所有 live verifier 使用同一契约：
 

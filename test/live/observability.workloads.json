@@ -75,6 +75,7 @@
       "id": "disconnect-fail-open",
       "summary": "真实 Pi 使用固定死端口完成 prompt，事件保持待重放且观察完整记录 network_error、未连接状态与 observe 分派。",
       "endpoint": "http://127.0.0.1:9",
+      "remoteOwnership": false,
       "prompt": "请只回复 OK 两个字母，不要调用任何工具。",
       "expectedRecords": [
         { "stage": "pi_lifecycle", "data": { "phase": "end", "hook": "session_shutdown", "outcome": "success" } },
@@ -130,8 +131,9 @@
     },
     {
       "id": "tool-uri-rejection",
-      "summary": "真实 Pi 模型调用内置 read 读取越界 viking:// URI，生产 tool_call hook 必须在工具执行前阻止，并且不向 OpenViking 发出对应 content/read。",
-      "promptTemplate": "必须立即且只调用一次内置 read 工具，path 必须逐字使用 {uri}；不要调用 viking_read 或其他工具。收到工具结果后只回复 DONE。",
+      "summary": "确定性脚本 provider 驱动真实 Pi 以内置 read 逐字调用越界 viking:// URI；生产 tool_call hook 必须在工具执行前阻止，并且不向 OpenViking 发出对应 content/read。",
+      "driver": "scripted-provider",
+      "prompt": "读取那个文件，然后只回复 DONE。",
       "expectedRecords": [
         { "stage": "pi_lifecycle", "data": { "phase": "end", "hook": "session_shutdown", "outcome": "success" } },
         { "stage": "tool_uri_guard", "data": { "tool": "read", "branch": "block" } }
@@ -142,7 +144,7 @@
         "观察 run 完整且不含 URI、prompt、session/user 或工具返回内容"
       ],
       "falsification": [
-        "模型未调用内置 read 或 Pi 未应用 hook block",
+        "脚本输入未触发内置 read 调用或 Pi 未应用 hook block",
         "guard 后发出 OpenViking content/read 或创建越界 namespace",
         "URI、prompt 或工具返回出现在观察 artifact"
       ]
@@ -153,7 +155,7 @@
     "每个观察 artifact 由父进程 fsync/close 后读取；完整性、原始 hash、stage/outcome 计数写入白名单 summary",
     "远端只使用随机 session namespace；写入前必须不存在，marker 逐字节回读；删除前再次核对精确根与 marker",
     "删除后等待 cleanupSettleMs 越过 0.4.15 目录语义物化窗口，全部已写对象必须持续不存在；服务重建的无文件 namespace 骨架仅记录，不伪报为产品数据残留",
-    "passed 删除整个本地 run；failed 删除 observation/session 等 raw artifact，只保留白名单 summary 和 ownership marker",
+    "passed 删除整个本地 run 目录；failed 删除 session JSONL 与 raw provider payload，观察 JSONL 作为字段白名单脱敏诊断与 summary、ownership marker 一并保留",
     "仓库生产运行路径不存在统一观察 sink 之外的第二套观察点（自由文本文件日志、stderr debug、logger transport）"
   ],
   "thresholds": {
@@ -164,17 +166,17 @@
     "cleanupMs": 30000,
     "cleanupSettleMs": 60000,
     "baseline": {
-      "measuredAt": "2026-08-19T04:32:22.783Z",
+      "measuredAt": "2026-08-20T02:51:10.425Z",
       "expected": {
         "disabled": "deterministic baseline 的产品返回值、状态与调用顺序不变，观察依赖调用为 0",
         "enabled": "每个 run 完整、dropped=0，产品成功/ACK/fail-open/权限结果与对应 workload 断言一致"
       },
       "runs": [
-        { "workload": "success-recall-sync", "label": "success", "observedMs": 3434, "observedRecords": 130, "maxMs": 90000, "minRecords": 100, "maxRecords": 512 },
-        { "workload": "disconnect-fail-open", "label": "disconnect", "observedMs": 2463, "observedRecords": 36, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
-        { "workload": "conflict-409", "label": "conflict-prep", "observedMs": 2362, "observedRecords": 36, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
-        { "workload": "conflict-409", "label": "conflict-sync", "observedMs": 1175, "observedRecords": 66, "maxMs": 30000, "minRecords": 30, "maxRecords": 256 },
-        { "workload": "tool-uri-rejection", "label": "tool-uri-live", "observedMs": 4975, "observedRecords": 153, "maxMs": 90000, "minRecords": 20, "maxRecords": 256 }
+        { "workload": "success-recall-sync", "label": "success", "observedMs": 4162, "observedRecords": 134, "maxMs": 90000, "minRecords": 100, "maxRecords": 512 },
+        { "workload": "disconnect-fail-open", "label": "disconnect", "observedMs": 2966, "observedRecords": 37, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
+        { "workload": "conflict-409", "label": "conflict-prep", "observedMs": 3414, "observedRecords": 37, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
+        { "workload": "conflict-409", "label": "conflict-sync", "observedMs": 1167, "observedRecords": 67, "maxMs": 30000, "minRecords": 30, "maxRecords": 256 },
+        { "workload": "tool-uri-rejection", "label": "tool-uri-live", "observedMs": 2130, "observedRecords": 151, "maxMs": 90000, "minRecords": 20, "maxRecords": 256 }
       ]
     }
   }

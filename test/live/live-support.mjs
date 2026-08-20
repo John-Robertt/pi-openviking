@@ -4,6 +4,7 @@ import {
   closeSync,
   existsSync,
   fstatSync,
+  fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -118,18 +119,29 @@ export class PiRunError extends Error {}
 
 /**
  * 一次真实 Pi 进程运行。actions: { prompt } 等待 agent_settled；{ command }（如
- * /viking sync）等待其后的 notify。返回事件流、segment 路径与退出码。
+ * /viking sync）等待其后的 notify。返回事件流、capture 路径与退出码。
+ *
+ * capture: "e2e"（默认）把 FD 3 交给 e2e-probe 写 raw provider payload（segments/）；
+ * "observation" 把 FD 3 交给统一观察 sink 写观察记录（observations/）。
+ * provider 覆盖 manifest 的开发模型身份（如确定性脚本 provider）；覆盖方的身份不带
+ * apiKeyEnv 时不桥接凭证。envStrip/extraEnv 供 loopback provider 等场景调整子进程环境。
  */
-export async function runPi(ctx, { workloadId, turn, endpoint, actions }) {
+export async function runPi(ctx, {
+  workloadId, turn, endpoint, actions,
+  capture = "e2e",
+  provider = null,
+  envStrip = [],
+  extraEnv = {},
+}) {
   if (ctx.verifyLocalMarker && !ctx.verifyLocalMarker()) {
     throw new PiRunError("local ownership marker compromised before Pi run");
   }
   const runDir = ctx.runDir;
-  const segmentPath = join(runDir, "segments", `${workloadId}-${turn}.jsonl`);
-  mkdirSync(dirname(segmentPath), { recursive: true });
-  const segFd = openSync(segmentPath, "wx", 0o600);
-
+  const capturePath = join(runDir, capture === "observation" ? "observations" : "segments", `${workloadId}-${turn}.jsonl`);
+  mkdirSync(dirname(capturePath), { recursive: true });
+  const capFd = openSync(capturePath, "wx", 0o600);
   const ov = ctx.manifest.identities.openviking;
+  const model = provider ?? ctx.profile.taskVlm;
   const args = [
     ctx.piBin,
     "--mode", "rpc",
@@ -137,8 +149,8 @@ export async function runPi(ctx, { workloadId, turn, endpoint, actions }) {
     ...ctx.manifest.identities.extensionLoadOrder.flatMap((rel) => ["-e", join(LIVE_REPO, rel)]),
     "--session-id", ctx.sessionId,
     "--session-dir", join(runDir, "sessions"),
-    "--provider", ctx.profile.taskVlm.provider,
-    "--model", ctx.profile.taskVlm.model,
+    "--provider", model.provider,
+    "--model", model.model,
     "--thinking", "off",
   ];
   const env = buildChildEnv({
@@ -147,15 +159,21 @@ export async function runPi(ctx, { workloadId, turn, endpoint, actions }) {
     OPENVIKING_URL: endpoint,
     OPENVIKING_ACCOUNT: ov.account,
     OPENVIKING_USER: ov.user,
-    [ctx.profile.taskVlm.apiKeyEnv]: ctx.apiKey,
-    OV_E2E_FD: "3",
-    OV_E2E_TURN: String(turn),
+    ...(model.apiKeyEnv ? { [model.apiKeyEnv]: ctx.apiKey } : {}),
   });
+  // 采集 FD 变量只按 capture 设置其一，其余连同 envStrip 一律不传入子进程。
+  for (const key of ["OV_OBSERVE", "OV_OBSERVE_FD", "OV_E2E_FD", "OV_E2E_TURN", ...envStrip]) delete env[key];
+  if (capture === "observation") env.OV_OBSERVE_FD = "3";
+  else {
+    env.OV_E2E_FD = "3";
+    env.OV_E2E_TURN = String(turn);
+  }
+  Object.assign(env, extraEnv);
 
   const child = spawn(process.execPath, args, {
     cwd: join(runDir, "work"),
     env,
-    stdio: ["pipe", "pipe", "pipe", segFd],
+    stdio: ["pipe", "pipe", "pipe", capFd],
   });
 
   const events = [];
@@ -230,13 +248,14 @@ export async function runPi(ctx, { workloadId, turn, endpoint, actions }) {
       exitCode,
       events,
       sessionFile: gs.data?.sessionFile || null,
-      segmentPath,
+      ...(capture === "observation" ? { observationPath: capturePath } : { segmentPath: capturePath }),
       stderrTail,
       actions,
     };
   } finally {
-    closeSync(segFd);
+    // 先终止可能残存的子进程，再由父进程同步并关闭其保留的 artifact FD（docs/verification.md“观察证据”）。
     if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
+    try { fsyncSync(capFd); } finally { closeSync(capFd); }
   }
 }
 
@@ -355,6 +374,8 @@ export async function cleanupRemote(log, ctx, objectUris) {
       log.check(w, "cleanup.marker-recheck", "byte-exact before delete",
         readback.ok ? `${readback.bytes?.length}B` : `HTTP ${readback.status}`, cleanup.markerVerified,
         "删除前复核 marker 必须与写入字节一致，否则拒绝删除");
+    } else if (ctx.workload?.remoteOwnership === false) {
+      // manifest 声明该 workload 不建立远端 ownership（如死端口 fail-open）：无远端资源需清理。
     } else {
       cleanup.residuals.push("ownership never established; namespace left untouched");
     }
@@ -384,7 +405,7 @@ export async function cleanupRemote(log, ctx, objectUris) {
   return cleanup;
 }
 
-export async function preflight(log, ctx) {
+export async function preflight(log, ctx, extra) {
   const g = "preflight";
   const pkg = JSON.parse(readFileSync(join(LIVE_REPO, "package.json"), "utf8"));
   log.check(g, "node-engines", pkg.engines?.node, process.version,
@@ -433,13 +454,18 @@ export async function preflight(log, ctx) {
   for (const rel of ctx.manifest.identities.extensionLoadOrder) {
     log.check(g, `extension-exists:${rel}`, true, existsSync(join(LIVE_REPO, rel)), existsSync(join(LIVE_REPO, rel)));
   }
+  // gate 专属身份核对（如 observability 的 registry hash 与第二观察点检查）。
+  if (extra) await extra(log, ctx);
 }
 
 /**
  * live gate 的统一运行骨架：manifest hash 校验 → 本地/远端 ownership → 逐 workload →
- * 持久删除核验 → summary 与本地清理。各阶段只提供 workload 运行器与对象 URI 收集。
+ * 持久删除核验 → summary 与本地清理。各阶段只提供 workload 运行器与对象 URI 收集；
+ * gate 专属身份核对、workload 全部结束后的全局断言与 summary 附加字段分别经
+ * preflightExtra / afterWorkloads / summaryExtra 接入。
+ * manifest 声明 remoteOwnership=false 的 workload 不建立远端 namespace（如死端口 fail-open）。
  */
-export async function runLiveGate({ gate, manifestPath, manifestHashPath, runners, collectObjectUris }) {
+export async function runLiveGate({ gate, manifestPath, manifestHashPath, runners, collectObjectUris, preflightExtra, afterWorkloads, summaryExtra }) {
   const t0 = Date.now();
   const runId = `${gate}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(4).toString("hex")}`;
   const log = new AssertionLog();
@@ -468,7 +494,7 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
     process.exit(1);
   }
 
-  await preflight(log, ctx);
+  await preflight(log, ctx, preflightExtra);
   if (!derivePassed(log.items)) {
     process.stderr.write("✗ preflight 身份核对未通过，拒绝进入 workloads。\n");
   } else {
@@ -510,7 +536,7 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
       wctx.cleanupClient = clientFor(ov.user);
       try {
         log.check(workload.id, "local-marker", "intact", wctx.verifyLocalMarker(), wctx.verifyLocalMarker());
-        await establishRemoteOwnership(log, wctx);
+        if (workload.remoteOwnership !== false) await establishRemoteOwnership(log, wctx);
         await runner(log, wctx);
       } catch (error) {
         log.fail(workload.id, "workload-exception", error);
@@ -540,6 +566,7 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
         entry.skeletonResurrected = rootStat.ok && rootStat.exists;
       }
     }
+    await afterWorkloads?.(log, ctx);
   }
 
   const passed = derivePassed(log.items);
@@ -567,6 +594,7 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
       local: null,
     },
     passed,
+    ...(summaryExtra ? await summaryExtra(ctx) : {}),
   };
 
   // 本地清理先于最终 summary 输出：删除前逐 segment 重算 hash 与记录值比对（payload
@@ -575,7 +603,7 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
   let localCleanupOk = true;
   try {
     for (const seg of manifest.workloads.flatMap((wl) => (wl.summary?.runs ?? []))) {
-      if (!existsSync(seg.segmentPath)) continue;
+      if (!seg?.segmentPath || !existsSync(seg.segmentPath)) continue;
       const actual = sha256Hex(readFileSync(seg.segmentPath));
       if (`sha256:${actual}` !== seg.segmentSha256) throw new Error(`segment payload mutated after capture: ${seg.segmentPath}`);
     }
