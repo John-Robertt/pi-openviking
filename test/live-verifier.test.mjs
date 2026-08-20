@@ -3,7 +3,7 @@
 // live gate 的正确性由真实运行证明；这里只覆盖不依赖真实边界的部分：
 // manifest 与固定 hash 的一致性（防止 manifest 被改而未重新固定）、manifest 引用
 // 路径存在、纯决策函数（seededString / checkManifestHash / derivePassed /
-// conflictBytesOf / createRpcLineParser / ackFileKey）。
+// conflictBytesOf / createRpcLineParser / ackFileKey / buildLivePiInvocation）。
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -14,6 +14,7 @@ import test from "node:test";
 import { seededString } from "./live/phase0-live.mjs";
 import {
   ackFileKey,
+  buildLivePiInvocation,
   checkManifestHash,
   conflictBytesOf,
   createRpcLineParser,
@@ -66,6 +67,50 @@ test("manifest workload 结构完整：成功标准、证伪条件与阈值决�
     assert.ok(Number.isFinite(manifest.thresholds[key]) && manifest.thresholds[key] > 0, `缺少阈值 ${key}`);
   }
   assert.ok(manifest.thresholds.baseline?.runs?.length >= 1, "缺少 baseline 实测记录");
+});
+
+test("live Pi invocation 按任务模型与 provider override 隔离凭证", () => {
+  const profile = {
+    taskModel: { provider: "task-provider", model: "task-model", apiKeyEnv: "TASK_API_KEY" },
+    vlm: { provider: "vlm-provider", model: "vlm-model", apiKeyEnv: "VLM_API_KEY" },
+  };
+  const common = {
+    piBin: "/repo/pi",
+    extensionLoadOrder: ["index.ts"],
+    sessionId: "session-1",
+    runDir: "/repo/run",
+    endpoint: "http://127.0.0.1:19331",
+    openviking: { account: "dev", user: "dev" },
+    profile,
+    taskApiKey: "selected-task-key",
+    turn: 0,
+    baseEnv: { PATH: "/usr/bin", TASK_API_KEY: "inherited-task", VLM_API_KEY: "inherited-vlm" },
+  };
+  const task = buildLivePiInvocation(common);
+  assert.equal(task.args[task.args.indexOf("--provider") + 1], "task-provider");
+  assert.equal(task.env.TASK_API_KEY, "selected-task-key");
+  assert.equal(task.env.VLM_API_KEY, undefined);
+
+  const override = { provider: "scripted", model: "scripted-model", apiKeyEnv: "SCRIPTED_API_KEY" };
+  const overridden = buildLivePiInvocation({
+    ...common,
+    provider: override,
+    baseEnv: { ...common.baseEnv, SCRIPTED_API_KEY: "inherited-scripted" },
+  });
+  assert.equal(overridden.args[overridden.args.indexOf("--provider") + 1], "scripted");
+  assert.equal(overridden.env.TASK_API_KEY, undefined);
+  assert.equal(overridden.env.VLM_API_KEY, undefined);
+  assert.equal(overridden.env.SCRIPTED_API_KEY, undefined);
+
+  const explicitOverride = buildLivePiInvocation({
+    ...common,
+    provider: override,
+    baseEnv: { ...common.baseEnv, SCRIPTED_API_KEY: "inherited-scripted" },
+    extraEnv: { SCRIPTED_API_KEY: "selected-scripted" },
+  });
+  assert.equal(explicitOverride.env.TASK_API_KEY, undefined);
+  assert.equal(explicitOverride.env.VLM_API_KEY, undefined);
+  assert.equal(explicitOverride.env.SCRIPTED_API_KEY, "selected-scripted");
 });
 
 test("checkManifestHash 拒绝格式错误与不匹配", () => {

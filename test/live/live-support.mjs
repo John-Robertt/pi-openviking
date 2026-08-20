@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { OVClient } from "../../client.ts";
 import {
+  bridgeCredential,
   buildChildEnv,
   buildDevServerConfig,
   isDevServerProcess,
@@ -117,14 +118,48 @@ const DEV_PID_FILE = join(DEV_RUN_DIR, "server.pid");
 
 export class PiRunError extends Error {}
 
+export function buildLivePiInvocation({
+  piBin, extensionLoadOrder, sessionId, runDir, endpoint, openviking, profile, taskApiKey,
+  turn, capture = "e2e", provider = null, envStrip = [], extraEnv = {}, baseEnv = process.env,
+}) {
+  const usesTaskModel = provider === null;
+  const model = usesTaskModel ? profile.taskModel : provider;
+  const args = [
+    piBin,
+    "--mode", "rpc",
+    "--no-extensions",
+    ...extensionLoadOrder.flatMap((rel) => ["-e", join(LIVE_REPO, rel)]),
+    "--session-id", sessionId,
+    "--session-dir", join(runDir, "sessions"),
+    "--provider", model.provider,
+    "--model", model.model,
+    "--thinking", "off",
+  ];
+  const env = buildChildEnv({
+    HOME: join(runDir, "home"),
+    PI_CODING_AGENT_DIR: join(runDir, "pi"),
+    OPENVIKING_URL: endpoint,
+    OPENVIKING_ACCOUNT: openviking.account,
+    OPENVIKING_USER: openviking.user,
+    ...(usesTaskModel ? { [profile.taskModel.apiKeyEnv]: taskApiKey } : {}),
+  }, baseEnv, [profile.taskModel.apiKeyEnv, profile.vlm.apiKeyEnv, provider?.apiKeyEnv].filter(Boolean));
+  for (const key of ["OV_OBSERVE", "OV_OBSERVE_FD", "OV_E2E_FD", "OV_E2E_TURN", ...envStrip]) delete env[key];
+  if (capture === "observation") env.OV_OBSERVE_FD = "3";
+  else {
+    env.OV_E2E_FD = "3";
+    env.OV_E2E_TURN = String(turn);
+  }
+  Object.assign(env, extraEnv);
+  return { args, env };
+}
 /**
  * 一次真实 Pi 进程运行。actions: { prompt } 等待 agent_settled；{ command }（如
  * /viking sync）等待其后的 notify。返回事件流、capture 路径与退出码。
  *
  * capture: "e2e"（默认）把 FD 3 交给 e2e-probe 写 raw provider payload（segments/）；
  * "observation" 把 FD 3 交给统一观察 sink 写观察记录（observations/）。
- * provider 覆盖 manifest 的开发模型身份（如确定性脚本 provider）；覆盖方的身份不带
- * apiKeyEnv 时不桥接凭证。envStrip/extraEnv 供 loopback provider 等场景调整子进程环境。
+ * provider 可覆盖 manifest 的任务模型身份（如确定性脚本 provider）；覆盖路径不自动桥接任务凭证，
+ * 自身凭证只能通过 extraEnv 显式提供。envStrip/extraEnv 也供 loopback provider 调整子进程环境。
  */
 export async function runPi(ctx, {
   workloadId, turn, endpoint, actions,
@@ -140,35 +175,21 @@ export async function runPi(ctx, {
   const capturePath = join(runDir, capture === "observation" ? "observations" : "segments", `${workloadId}-${turn}.jsonl`);
   mkdirSync(dirname(capturePath), { recursive: true });
   const capFd = openSync(capturePath, "wx", 0o600);
-  const ov = ctx.manifest.identities.openviking;
-  const model = provider ?? ctx.profile.taskVlm;
-  const args = [
-    ctx.piBin,
-    "--mode", "rpc",
-    "--no-extensions",
-    ...ctx.manifest.identities.extensionLoadOrder.flatMap((rel) => ["-e", join(LIVE_REPO, rel)]),
-    "--session-id", ctx.sessionId,
-    "--session-dir", join(runDir, "sessions"),
-    "--provider", model.provider,
-    "--model", model.model,
-    "--thinking", "off",
-  ];
-  const env = buildChildEnv({
-    HOME: join(runDir, "home"),
-    PI_CODING_AGENT_DIR: join(runDir, "pi"),
-    OPENVIKING_URL: endpoint,
-    OPENVIKING_ACCOUNT: ov.account,
-    OPENVIKING_USER: ov.user,
-    ...(model.apiKeyEnv ? { [model.apiKeyEnv]: ctx.apiKey } : {}),
+  const { args, env } = buildLivePiInvocation({
+    piBin: ctx.piBin,
+    extensionLoadOrder: ctx.manifest.identities.extensionLoadOrder,
+    sessionId: ctx.sessionId,
+    runDir,
+    endpoint,
+    openviking: ctx.manifest.identities.openviking,
+    profile: ctx.profile,
+    taskApiKey: ctx.taskApiKey,
+    turn,
+    capture,
+    provider,
+    envStrip,
+    extraEnv,
   });
-  // 采集 FD 变量只按 capture 设置其一，其余连同 envStrip 一律不传入子进程。
-  for (const key of ["OV_OBSERVE", "OV_OBSERVE_FD", "OV_E2E_FD", "OV_E2E_TURN", ...envStrip]) delete env[key];
-  if (capture === "observation") env.OV_OBSERVE_FD = "3";
-  else {
-    env.OV_E2E_FD = "3";
-    env.OV_E2E_TURN = String(turn);
-  }
-  Object.assign(env, extraEnv);
 
   const child = spawn(process.execPath, args, {
     cwd: join(runDir, "work"),
@@ -444,12 +465,15 @@ export async function preflight(log, ctx, extra) {
     health.ok && health.data?.version === ctx.manifest.identities.openviking.version
       && health.data?.auth_mode === ctx.manifest.identities.openviking.authMode);
 
-  // 凭证桥接：只进子进程环境，不持久化、不回显。
-  const bridge = spawnSync("npm", ["exec", "--", "pi", "auth", "print-api-key",
-    "--provider", ctx.profile.taskVlm.provider, "--model", ctx.profile.taskVlm.model], { encoding: "utf8" });
-  ctx.apiKey = bridge.status === 0 ? bridge.stdout.trim() : "";
-  log.check(g, "credential-bridged", "non-empty single line", ctx.apiKey && !ctx.apiKey.includes("\n") ? "ok" : "failed",
-    Boolean(ctx.apiKey) && !ctx.apiKey.includes("\n"));
+  // 真实 Pi workload 只桥接任务模型凭证；VLM 凭证由受管 OpenViking 启动路径持有。
+  try {
+    ctx.taskApiKey = bridgeCredential(ctx.profile.taskModel);
+  } catch {
+    ctx.taskApiKey = "";
+  }
+  log.check(g, "credential-bridged:task-model", "non-empty single line",
+    ctx.taskApiKey && !ctx.taskApiKey.includes("\n") ? "ok" : "failed",
+    Boolean(ctx.taskApiKey) && !ctx.taskApiKey.includes("\n"));
 
   for (const rel of ctx.manifest.identities.extensionLoadOrder) {
     log.check(g, `extension-exists:${rel}`, true, existsSync(join(LIVE_REPO, rel)), existsSync(join(LIVE_REPO, rel)));

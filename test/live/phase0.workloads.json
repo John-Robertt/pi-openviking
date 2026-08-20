@@ -23,8 +23,8 @@
     },
     "modelProfile": {
       "path": "dev/model-profile.json",
-      "sha256": "48a1ec8a4cfd2bdbc231c41e6f6e20e0057ea6b126b8440149154d78cba46a25",
-      "note": "开发与验证模型身份的唯一事实源；manifest 只固定其字节 hash，不复制具体值。任务模型与 VLM 均取自该 profile。"
+      "sha256": "42df2096b4627f9ec8ec699b9b0a52aa11d3d640fd91b4afc2d40354b1962dfb",
+      "note": "开发与验证模型身份的唯一事实源；manifest 只固定其字节 hash，不复制具体值。Pi 读取 taskModel，OpenViking 读取 vlm。"
     },
     "protocol": {
       "eventSchema": "RecordedEventV1",
@@ -45,8 +45,8 @@
       "-e", "<repo>/scripts/e2e-probe.ts",
       "--session-id", "<workload.sessionId>",
       "--session-dir", "<run>/sessions",
-      "--provider", "<profile.taskVlm.provider>",
-      "--model", "<profile.taskVlm.model>",
+      "--provider", "<profile.taskModel.provider>",
+      "--model", "<profile.taskModel.model>",
       "--thinking", "off"
     ]
   },
@@ -58,7 +58,7 @@
       "OPENVIKING_URL": "openviking.endpoint，或 w3 第一轮的死端口 http://127.0.0.1:9",
       "OPENVIKING_ACCOUNT": "dev",
       "OPENVIKING_USER": "dev",
-      "<profile.taskVlm.apiKeyEnv>": "spawn 时从用户 pi 登录态桥接（pi auth print-api-key），不持久化、不写入任何 artifact",
+      "<profile.taskModel.apiKeyEnv>": "spawn 时按 taskModel 身份从用户 pi 登录态桥接（pi auth print-api-key），不持久化、不写入任何 artifact",
       "OV_E2E_FD": "3（verifier 以 wx/0600 预开的 segment 文件，继承给子进程）",
       "OV_E2E_TURN": "<该 workload 内第几次 Pi 启动，从 0 开始>"
     },

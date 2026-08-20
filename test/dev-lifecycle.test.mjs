@@ -15,12 +15,18 @@ import {
 } from "../scripts/dev.mjs";
 
 const profile = {
-  taskVlm: {
-    provider: "test-provider",
-    model: "test-model",
-    apiBase: "https://example.test",
+  taskModel: {
+    provider: "task-provider",
+    model: "task-model",
     credentialKind: "api_key",
-    apiKeyEnv: "TEST_API_KEY",
+    apiKeyEnv: "TASK_API_KEY",
+  },
+  vlm: {
+    provider: "vlm-provider",
+    model: "vlm-model",
+    apiBase: "https://memory.example.test",
+    credentialKind: "api_key",
+    apiKeyEnv: "VLM_API_KEY",
   },
   embedding: { dense: { provider: "local", model: "test-embed", dimension: 128 } },
 };
@@ -34,14 +40,14 @@ function withTmpDir(fn) {
   }
 }
 
-test("buildDevServerConfig 使用 profile 字段且凭证为环境占位符", () => {
+test("buildDevServerConfig 只使用 profile.vlm 且凭证为环境占位符", () => {
   const config = buildDevServerConfig(profile);
   assert.equal(config.server.host, "127.0.0.1");
   assert.equal(typeof config.server.port, "number");
-  assert.equal(config.vlm.provider, "test-provider");
-  assert.equal(config.vlm.model, "test-model");
-  assert.equal(config.vlm.api_base, "https://example.test");
-  assert.equal(config.vlm.api_key, "${TEST_API_KEY}");
+  assert.equal(config.vlm.provider, "vlm-provider");
+  assert.equal(config.vlm.model, "vlm-model");
+  assert.equal(config.vlm.api_base, "https://memory.example.test");
+  assert.equal(config.vlm.api_key, "${VLM_API_KEY}");
   assert.equal(config.embedding.dense.provider, "local");
   assert.equal(config.embedding.dense.model, "test-embed");
   assert.equal(config.embedding.dense.dimension, 128);
@@ -49,10 +55,10 @@ test("buildDevServerConfig 使用 profile 字段且凭证为环境占位符", ()
   assert.ok(config.storage.workspace.includes("data"));
 });
 
-test("buildDevPiArgs 固定 profile 模型并拒绝命令行覆盖", () => {
+test("buildDevPiArgs 只使用 profile.taskModel 并拒绝命令行覆盖", () => {
   assert.deepEqual(
     buildDevPiArgs(profile, ["--thinking", "off"]),
-    ["--provider", "test-provider", "--model", "test-model", "--models", "test-provider/test-model", "--thinking", "off"],
+    ["--provider", "task-provider", "--model", "task-model", "--models", "task-provider/task-model", "--thinking", "off"],
   );
   for (const args of [["--provider", "other"], ["--model=other"], ["--models", "other/*"], ["--api-key=secret"]]) {
     assert.throws(() => buildDevPiArgs(profile, args), /不能覆盖/);
@@ -128,19 +134,32 @@ test("verifyRunFiles 核对 expectedPid 与状态文件一致", () => {
   });
 });
 
-test("buildChildEnv 清除继承的 OPENVIKING_* 并应用显式值", () => {
+test("buildChildEnv 只保留当前子进程职责所需的模型凭证", () => {
   const base = {
     PATH: "/usr/bin",
     OPENVIKING_URL: "http://127.0.0.1:1933",
     OPENVIKING_API_KEY: "user-key",
     OPENVIKING_BASE_URL: "http://127.0.0.1:1933",
+    TASK_API_KEY: "inherited-task-key",
+    VLM_API_KEY: "inherited-vlm-key",
   };
-  const env = buildChildEnv({ OPENVIKING_BASE_URL: "http://127.0.0.1:19331", OPENVIKING_ACCOUNT: "dev" }, base);
-  assert.equal(env.PATH, "/usr/bin");
-  assert.equal(env.OPENVIKING_URL, undefined);
-  assert.equal(env.OPENVIKING_API_KEY, undefined);
-  assert.equal(env.OPENVIKING_BASE_URL, "http://127.0.0.1:19331");
-  assert.equal(env.OPENVIKING_ACCOUNT, "dev");
+  const modelCredentialEnvs = [profile.taskModel.apiKeyEnv, profile.vlm.apiKeyEnv];
+  const serviceEnv = buildChildEnv({
+    OPENVIKING_BASE_URL: "http://127.0.0.1:19331",
+    OPENVIKING_ACCOUNT: "dev",
+    VLM_API_KEY: "selected-vlm-key",
+  }, base, modelCredentialEnvs);
+  assert.equal(serviceEnv.PATH, "/usr/bin");
+  assert.equal(serviceEnv.OPENVIKING_URL, undefined);
+  assert.equal(serviceEnv.OPENVIKING_API_KEY, undefined);
+  assert.equal(serviceEnv.OPENVIKING_BASE_URL, "http://127.0.0.1:19331");
+  assert.equal(serviceEnv.OPENVIKING_ACCOUNT, "dev");
+  assert.equal(serviceEnv.TASK_API_KEY, undefined);
+  assert.equal(serviceEnv.VLM_API_KEY, "selected-vlm-key");
+
+  const piEnv = buildChildEnv({ TASK_API_KEY: "selected-task-key" }, base, modelCredentialEnvs);
+  assert.equal(piEnv.TASK_API_KEY, "selected-task-key");
+  assert.equal(piEnv.VLM_API_KEY, undefined);
 });
 
 test("pi wrapper 相对路径指向仓库 index.ts", () => {

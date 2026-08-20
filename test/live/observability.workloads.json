@@ -19,7 +19,7 @@
     },
     "modelProfile": {
       "path": "dev/model-profile.json",
-      "sha256": "48a1ec8a4cfd2bdbc231c41e6f6e20e0057ea6b126b8440149154d78cba46a25"
+      "sha256": "42df2096b4627f9ec8ec699b9b0a52aa11d3d640fd91b4afc2d40354b1962dfb"
     },
     "registry": {
       "schemaVersion": 1,
@@ -30,7 +30,7 @@
   "environment": {
     "observationSink": "父进程以 wx/0600 预开空常规文件并作为 FD 3 继承；子进程仅接收 OV_OBSERVE_FD=3，不接触 artifact 路径",
     "isolation": "HOME、PI_CODING_AGENT_DIR、session 与 observation artifact 全部位于 test/.artifacts/live/<runId>",
-    "credentials": "开发模型 key 只通过子进程环境桥接，不写入 manifest、observation、session、summary 或日志"
+    "credentials": "任务模型 key 由 verifier 按 taskModel 身份桥接给真实 Pi；VLM key 只由受管 OpenViking 启动路径持有；两者均不写入 manifest、observation、session、summary 或日志"
   },
   "deterministicStages": ["archive_commit", "archive_failure", "index_failure", "recall_failure", "tool_availability", "tool_scope"],
   "workloads": [

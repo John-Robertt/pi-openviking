@@ -110,7 +110,7 @@ wheel 安装与 fingerprint 校验），各自独立演化；任何脚本级参�
 4. 下载并校验固定 uv（环境存在 HTTP(S)\_PROXY 时自动经代理下载），安装托管 Python，创建 wheel venv；
 5. 安装固定 OpenViking wheel，并验证服务二进制可执行且版本与 pin 一致；
 6. 本地 embedding 模型由 OpenViking 在首次 `dev up` 时自动下载，bootstrap 不预取；
-7. 以不输出凭证的 `pi auth check` 报告开发模型凭证是否就绪，不发起模型推理，不就绪不失败。
+7. 以不输出凭证的 `pi auth check` 分别报告任务模型与 VLM 凭证是否就绪，不发起模型推理，不就绪不失败。
 
 ## 服务生命周期合同
 
@@ -129,38 +129,42 @@ win32 退化为 marker/状态核对）、状态文件和 marker，并停止完�
 
 ## 开发模型身份与凭证桥接
 
-凭证桥接是服务与 Pi 启动动作的一部分：`dev up` 和 `dev pi` 在 spawn 子进程时从 Pi 已登录凭证
-解析并注入 `apiKeyEnv` 指定的变量；本地 embedding 不需要凭证。
+凭证桥接是服务与 Pi 启动动作的一部分：`dev up` 为 OpenViking VLM 解析凭证，`dev pi` 为任务模型解析凭证，
+并只向各自 spawn 的子进程注入对应 `apiKeyEnv`；本地 embedding 不需要凭证。
 
 [`dev/model-profile.json`](./dev/model-profile.json) 是开发模型身份的唯一机器事实源，由
-`test/dev-bootstrap.test.mjs` 校验。字段职责：`taskVlm` 描述任务模型与 OpenViking VLM 共用的
-provider/model/apiBase/凭证类型/凭证环境变量名；`embedding.dense` 描述本地 embedding 的
-provider/model/dimension。其他文档、命令示例和阶段 gate 只引用“开发模型身份”，不得复制具体值。
+`test/dev-bootstrap.test.mjs` 校验。字段职责：
 
-任务模型与 OpenViking VLM 共同读取 `taskVlm`；OpenViking 本地 dense embedding 读取
-`embedding.dense`。`dev pi` 显式传入 profile 的 provider/model，并把可选模型集合限制为同一身份；命令行
-不得覆盖这些字段或通过 `--api-key` 绕过凭证桥接。`dev up`、`status`、`dev pi` 和 live preflight 同时核对
-状态指纹、实际 `ov.conf` 与 profile 生成配置，漂移时 fail-fast 并要求受管重启。Pi runner、OpenViking
-配置生成器和凭证桥接禁止保存字段副本。
+- `taskModel` 描述 Pi 任务模型的 provider/model/凭证类型/凭证环境变量名；
+- `vlm` 描述 OpenViking VLM 的 provider/model/apiBase/凭证类型/凭证环境变量名；
+- `embedding.dense` 描述 OpenViking 本地 embedding 的 provider/model/dimension。
 
-桥接动作按以下顺序执行：
+三个对象只由各自消费者读取；字段值相等时仍保持独立职责和凭证流。其他文档、命令示例和阶段 gate 只引用
+“开发模型身份”，不得复制具体值。`dev pi` 显式传入 `taskModel` 的 provider/model，并把可选模型集合限制为
+同一身份；命令行不得覆盖这些字段或通过 `--api-key` 绕过凭证桥接。`dev up`、`status`、`dev pi` 和 live
+preflight 同时核对状态指纹、实际 `ov.conf` 与 profile 生成配置，漂移时 fail-fast 并要求受管重启。Pi runner、
+OpenViking 配置生成器和凭证桥接禁止保存字段副本。
 
-1. 以 stdout pipe 执行
-   `npm exec -- pi auth print-api-key --provider <profile.taskVlm.provider> --model <profile.taskVlm.model>`；
-2. 去除唯一的行尾换行，在内存中确认结果非空；该命令已负责模型解析和 API-key 类型校验；
-3. 只向本次隔离 Pi 和 OpenViking 子进程注入 `taskVlm.apiKeyEnv` 指定的变量；
-4. 子进程退出后释放内存引用，不持久化、不回显、不记录 hash。
+每次桥接按以下顺序执行：
 
-`status` 可以使用不输出凭证的 `npm exec -- pi auth check` 报告 readiness，启动路径不重复执行。
+1. 根据调用职责选择 `taskModel` 或 `vlm`，以 stdout pipe 执行
+   `npm exec -- pi auth print-api-key --provider <identity.provider> --model <identity.model>`；
+2. 去除唯一的行尾换行，在内存中确认结果非空；该命令负责模型解析和 API-key 类型校验；
+3. 构造子进程环境时先清除继承的 `taskModel.apiKeyEnv` 与 `vlm.apiKeyEnv`，再只注入当前职责身份的值；
+   live preflight 只为真实 Pi workload 桥接 `taskModel`，VLM 凭证由已核验的受管服务启动路径持有；
+4. 凭证只在对应启动命令或 verifier 进程生命周期内保留，不持久化、不回显、不记录 hash。
+
+`status` 使用不输出凭证的 `npm exec -- pi auth check` 分别报告任务模型与 VLM readiness，启动路径不重复执行。
 
 不得通过 shell command substitution、命令回显、调试日志或 `pi auth check --credentials` 获取凭证。
-凭证缺失或失效时停止并提示用户执行 `/login <profile.taskVlm.provider>`，不得回退到其他
+任一身份的凭证缺失或失效时，对应启动动作停止并提示用户执行 `/login <identity.provider>`，不得回退到其他
 provider、model、账户或 endpoint。配置、状态文件、artifact 不保存凭证。
 
-用户在 Pi 中为 `taskVlm` 身份手动录入 key，即构成项目开发和验证的明确授权；为同一身份手动替换
-key 本身也构成授权。以下任一变化必须重新取得用户决定：
+用户在 Pi 中为 `taskModel` 或 `vlm` 身份手动录入 key，即构成该身份用于项目开发和验证的明确授权；为同一
+身份手动替换 key 本身也构成授权。以下任一变化必须重新取得用户决定：
 
-- `taskVlm` 的 provider、model 或 API base 改变；
+- `taskModel` 的 provider 或 model 改变；
+- `vlm` 的 provider、model 或 API base 改变；
 - 本地 embedding 的 provider、model 或 dimension 改变；
 - 调用超出本仓库开发与 `docs/roadmap.md` 阶段 gate。
 
@@ -171,7 +175,7 @@ key 本身也构成授权。以下任一变化必须重新取得用户决定：
 - `PI_CODING_AGENT_DIR=.dev/pi`（auth、settings、sessions、extensions 全部由它派生隔离）；
 - OpenViking endpoint（`OPENVIKING_BASE_URL=http://127.0.0.1:19331`）、account/user（`dev`）；
 - 自动发现的其他扩展与包（隔离 agent dir 只含下述 wrapper）；
-- 使用[开发模型身份](#开发模型身份与凭证桥接)（`apiKeyEnv` 经环境注入，不落盘）。
+- 使用[开发模型身份](#开发模型身份与凭证桥接)中的 `taskModel`（`apiKeyEnv` 经环境注入，不落盘）。
 
 `dev pi` 在 `.dev/pi/extensions/pi-openviking-dev/index.ts` 生成只负责加载仓库 `index.ts` 的
 wrapper，使 Pi `/reload` 可用。reload 会先触发 `session_shutdown`，再重载扩展并触发

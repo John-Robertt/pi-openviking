@@ -5,30 +5,41 @@ import { isNodeVersionSupported, loadModelProfile, validateModelProfile } from "
 test("提交的 dev/model-profile.json 通过校验", () => {
   // 只断言校验通过，不复制具体模型身份值（权威在 dev/model-profile.json）。
   const profile = loadModelProfile();
-  assert.equal(typeof profile.taskVlm.provider, "string");
+  assert.equal(typeof profile.taskModel.provider, "string");
+  assert.equal(typeof profile.vlm.provider, "string");
   assert.equal(typeof profile.embedding.dense.dimension, "number");
 });
 
 test("validateModelProfile 拒绝缺失或非法字段", () => {
   const valid = {
-    taskVlm: {
-      provider: "test-provider",
-      model: "test-model",
-      apiBase: "https://example.test",
+    taskModel: {
+      provider: "task-provider",
+      model: "task-model",
       credentialKind: "api_key",
-      apiKeyEnv: "TEST_API_KEY",
+      apiKeyEnv: "TASK_API_KEY",
+    },
+    vlm: {
+      provider: "vlm-provider",
+      model: "vlm-model",
+      apiBase: "https://memory.example.test",
+      credentialKind: "api_key",
+      apiKeyEnv: "VLM_API_KEY",
     },
     embedding: { dense: { provider: "local", model: "test-embed", dimension: 128 } },
   };
   assert.deepEqual(validateModelProfile(valid), []);
 
   const noEnv = structuredClone(valid);
-  delete noEnv.taskVlm.apiKeyEnv;
+  delete noEnv.taskModel.apiKeyEnv;
   assert.ok(validateModelProfile(noEnv).some((p) => p.includes("apiKeyEnv")));
 
   const oauth = structuredClone(valid);
-  oauth.taskVlm.credentialKind = "oauth";
+  oauth.vlm.credentialKind = "oauth";
   assert.ok(validateModelProfile(oauth).some((p) => p.includes("credentialKind")));
+
+  const noVlmApiBase = structuredClone(valid);
+  delete noVlmApiBase.vlm.apiBase;
+  assert.ok(validateModelProfile(noVlmApiBase).some((p) => p.includes("vlm.apiBase")));
 
   const badDim = structuredClone(valid);
   badDim.embedding.dense.dimension = "512";

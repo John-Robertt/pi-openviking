@@ -163,7 +163,7 @@ async function wSuccessRecallSync(log, ctx) {
   });
   attachObservation(run);
   assertObsRun(log, ctx, run, ctx.workload.expectedRecords, [
-    ctx.sessionId, ctx.storageUser, ctx.userRoot, ctx.workload.prompt, ctx.apiKey,
+    ctx.sessionId, ctx.storageUser, ctx.userRoot, ctx.workload.prompt, ctx.taskApiKey,
   ]);
   const notify = run.actions[1].notifyEvent;
   log.check(ctx.workloadId, "sync-notify", "info", notify?.notifyType, notify?.notifyType === "info");
@@ -187,7 +187,7 @@ async function wDisconnectFailOpen(log, ctx) {
     capture: "observation",
   });
   attachObservation(run);
-  assertObsRun(log, ctx, run, ctx.workload.expectedRecords, [ctx.sessionId, ctx.workload.prompt, ctx.apiKey]);
+  assertObsRun(log, ctx, run, ctx.workload.expectedRecords, [ctx.sessionId, ctx.workload.prompt, ctx.taskApiKey]);
   const settled = run.events.some((event) => event.type === "agent_settled");
   log.check(ctx.workloadId, "agent-settled", true, settled, settled);
   const networkErrors = run.observation.records.filter(
@@ -208,7 +208,7 @@ async function wConflict409(log, ctx) {
     capture: "observation",
   });
   attachObservation(prep);
-  assertObsRun(log, ctx, prep, [], [ctx.sessionId, ctx.workload.prompt, ctx.apiKey]);
+  assertObsRun(log, ctx, prep, [], [ctx.sessionId, ctx.workload.prompt, ctx.taskApiKey]);
   const sessionText = await readFile(prep.sessionFile, "utf8");
   const parsed = parsePiSessionJsonl(sessionText, { sessionId: ctx.sessionId });
   const firstEntry = parsed.entries[0];
@@ -229,7 +229,7 @@ async function wConflict409(log, ctx) {
   });
   attachObservation(run);
   assertObsRun(log, ctx, run, ctx.workload.expectedRecords, [
-    ctx.sessionId, ctx.storageUser, ctx.userRoot, ctx.workload.prompt, ctx.apiKey,
+    ctx.sessionId, ctx.storageUser, ctx.userRoot, ctx.workload.prompt, ctx.taskApiKey,
   ]);
   const notify = run.actions[0].notifyEvent;
   log.check(ctx.workloadId, "sync-notify", "warning", notify?.notifyType, notify?.notifyType === "warning");
@@ -276,7 +276,7 @@ async function wToolUriRejection(log, ctx) {
     });
     attachObservation(run);
     assertObsRun(log, ctx, run, ctx.workload.expectedRecords, [
-      ctx.sessionId, ctx.storageUser, ctx.userRoot, outsideRoot, outsideUri, ctx.workload.prompt, ctx.apiKey,
+      ctx.sessionId, ctx.storageUser, ctx.userRoot, outsideRoot, outsideUri, ctx.workload.prompt, ctx.taskApiKey,
     ]);
     log.check(ctx.workloadId, "scripted-provider-requests", 2, scripted.requests(), scripted.requests() === 2);
     const toolEnd = run.events.find((event) => event.type === "tool_execution_end" && event.toolName === "read");

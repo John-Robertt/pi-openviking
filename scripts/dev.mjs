@@ -83,14 +83,18 @@ export function validateModelProfile(profile) {
     if (typeof value !== "string" || !value) problems.push(`${path} 缺失或不是非空字符串`);
     return value;
   };
-  const task = profile?.taskVlm ?? {};
-  need(task.provider, "taskVlm.provider");
-  need(task.model, "taskVlm.model");
-  need(task.apiBase, "taskVlm.apiBase");
-  if (task.credentialKind !== "api_key") problems.push('taskVlm.credentialKind 当前只支持 "api_key"');
-  if (typeof task.apiKeyEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(task.apiKeyEnv)) {
-    problems.push("taskVlm.apiKeyEnv 缺失或不是合法环境变量名");
-  }
+  const validateApiKeyIdentity = (identity, path, { requireApiBase = false } = {}) => {
+    const model = identity ?? {};
+    need(model.provider, `${path}.provider`);
+    need(model.model, `${path}.model`);
+    if (requireApiBase) need(model.apiBase, `${path}.apiBase`);
+    if (model.credentialKind !== "api_key") problems.push(`${path}.credentialKind 当前只支持 "api_key"`);
+    if (typeof model.apiKeyEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(model.apiKeyEnv)) {
+      problems.push(`${path}.apiKeyEnv 缺失或不是合法环境变量名`);
+    }
+  };
+  validateApiKeyIdentity(profile?.taskModel, "taskModel");
+  validateApiKeyIdentity(profile?.vlm, "vlm", { requireApiBase: true });
   const dense = profile?.embedding?.dense ?? {};
   need(dense.provider, "embedding.dense.provider");
   need(dense.model, "embedding.dense.model");
@@ -113,13 +117,14 @@ export function loadModelProfile(path = PROFILE_PATH) {
 }
 
 /**
- * 构造子进程环境：先清除继承的全部 OPENVIKING_*（扩展侧 OPENVIKING_URL 优先于
- * OPENVIKING_BASE_URL，用户 shell 导出的同名变量会静默击穿 dev 隔离），再应用显式值。
+ * 构造子进程环境：清除继承的全部 OPENVIKING_* 与调用方声明的凭证变量，再应用显式值。
+ * OPENVIKING_URL 优先于 OPENVIKING_BASE_URL，用户 shell 导出的同名变量会静默击穿 dev 隔离。
  */
-export function buildChildEnv(extra, base = process.env) {
+export function buildChildEnv(extra, base = process.env, clearKeys = []) {
+  const cleared = new Set(clearKeys);
   const env = {};
   for (const [key, value] of Object.entries(base)) {
-    if (!key.startsWith("OPENVIKING_") && value !== undefined) env[key] = value;
+    if (!key.startsWith("OPENVIKING_") && !cleared.has(key) && value !== undefined) env[key] = value;
   }
   return { ...env, ...extra };
 }
@@ -128,8 +133,8 @@ export function buildChildEnv(extra, base = process.env) {
  * 从用户 Pi 登录态桥接 API key：stdout pipe 读取，trim 后必须是单行非空。只返回给
  * spawn env 使用；不持久化、不回显。失败时提示 /login。
  */
-function bridgeCredential(profile) {
-  const { provider, model } = profile.taskVlm;
+export function bridgeCredential(identity) {
+  const { provider, model } = identity;
   const res = runProcess("npm", ["exec", "--", "pi", "auth", "print-api-key", "--provider", provider, "--model", model], {
     capture: true,
   });
@@ -141,10 +146,10 @@ function bridgeCredential(profile) {
 }
 
 /** 只探测凭证是否存在（不输出凭证本身），供 readiness 报告。 */
-function credentialReady(profile) {
+function credentialReady(identity) {
   const res = runProcess(
     "npm",
-    ["exec", "--", "pi", "auth", "check", "--provider", profile.taskVlm.provider, "--model", profile.taskVlm.model],
+    ["exec", "--", "pi", "auth", "check", "--provider", identity.provider, "--model", identity.model],
     { capture: true },
   );
   return res.ok;
@@ -204,10 +209,12 @@ async function bootstrap() {
   const { model, dimension } = profile.embedding.dense;
   say(`本地 embedding: ${model} (dimension ${dimension})；模型文件将在首次 dev up 启动服务时自动下载。`);
 
-  if (credentialReady(profile)) {
-    say(`凭证就绪: ${profile.taskVlm.provider}/${profile.taskVlm.model}`);
-  } else {
-    say(`凭证未就绪: 请在 pi 中执行 /login ${profile.taskVlm.provider}；dev up 启动服务时会再次检查。`);
+  for (const [label, identity] of [["任务模型", profile.taskModel], ["VLM", profile.vlm]]) {
+    if (credentialReady(identity)) {
+      say(`${label}凭证就绪: ${identity.provider}/${identity.model}`);
+    } else {
+      say(`${label}凭证未就绪: 请在 pi 中执行 /login ${identity.provider}；对应启动动作会再次检查。`);
+    }
   }
 
   say("");
@@ -236,10 +243,10 @@ export function buildDevServerConfig(profile) {
       },
     },
     vlm: {
-      provider: profile.taskVlm.provider,
-      model: profile.taskVlm.model,
-      api_key: `\${${profile.taskVlm.apiKeyEnv}}`,
-      api_base: profile.taskVlm.apiBase,
+      provider: profile.vlm.provider,
+      model: profile.vlm.model,
+      api_key: `\${${profile.vlm.apiKeyEnv}}`,
+      api_base: profile.vlm.apiBase,
       temperature: 0.0,
       max_retries: 2,
     },
@@ -329,7 +336,7 @@ export function verifyDevServerConfig(runDir, state, expectedConfig) {
   };
 }
 
-/** dev pi 的任务模型只能来自 model profile，避免交互运行与 OpenViking VLM 漂移。 */
+/** dev pi 的任务模型只读取 profile.taskModel，避免交互运行身份漂移。 */
 export function buildDevPiArgs(profile, args = []) {
   if (!Array.isArray(args)) throw new TypeError("dev pi args must be an array");
   const forbidden = new Set(["--provider", "--model", "--models", "--api-key"]);
@@ -339,7 +346,7 @@ export function buildDevPiArgs(profile, args = []) {
   if (override) {
     throw new Error(`${override} 不能覆盖 dev/model-profile.json 固定的任务模型`);
   }
-  const { provider, model } = profile.taskVlm;
+  const { provider, model } = profile.taskModel;
   const qualifiedModel = model.includes("/") ? model : `${provider}/${model}`;
   return ["--provider", provider, "--model", model, "--models", qualifiedModel, ...args];
 }
@@ -461,7 +468,7 @@ async function up() {
   // 凭证桥接：启动时经环境注入，ov.conf 只写 ${ENV} 占位符。
   let apiKey;
   try {
-    apiKey = bridgeCredential(profile);
+    apiKey = bridgeCredential(profile.vlm);
   } catch (e) {
     fail(e.message);
   }
@@ -478,9 +485,9 @@ async function up() {
     windowsHide: true,
     // OPENVIKING_CODEX_AUTH_PATH：防止服务读写用户默认的 codex auth。
     env: buildChildEnv({
-      [profile.taskVlm.apiKeyEnv]: apiKey,
+      [profile.vlm.apiKeyEnv]: apiKey,
       OPENVIKING_CODEX_AUTH_PATH: join(RUN_DIR, "codex_auth.json"),
-    }),
+    }, process.env, [profile.taskModel.apiKeyEnv, profile.vlm.apiKeyEnv]),
   });
   closeSync(logFd);
   let spawnError = null;
@@ -569,13 +576,12 @@ async function status() {
     say(`config:     ${configCheck?.ok ? "matches profile" : `DRIFT (${configCheck?.reason || profileError?.message || ownership?.reason || "身份未确认"})`}`);
   }
 
+  if (profile) say(`任务模型:   ${profile.taskModel.provider}/${profile.taskModel.model}`);
   if (existsSync(OV_CONF)) {
     try {
       const summary = summarizeServerConfig(JSON.parse(readFileSync(OV_CONF, "utf8")));
       say(`embedding:  ${summary.embedding.provider}/${summary.embedding.model} (dimension ${summary.embedding.dimension})`);
-      // 同一个身份同时供 Pi 任务模型与 OpenViking VLM 使用；只写 "vlm" 会让人以为
-      // 任务模型另有来源。
-      say(`任务模型/VLM: ${summary.vlm.provider}/${summary.vlm.model} (credential: ${summary.vlm.credential})`);
+      say(`VLM:        ${summary.vlm.provider}/${summary.vlm.model} (credential: ${summary.vlm.credential})`);
     } catch (e) {
       say(`config:     INVALID (${e?.message || e})`);
     }
@@ -584,7 +590,10 @@ async function status() {
   }
 
   if (profile) {
-    say(`credential: ${credentialReady(profile) ? "ready" : "not ready（/login " + profile.taskVlm.provider + "）"}`);
+    for (const [label, identity] of [["任务模型", profile.taskModel], ["VLM", profile.vlm]]) {
+      const ready = credentialReady(identity);
+      say(`${label}凭证: ${ready ? "ready" : `not ready（/login ${identity.provider}）`}`);
+    }
   } else {
     say(`credential: profile 无效（${profileError?.message || "未知错误"}）`);
   }
@@ -632,7 +641,7 @@ async function pi(args) {
 
   let apiKey;
   try {
-    apiKey = bridgeCredential(profile);
+    apiKey = bridgeCredential(profile.taskModel);
   } catch (e) {
     fail(e.message);
   }
@@ -648,8 +657,8 @@ async function pi(args) {
       OPENVIKING_USER: DEV_USER,
       OPENVIKING_CONFIG_FILE: OV_CONF,
       OPENVIKING_CLI_CONFIG_FILE: OVCLI_CONF,
-      [profile.taskVlm.apiKeyEnv]: apiKey,
-    }),
+      [profile.taskModel.apiKeyEnv]: apiKey,
+    }, process.env, [profile.taskModel.apiKeyEnv, profile.vlm.apiKeyEnv]),
   });
   child.on("exit", (code, signal) => {
     if (signal) process.kill(process.pid, signal);
