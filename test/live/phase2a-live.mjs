@@ -8,6 +8,7 @@ import { OVClient } from "../../client.ts";
 import { archiveManifestBytes } from "../../shared/archive.mjs";
 import { ArchiveManager, archiveStorageLocation } from "../../shared/archive-store.mjs";
 import {
+  CHECKPOINT_MAX_ATTEMPTS,
   CHECKPOINT_MODEL,
   CHECKPOINT_PROMPT_VERSION,
   checkpointEventId,
@@ -388,7 +389,7 @@ async function collectObjectUris(ctx) {
   for (const bytes of ctx.archiveBytes?.values() ?? []) {
     const manifest = JSON.parse(bytes.toString("utf8"));
     const checkpointStored = await includeFactIfStored(checkpointEventId(manifest));
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= CHECKPOINT_MAX_ATTEMPTS; attempt++) {
       await includeFactIfStored(checkpointRequestEventId(manifest, previousCheckpointId, attempt));
       await includeFactIfStored(checkpointFailureEventId(manifest, previousCheckpointId, attempt));
     }
@@ -397,6 +398,24 @@ async function collectObjectUris(ctx) {
   }
   uris.push(...(ctx.extraUris ?? []));
   return [...new Set(uris)];
+}
+
+/**
+ * 本次 workload 可能创建的 VLM task 身份：checkpoint task id 由 Archive manifest 的
+ * 内容 hash 与 attempt 链确定性派生，因此可在不依赖远端枚举的情况下逐项构造，作为
+ * 取消时的归属依据。未真正提交的 attempt 只是空集合，不影响归属判定。
+ */
+function collectTaskResources(ctx) {
+  const resources = [];
+  let previousCheckpointId = null;
+  for (const bytes of ctx.archiveBytes?.values() ?? []) {
+    const manifest = JSON.parse(bytes.toString("utf8"));
+    for (let attempt = 1; attempt <= CHECKPOINT_MAX_ATTEMPTS; attempt++) {
+      resources.push(checkpointTaskId(manifest, previousCheckpointId, attempt));
+    }
+    previousCheckpointId = checkpointId(manifest);
+  }
+  return resources;
 }
 
 const RUNNERS = {
@@ -414,6 +433,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     manifestHashPath: join(REPO, "test/live/phase2a.workloads.sha256"),
     runners: RUNNERS,
     collectObjectUris,
+    collectTaskResources,
     preflightExtra: async (log, ctx) => {
       log.check("preflight", "checkpoint-model", CHECKPOINT_MODEL, ctx.manifest.mechanism.modelField,
         ctx.manifest.mechanism.modelField.includes(CHECKPOINT_MODEL));

@@ -33,9 +33,22 @@ test("validateModelProfile 拒绝缺失或非法字段", () => {
   delete noEnv.taskModel.apiKeyEnv;
   assert.ok(validateModelProfile(noEnv).some((p) => p.includes("apiKeyEnv")));
 
-  const oauth = structuredClone(valid);
-  oauth.vlm.credentialKind = "oauth";
-  assert.ok(validateModelProfile(oauth).some((p) => p.includes("credentialKind")));
+  const oauthTask = structuredClone(valid);
+  oauthTask.taskModel.credentialKind = "oauth";
+  delete oauthTask.taskModel.apiKeyEnv;
+  assert.deepEqual(validateModelProfile(oauthTask), []);
+
+  const oauthVlm = structuredClone(valid);
+  oauthVlm.vlm.provider = "openai-codex";
+  oauthVlm.vlm.credentialKind = "oauth";
+  delete oauthVlm.vlm.apiKeyEnv;
+  assert.deepEqual(validateModelProfile(oauthVlm), []);
+
+  oauthVlm.vlm.apiKeyEnv = "SHOULD_NOT_EXIST";
+  assert.ok(validateModelProfile(oauthVlm).some((p) => p.includes("必须省略")));
+  delete oauthVlm.vlm.apiKeyEnv;
+  oauthVlm.vlm.provider = "unsupported-oauth";
+  assert.ok(validateModelProfile(oauthVlm).some((p) => p.includes("只支持 openai-codex")));
 
   const noVlmApiBase = structuredClone(valid);
   delete noVlmApiBase.vlm.apiBase;

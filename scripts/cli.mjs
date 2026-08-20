@@ -18,6 +18,7 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { buildManagedServerEnv, readManagedServerProxy } from "../shared/managed-server-env.mjs";
 import { probeServerHealth } from "../shared/server-health.mjs";
+import { OPENVIKING_OAUTH_PROVIDERS } from "../shared/openviking-oauth.mjs";
 import {
   configFingerprint,
   createManagedServerState,
@@ -54,9 +55,12 @@ const LOG_FILE = join(OV_HOME, "server.log");
 const STATE_FILE = join(OV_HOME, "server-state.json");
 const USER_CONFIG = join(homedir(), ".pi", "pi-openviking.jsonc");
 
-// The server's Codex-OAuth store defaults to the upstream-shared ~/.openviking;
-// keep it inside OV_HOME. Children (doctor, server) inherit this.
-process.env.OPENVIKING_CODEX_AUTH_PATH ||= join(OV_HOME, "codex_auth.json");
+// Upstream OAuth credential stores default to the upstream-shared ~/.openviking;
+// pin every registered provider's store inside OV_HOME. Children (doctor,
+// server) inherit this.
+for (const oauth of Object.values(OPENVIKING_OAUTH_PROVIDERS)) {
+  process.env[oauth.authPathEnv] ||= join(OV_HOME, oauth.storeFile);
+}
 
 function managedServerRuntime() {
   const proxy = readManagedServerProxy(USER_CONFIG);

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { openVikingOAuthProvider } from "./openviking-oauth.mjs";
 
 export const SERVER_STATE_VERSION = 1;
 
@@ -36,7 +37,8 @@ function serverEndpoint(config) {
 }
 
 function credentialKind(vlm) {
-  if (text(vlm.provider) === "openai-codex") return "Codex OAuth";
+  const oauth = openVikingOAuthProvider(text(vlm.provider));
+  if (oauth) return oauth.label;
   if (text(vlm.api_key).trim()) return "API key configured";
   return "not configured";
 }

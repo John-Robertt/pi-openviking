@@ -4,27 +4,35 @@
  * repository-local toolchain (.dev/toolchain), an isolated OpenViking dev
  * service (up/down/status), and an isolated Pi runner (pi). All parameters
  * are predetermined by shared/toolchain.mjs pins and dev/model-profile.json;
- * no user config is read and nothing outside the repository is touched.
- * Credentials are bridged from the user's Pi login into child process env at
- * spawn time only — never persisted. See docs/development.md.
+ * tracked settings are never read and non-credential runtime state stays under
+ * .dev/. Model credentials use the user's authorized Pi/OpenViking stores;
+ * secrets are referenced or injected, never copied into repository files.
+ * See docs/development.md.
  *
- *   npm run dev -- bootstrap|up|down|status|pi [args...]
+ *   npm run dev -- bootstrap|up|down|status|vlm-probe|pi [args...]
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   closeSync,
   existsSync,
+  linkSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  statSync,
+  symlinkSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { arch, platform } from "node:os";
+import { arch, homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { OVClient } from "../client.ts";
+import { openVikingApiPath } from "../shared/openviking-api.mjs";
+import { OPENVIKING_OAUTH_PROVIDERS, openVikingOAuthProvider } from "../shared/openviking-oauth.mjs";
 import { configFingerprint, summarizeServerConfig } from "../shared/managed-server-state.mjs";
 import { probeServerHealth } from "../shared/server-health.mjs";
 import {
@@ -61,6 +69,10 @@ const STATE_VERSION = "dev-1";
 // 隔离 Pi：agent dir 一处设定，auth/settings/sessions/extensions 全部派生隔离。
 const PI_HOME = join(DEV_HOME, "pi");
 const PI_EXTENSION_WRAPPER = join(PI_HOME, "extensions", "pi-openviking-dev", "index.ts");
+// 开发用 OAuth store 统一放在 ~/.openviking/pi-openviking-dev/ 下，避免读写上游默认 store。
+function devOAuthStorePath(oauth) {
+  return join(homedir(), ".openviking", "pi-openviking-dev", oauth.storeFile);
+}
 
 const say = (line = "") => process.stdout.write(`${line}\n`);
 const err = (line) => process.stderr.write(`${line}\n`);
@@ -83,18 +95,26 @@ export function validateModelProfile(profile) {
     if (typeof value !== "string" || !value) problems.push(`${path} 缺失或不是非空字符串`);
     return value;
   };
-  const validateApiKeyIdentity = (identity, path, { requireApiBase = false } = {}) => {
+  const validateIdentity = (identity, path, { requireApiBase = false, openViking = false } = {}) => {
     const model = identity ?? {};
     need(model.provider, `${path}.provider`);
     need(model.model, `${path}.model`);
     if (requireApiBase) need(model.apiBase, `${path}.apiBase`);
-    if (model.credentialKind !== "api_key") problems.push(`${path}.credentialKind 当前只支持 "api_key"`);
-    if (typeof model.apiKeyEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(model.apiKeyEnv)) {
-      problems.push(`${path}.apiKeyEnv 缺失或不是合法环境变量名`);
+    if (!["api_key", "oauth"].includes(model.credentialKind)) {
+      problems.push(`${path}.credentialKind 必须是 "api_key" 或 "oauth"`);
+    } else if (model.credentialKind === "api_key") {
+      if (typeof model.apiKeyEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(model.apiKeyEnv)) {
+        problems.push(`${path}.apiKeyEnv 缺失或不是合法环境变量名`);
+      }
+    } else {
+      if (model.apiKeyEnv !== undefined) problems.push(`${path}.apiKeyEnv 对 OAuth 身份必须省略`);
+      if (openViking && !openVikingOAuthProvider(model.provider)) {
+        problems.push(`${path} 的 OAuth 当前只支持 ${Object.keys(OPENVIKING_OAUTH_PROVIDERS).join("/")}`);
+      }
     }
   };
-  validateApiKeyIdentity(profile?.taskModel, "taskModel");
-  validateApiKeyIdentity(profile?.vlm, "vlm", { requireApiBase: true });
+  validateIdentity(profile?.taskModel, "taskModel");
+  validateIdentity(profile?.vlm, "vlm", { requireApiBase: true, openViking: true });
   const dense = profile?.embedding?.dense ?? {};
   need(dense.provider, "embedding.dense.provider");
   need(dense.model, "embedding.dense.model");
@@ -116,24 +136,91 @@ export function loadModelProfile(path = PROFILE_PATH) {
   return profile;
 }
 
+function defaultPiAuthPath(env = process.env) {
+  const agentDir = env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+  return join(agentDir, "auth.json");
+}
+
+function sameFile(left, right) {
+  try {
+    const a = statSync(left);
+    const b = statSync(right);
+    return a.dev === b.dev && a.ino === b.ino;
+  } catch {
+    return false;
+  }
+}
+
+/** OAuth 任务模型只引用用户 Pi auth；不把 token 复制到隔离目录。 */
+export function ensurePiAuthBridge(identity, targetAgentDir, env = process.env) {
+  const source = defaultPiAuthPath(env);
+  const target = join(targetAgentDir, "auth.json");
+  if (identity?.credentialKind !== "oauth") {
+    if (sameFile(source, target)) rmSync(target, { force: true });
+    return null;
+  }
+  let sourceStat;
+  try {
+    sourceStat = statSync(source);
+  } catch {
+    throw new Error(`OAuth 凭证未就绪：请在 Pi 中执行 /login ${identity.provider} 后重试。`);
+  }
+  if (!sourceStat.isFile()) throw new Error("Pi OAuth auth.json 不是普通文件。");
+  if (typeof process.getuid === "function" && sourceStat.uid !== process.getuid()) {
+    throw new Error("Pi OAuth auth.json 不属于当前用户。");
+  }
+  if (platform() !== "win32" && (sourceStat.mode & 0o077) !== 0) {
+    throw new Error("Pi OAuth auth.json 权限过宽；必须仅当前用户可读写。");
+  }
+
+  mkdirSync(targetAgentDir, { recursive: true, mode: 0o700 });
+  try {
+    lstatSync(target);
+    if (sameFile(source, target)) return target;
+    throw new Error(`隔离 Pi 已存在独立 auth.json，拒绝覆盖：${target}`);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+
+  try {
+    symlinkSync(source, target, "file");
+  } catch (symlinkError) {
+    try {
+      linkSync(source, target);
+    } catch (linkError) {
+      throw new Error(`无法建立 Pi OAuth 凭证引用：${linkError?.message || symlinkError?.message || linkError}`);
+    }
+  }
+  return target;
+}
+
+function credentialLikeEnv(key) {
+  return /(?:^|_)(?:API_KEY|AUTH_TOKEN|BEARER_TOKEN|ACCESS_TOKEN|TOKEN|ACCESS_KEY_ID|SECRET_ACCESS_KEY|SECRET_KEY|PASSWORD|CREDENTIALS?)$/i.test(key);
+}
+
 /**
- * 构造子进程环境：清除继承的全部 OPENVIKING_* 与调用方声明的凭证变量，再应用显式值。
- * OPENVIKING_URL 优先于 OPENVIKING_BASE_URL，用户 shell 导出的同名变量会静默击穿 dev 隔离。
+ * 构造子进程环境：清除继承的全部 OPENVIKING_*、凭证形态变量与调用方声明变量，再应用显式值。
+ * 这样切换 credential kind 后，旧 provider 的 shell 凭证也不会泄漏到新职责。
  */
 export function buildChildEnv(extra, base = process.env, clearKeys = []) {
   const cleared = new Set(clearKeys);
   const env = {};
   for (const [key, value] of Object.entries(base)) {
-    if (!key.startsWith("OPENVIKING_") && !cleared.has(key) && value !== undefined) env[key] = value;
+    if (!key.startsWith("OPENVIKING_") && !credentialLikeEnv(key) && !cleared.has(key) && value !== undefined) {
+      env[key] = value;
+    }
   }
   return { ...env, ...extra };
 }
 
 /**
- * 从用户 Pi 登录态桥接 API key：stdout pipe 读取，trim 后必须是单行非空。只返回给
- * spawn env 使用；不持久化、不回显。失败时提示 /login。
+ * 从用户 Pi 登录态桥接 API key：stdout pipe 读取，trim 后必须是单行非空。OAuth 由
+ * ensurePiAuthBridge 引用用户 auth.json，不导出 token。
  */
 export function bridgeCredential(identity) {
+  if (identity?.credentialKind !== "api_key") {
+    throw new Error("OAuth 凭证必须通过隔离 auth.json 引用，不得导出为 API key。");
+  }
   const { provider, model } = identity;
   const res = runProcess("npm", ["exec", "--", "pi", "auth", "print-api-key", "--provider", provider, "--model", model], {
     capture: true,
@@ -146,13 +233,32 @@ export function bridgeCredential(identity) {
 }
 
 /** 只探测凭证是否存在（不输出凭证本身），供 readiness 报告。 */
-function credentialReady(identity) {
+export function credentialReady(identity) {
   const res = runProcess(
     "npm",
     ["exec", "--", "pi", "auth", "check", "--provider", identity.provider, "--model", identity.model],
     { capture: true },
   );
   return res.ok;
+}
+
+function openVikingCredentialEnv(identity) {
+  const oauth = identity?.credentialKind === "oauth" ? openVikingOAuthProvider(identity.provider) : null;
+  if (!oauth) return {};
+  return {
+    [oauth.authPathEnv]: devOAuthStorePath(oauth),
+    [oauth.bootstrapPathEnv]: oauth.bootstrapPath(),
+  };
+}
+
+function openVikingCredentialReady(identity) {
+  if (identity?.credentialKind === "api_key") return credentialReady(identity);
+  const oauth = identity?.credentialKind === "oauth" ? openVikingOAuthProvider(identity.provider) : null;
+  if (!oauth) return false;
+  const python = toolchainPaths(TOOLCHAIN_HOME).venvPython;
+  if (!existsSync(python)) return false;
+  const env = buildChildEnv(openVikingCredentialEnv(identity));
+  return runProcess(python, ["-c", oauth.readinessProbe], { capture: true, env }).ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,11 +315,15 @@ async function bootstrap() {
   const { model, dimension } = profile.embedding.dense;
   say(`本地 embedding: ${model} (dimension ${dimension})；模型文件将在首次 dev up 启动服务时自动下载。`);
 
-  for (const [label, identity] of [["任务模型", profile.taskModel], ["VLM", profile.vlm]]) {
-    if (credentialReady(identity)) {
+  const readiness = [
+    ["任务模型", profile.taskModel, credentialReady(profile.taskModel)],
+    ["VLM", profile.vlm, openVikingCredentialReady(profile.vlm)],
+  ];
+  for (const [label, identity, ready] of readiness) {
+    if (ready) {
       say(`${label}凭证就绪: ${identity.provider}/${identity.model}`);
     } else {
-      say(`${label}凭证未就绪: 请在 pi 中执行 /login ${identity.provider}；对应启动动作会再次检查。`);
+      say(`${label}凭证未就绪: ${identity.provider}/${identity.model}；参照 docs/models.md 完成认证。`);
     }
   }
 
@@ -226,8 +336,8 @@ async function bootstrap() {
 // ---------------------------------------------------------------------------
 
 /**
- * ov.conf 生成：vlm.api_key 写 ${ENV} 占位符，由 OpenViking 配置加载器在启动时
- * 从进程环境展开（os.path.expandvars），凭证不落盘。
+ * ov.conf 生成：API key 身份写 ${ENV} 占位符；OAuth 身份只写 provider/model/endpoint，
+ * 由 OpenViking 自身的 OAuth store 解析和刷新凭证。
  */
 export function buildDevServerConfig(profile) {
   return {
@@ -245,7 +355,7 @@ export function buildDevServerConfig(profile) {
     vlm: {
       provider: profile.vlm.provider,
       model: profile.vlm.model,
-      api_key: `\${${profile.vlm.apiKeyEnv}}`,
+      ...(profile.vlm.credentialKind === "api_key" ? { api_key: `\${${profile.vlm.apiKeyEnv}}` } : {}),
       api_base: profile.vlm.apiBase,
       temperature: 0.0,
       max_retries: 2,
@@ -465,12 +575,16 @@ async function up() {
     fail(`端口 ${DEV_PORT} 被占用。若是残留的本服务进程，先 npm run dev -- down；否则释放端口。`);
   }
 
-  // 凭证桥接：启动时经环境注入，ov.conf 只写 ${ENV} 占位符。
-  let apiKey;
-  try {
-    apiKey = bridgeCredential(profile.vlm);
-  } catch (e) {
-    fail(e.message);
+  // API key 通过环境注入；OAuth 由 OpenViking 自身的受管 credential store 读取。
+  let apiKey = null;
+  if (profile.vlm.credentialKind === "api_key") {
+    try {
+      apiKey = bridgeCredential(profile.vlm);
+    } catch (e) {
+      fail(e.message);
+    }
+  } else if (!openVikingCredentialReady(profile.vlm)) {
+    fail(`OpenViking OAuth 凭证未就绪：参照 docs/models.md 配置 ${profile.vlm.provider}。`);
   }
 
   const config = buildDevServerConfig(profile);
@@ -483,11 +597,14 @@ async function up() {
     detached: true,
     stdio: ["ignore", logFd, logFd],
     windowsHide: true,
-    // OPENVIKING_CODEX_AUTH_PATH：防止服务读写用户默认的 codex auth。
-    env: buildChildEnv({
-      [profile.vlm.apiKeyEnv]: apiKey,
-      OPENVIKING_CODEX_AUTH_PATH: join(RUN_DIR, "codex_auth.json"),
-    }, process.env, [profile.taskModel.apiKeyEnv, profile.vlm.apiKeyEnv]),
+    env: buildChildEnv(
+      {
+        ...openVikingCredentialEnv(profile.vlm),
+        ...(profile.vlm.credentialKind === "api_key" ? { [profile.vlm.apiKeyEnv]: apiKey } : {}),
+      },
+      process.env,
+      [profile.taskModel.apiKeyEnv, profile.vlm.apiKeyEnv].filter(Boolean),
+    ),
   });
   closeSync(logFd);
   let spawnError = null;
@@ -590,15 +707,144 @@ async function status() {
   }
 
   if (profile) {
-    for (const [label, identity] of [["任务模型", profile.taskModel], ["VLM", profile.vlm]]) {
-      const ready = credentialReady(identity);
-      say(`${label}凭证: ${ready ? "ready" : `not ready（/login ${identity.provider}）`}`);
+    const readiness = [
+      ["任务模型", profile.taskModel, credentialReady(profile.taskModel)],
+      ["VLM", profile.vlm, openVikingCredentialReady(profile.vlm)],
+    ];
+    for (const [label, identity, ready] of readiness) {
+      say(`${label}凭证: ${ready ? "ready" : `not ready（参照 docs/models.md 配置 ${identity.provider}）`}`);
     }
   } else {
     say(`credential: profile 无效（${profileError?.message || "未知错误"}）`);
   }
   say(`log:        ${LOG_FILE}`);
   if (!alive || !health.ok || !identityOk || !configCheck?.ok) process.exitCode = 1;
+}
+
+const VLM_PROBE_ACTIVE_STATES = new Set(["pending", "running", "cancelling"]);
+const VLM_PROBE_TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
+
+/** Execute one owned Session/Task cycle, terminalize its task, and delete its session. */
+export async function executeVlmProbe(client, {
+  sessionId = `pi-openviking-vlm-probe-${randomBytes(16).toString("hex")}`,
+  timeoutMs = 240_000,
+  pollMs = 1_000,
+} = {}) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(pollMs) || pollMs < 0) {
+    throw new TypeError("VLM probe timeoutMs 必须为正数，pollMs 必须为非负数");
+  }
+  const existing = await client.getSession(sessionId);
+  if (existing.ok || existing.status !== 404) {
+    throw new Error(existing.ok ? "VLM probe session 身份发生碰撞" : "无法确认 VLM probe session 不存在");
+  }
+
+  let created = false;
+  let taskId = null;
+  let result = null;
+  let failure = null;
+  const startedAt = Date.now();
+  try {
+    if (!(await client.createSession(sessionId))) throw new Error("VLM probe session 创建失败");
+    created = true;
+    if (!(await client.addMessage(sessionId, "user", "Remember this short fact: the probe result is OK."))) {
+      throw new Error("VLM probe 消息提交失败");
+    }
+    const committed = await client.commitSession(sessionId);
+    taskId = committed.ok && typeof committed.result?.task_id === "string" ? committed.result.task_id : null;
+    if (!taskId) throw new Error("VLM probe commit 未返回 task_id");
+
+    const deadline = startedAt + timeoutMs;
+    while (Date.now() <= deadline) {
+      const response = await client.getTask(taskId);
+      if (!response.ok || !response.result) throw new Error("VLM probe task 状态不可用");
+      const task = response.result;
+      if (task.status === "completed") {
+        const context = await client.getSessionContext(sessionId);
+        const overview = context.ok && typeof context.result?.latest_archive_overview === "string"
+          ? context.result.latest_archive_overview.trim()
+          : "";
+        if (!overview) throw new Error("VLM probe 完成但没有 working-memory overview");
+        result = { sessionId, taskId, wallMs: Date.now() - startedAt, outputBytes: Buffer.byteLength(overview) };
+        break;
+      }
+      if (task.status === "failed" || task.status === "cancelled") {
+        throw new Error(`VLM probe task 终态为 ${task.status}`);
+      }
+      await sleep(pollMs);
+    }
+    if (!result) throw new Error(`VLM probe 在 ${timeoutMs}ms 内未完成`);
+  } catch (error) {
+    failure = error;
+  }
+
+  try {
+    if (taskId) {
+      const current = await client.getTask(taskId);
+      const task = current.ok ? current.result : null;
+      if (!task || task.resource_id !== sessionId || task.task_type !== "session_commit") {
+        throw new Error("VLM probe task ownership 无法证明，拒绝取消");
+      }
+      if (VLM_PROBE_ACTIVE_STATES.has(task.status)) {
+        const cancelled = await client.fetchJSON(
+          openVikingApiPath(`/tasks/${encodeURIComponent(taskId)}/cancel`),
+          { method: "POST", body: "{}" },
+          10_000,
+        );
+        if (!cancelled.ok) throw new Error("VLM probe task 取消失败");
+        let terminal = false;
+        for (let attempt = 0; attempt < 60 && !terminal; attempt++) {
+          const response = await client.getTask(taskId);
+          terminal = response.ok && VLM_PROBE_TERMINAL_STATES.has(response.result?.status);
+          if (!terminal) await sleep(500);
+        }
+        if (!terminal) throw new Error("VLM probe task 取消后仍未终止");
+      }
+    }
+    if (created) {
+      const deleted = await client.deleteSession(sessionId);
+      if (!deleted.ok) throw new Error("VLM probe session 清理失败");
+      const readback = await client.getSession(sessionId);
+      if (readback.ok || readback.status !== 404) throw new Error("VLM probe session 清理未获回读证明");
+    }
+  } catch (cleanupError) {
+    failure = failure ? new AggregateError([failure, cleanupError], "VLM probe 执行和清理均失败") : cleanupError;
+  }
+
+  if (failure) throw failure;
+  return result;
+}
+
+async function vlmProbe() {
+  const pid = readPid();
+  const ownership = pid && pidAlive(pid) ? verifyRunFiles(RUN_DIR, { expectedPid: pid }) : null;
+  if (!ownership?.ok || !isDevServerProcess(readProcessCommand(pid))) {
+    fail("开发服务未运行或身份未确认，先 npm run dev -- up。");
+  }
+  const profile = loadModelProfile();
+  const configCheck = verifyDevServerConfig(RUN_DIR, ownership.state, buildDevServerConfig(profile));
+  if (!configCheck.ok) {
+    fail(`开发服务配置不匹配（${configCheck.reason}），请先 npm run dev -- down，再重新 up。`);
+  }
+  if (!openVikingCredentialReady(profile.vlm)) {
+    fail(`OpenViking VLM 凭证未就绪：参照 docs/models.md 配置 ${profile.vlm.provider}。`);
+  }
+
+  const client = new OVClient({
+    endpoint: DEV_ENDPOINT,
+    apiKey: "",
+    account: DEV_ACCOUNT,
+    user: DEV_USER,
+    peerId: "dev-vlm-probe",
+    userAgent: "pi-openviking-dev-vlm-probe",
+  });
+  try {
+    if (!(await client.health())) fail("开发服务 health 检查失败。");
+    say(`VLM probe:  ${profile.vlm.provider}/${profile.vlm.model}`);
+    const probe = await executeVlmProbe(client);
+    say(`✓ VLM 真实调用完成（${probe.wallMs}ms, output ${probe.outputBytes}B），临时 Task 已终止且 Session 已删除。`);
+  } finally {
+    await client.close(true);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -639,9 +885,10 @@ async function pi(args) {
     fail(e.message);
   }
 
-  let apiKey;
+  let apiKey = null;
   try {
-    apiKey = bridgeCredential(profile.taskModel);
+    ensurePiAuthBridge(profile.taskModel, PI_HOME);
+    if (profile.taskModel.credentialKind === "api_key") apiKey = bridgeCredential(profile.taskModel);
   } catch (e) {
     fail(e.message);
   }
@@ -657,8 +904,8 @@ async function pi(args) {
       OPENVIKING_USER: DEV_USER,
       OPENVIKING_CONFIG_FILE: OV_CONF,
       OPENVIKING_CLI_CONFIG_FILE: OVCLI_CONF,
-      [profile.taskModel.apiKeyEnv]: apiKey,
-    }, process.env, [profile.taskModel.apiKeyEnv, profile.vlm.apiKeyEnv]),
+      ...(profile.taskModel.credentialKind === "api_key" ? { [profile.taskModel.apiKeyEnv]: apiKey } : {}),
+    }, process.env, [profile.taskModel.apiKeyEnv, profile.vlm.apiKeyEnv].filter(Boolean)),
   });
   child.on("exit", (code, signal) => {
     if (signal) process.kill(process.pid, signal);
@@ -685,11 +932,14 @@ function main() {
     case "status":
       status().catch((e) => fail(e?.message || String(e)));
       break;
+    case "vlm-probe":
+      vlmProbe().catch((e) => fail(e?.message || String(e)));
+      break;
     case "pi":
       pi(rest).catch((e) => fail(e?.message || String(e)));
       break;
     default:
-      say("用法: npm run dev -- bootstrap|up|down|status|pi [args...]");
+      say("用法: npm run dev -- bootstrap|up|down|status|vlm-probe|pi [args...]");
       process.exitCode = cmd === undefined || cmd === "help" || cmd === "--help" || cmd === "-h" ? 0 : 2;
   }
 }

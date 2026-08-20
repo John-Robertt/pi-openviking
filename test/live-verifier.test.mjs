@@ -71,8 +71,8 @@ test("manifest workload 结构完整：成功标准、证伪条件与阈值决�
 
 test("live Pi invocation 按任务模型与 provider override 隔离凭证", () => {
   const profile = {
-    taskModel: { provider: "task-provider", model: "task-model", apiKeyEnv: "TASK_API_KEY" },
-    vlm: { provider: "vlm-provider", model: "vlm-model", apiKeyEnv: "VLM_API_KEY" },
+    taskModel: { provider: "task-provider", model: "task-model", credentialKind: "api_key", apiKeyEnv: "TASK_API_KEY" },
+    vlm: { provider: "vlm-provider", model: "vlm-model", credentialKind: "api_key", apiKeyEnv: "VLM_API_KEY" },
   };
   const common = {
     piBin: "/repo/pi",
@@ -90,6 +90,15 @@ test("live Pi invocation 按任务模型与 provider override 隔离凭证", () 
   assert.equal(task.args[task.args.indexOf("--provider") + 1], "task-provider");
   assert.equal(task.env.TASK_API_KEY, "selected-task-key");
   assert.equal(task.env.VLM_API_KEY, undefined);
+
+  const oauth = buildLivePiInvocation({
+    ...common,
+    profile: {
+      ...profile,
+      taskModel: { provider: "openai-codex", model: "gpt-5.6-luna", credentialKind: "oauth" },
+    },
+  });
+  assert.equal(oauth.env.TASK_API_KEY, undefined);
 
   const override = { provider: "scripted", model: "scripted-model", apiKeyEnv: "SCRIPTED_API_KEY" };
   const overridden = buildLivePiInvocation({

@@ -22,6 +22,7 @@
 | 当前模块职责和数据流                                   | [`docs/design.md`](./docs/design.md)                                                     | 生产代码及对应测试                                  |
 | 观察点契约、记录形状、关联字段、脱敏边界、完成门       | [`docs/observability.md`](./docs/observability.md)                                       | `docs/verification.md`“观察证据”定义的检查          |
 | 开发环境、隔离服务、凭证桥接、调试和安全清理           | [`docs/development.md`](./docs/development.md)                                           | `test/dev-*.test.mjs` 与 `npm run dev -- <command>` |
+| Pi/OpenViking 模型 provider、字段、认证与变更流程     | [`docs/models.md`](./docs/models.md)                                                     | 模型配置聚焦测试、服务状态与真实模型调用            |
 | 最终用户安装、配置、命令和故障排查                     | [`docs/usage.md`](./docs/usage.md)                                                       | CLI、配置和服务管理测试                             |
 | 项目简介和文档入口                                     | [`README.md`](./README.md)                                                               | 本地链接检查与 `npm pack --dry-run`                 |
 | npm 命令、发布文件、Node 和 peer 边界                  | [`package.json`](./package.json)                                                         | `package-lock.json`、npm 命令和打包检查             |
@@ -102,6 +103,7 @@ gate 共同证明；配置字段只表达其权威文档定义的策略。
 | 配置、用户空间、peer 或凭证解析         | `docs/spec.md`“目标配置”、`docs/usage.md`     | `config.ts`、`shared/config-schema.mjs`、`shared/credentials.mjs`、`shared/workspace-peer.mjs` | `test/config-schema.test.mjs` 及对应新增测试                                   |
 | 最终用户安装和服务管理                  | `docs/usage.md`                               | `scripts/cli.mjs`、`shared/toolchain.mjs`、`shared/managed-server-*.mjs`                       | `test/server-status-cli.test.mjs`、`test/toolchain.test.mjs`、相关 server 测试 |
 | 仓库开发环境和隔离 Pi                   | `docs/development.md`                         | `scripts/dev.mjs`、`dev/model-profile.json`                                                    | `test/dev-bootstrap.test.mjs`、`test/dev-lifecycle.test.mjs`                   |
+| Pi/OpenViking 模型配置与切换             | `docs/models.md`                              | `dev/model-profile.json`、`scripts/dev.mjs`、`shared/openviking-oauth.mjs`                                | 模型配置聚焦测试、`dev status` 与 `dev vlm-probe`                              |
 | 阶段 gate、workload 或 artifact         | `docs/verification.md`、`docs/development.md` | `test/live/` 与 `package.json` 中实际存在的 gate                                               | 对应 `verify:<phase>:live` 结果；建设中的 gate 以“真实边界待验证”记录阶段状态  |
 | 文档                                    | 本表“权威事实路径”                            | 对应维护位置中的文档                                                                           | 链接检查、`git diff --check`、从新维护者视角复核                               |
 
@@ -146,6 +148,7 @@ npm run dev -- down
 - 当前模块职责或数据流变化：更新 `docs/design.md`。
 - 观察点契约、记录形状、脱敏边界或完成门变化：更新 `docs/observability.md`。
 - 开发命令、环境、调试、凭证桥接或清理变化：更新 `docs/development.md`。
+- Pi/OpenViking provider、模型字段、认证方式或变更流程变化：更新 `docs/models.md`。
 - 用户可见安装、配置、行为或排障变化：更新 `docs/usage.md`，必要时同步 `README.md` 的入口说明。
 - 导航、任务路由或本文承担的仓库专属边界变化时更新本文。
 

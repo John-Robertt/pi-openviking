@@ -20,6 +20,8 @@ import {
   bridgeCredential,
   buildChildEnv,
   buildDevServerConfig,
+  credentialReady,
+  ensurePiAuthBridge,
   isDevServerProcess,
   isNodeVersionSupported,
   loadModelProfile,
@@ -142,7 +144,9 @@ export function buildLivePiInvocation({
     OPENVIKING_URL: endpoint,
     OPENVIKING_ACCOUNT: openviking.account,
     OPENVIKING_USER: openviking.user,
-    ...(usesTaskModel ? { [profile.taskModel.apiKeyEnv]: taskApiKey } : {}),
+    ...(usesTaskModel && profile.taskModel.credentialKind === "api_key"
+      ? { [profile.taskModel.apiKeyEnv]: taskApiKey }
+      : {}),
   }, baseEnv, [profile.taskModel.apiKeyEnv, profile.vlm.apiKeyEnv, provider?.apiKeyEnv].filter(Boolean));
   for (const key of ["OV_OBSERVE", "OV_OBSERVE_FD", "OV_E2E_FD", "OV_E2E_TURN", ...envStrip]) delete env[key];
   if (capture === "observation") env.OV_OBSERVE_FD = "3";
@@ -175,6 +179,7 @@ export async function runPi(ctx, {
   const runDir = ctx.runDir;
   const capturePath = join(runDir, capture === "observation" ? "observations" : "segments", `${workloadId}-${turn}.jsonl`);
   mkdirSync(dirname(capturePath), { recursive: true });
+  if (provider === null) ensurePiAuthBridge(ctx.profile.taskModel, join(runDir, "pi"));
   const capFd = openSync(capturePath, "wx", 0o600);
   const { args, env } = buildLivePiInvocation({
     piBin: ctx.piBin,
@@ -386,34 +391,56 @@ export async function establishRemoteOwnership(log, ctx) {
     readback.ok && Buffer.isBuffer(readback.bytes) && readback.bytes.equals(ctx.markerBytes));
 }
 
-async function cancelWorkloadTasks(client) {
-  const listed = await client.fetchJSON(openVikingApiPath("/tasks?limit=200"), undefined, 10000);
-  if (!listed.ok || !Array.isArray(listed.result)) return [];
-  const active = listed.result.filter((task) => ["pending", "running", "cancelling"].includes(task?.status));
-  for (const task of active) {
-    if (typeof task?.task_id === "string") {
+const ACTIVE_TASK_STATES = ["pending", "running", "cancelling"];
+const TERMINAL_TASK_STATES = ["completed", "failed", "cancelled"];
+
+/**
+ * 取消本次 gate 构造的 VLM task。取消是远端破坏性操作，因此与删除路径使用同一纪律：
+ * 只作用于由本次 run 的对象身份确定性派生的 `resourceIds`，且逐项 `getTask` 回读、核对
+ * task 自身声明的 resource_id/task_type 与该身份一致后才发出 cancel。列表过滤条件不作为
+ * 归属证明——归属只由回读结果确定。
+ */
+async function cancelOwnedTasks(client, resourceIds) {
+  const cancelled = [];
+  const residuals = [];
+  for (const resourceId of resourceIds) {
+    const listed = await client.listTasks(resourceId);
+    if (!listed.ok || !Array.isArray(listed.result)) {
+      residuals.push(`list failed: ${resourceId}`);
+      continue;
+    }
+    for (const task of listed.result) {
+      if (typeof task?.task_id !== "string" || !ACTIVE_TASK_STATES.includes(task?.status)) continue;
+      const owned = await client.getTask(task.task_id);
+      if (!owned.ok || owned.result?.resource_id !== resourceId || owned.result?.task_type !== "session_commit") {
+        residuals.push(`ownership unproven: ${task.task_id}`);
+        continue;
+      }
       await client.fetchJSON(
         openVikingApiPath(`/tasks/${encodeURIComponent(task.task_id)}/cancel`),
         { method: "POST", body: "{}" },
         10000,
       );
+      cancelled.push(task.task_id);
     }
   }
-  const residuals = [];
-  for (const task of active) {
-    if (typeof task?.task_id !== "string") continue;
+  for (const taskId of cancelled) {
     let terminal = false;
     for (let attempt = 0; attempt < 60 && !terminal; attempt++) {
-      const current = await client.getTask(task.task_id);
-      terminal = current.ok && ["completed", "failed", "cancelled"].includes(current.result?.status);
+      const current = await client.getTask(taskId);
+      terminal = current.ok && TERMINAL_TASK_STATES.includes(current.result?.status);
       if (!terminal) await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    if (!terminal) residuals.push(task.task_id);
+    if (!terminal) residuals.push(`still active: ${taskId}`);
   }
-  return residuals;
+  return { cancelled, residuals };
 }
 
-export async function cleanupRemote(log, ctx, objectUris) {
+/**
+ * taskResources 为数组表示本次 gate 创建 VLM task 并承担取消义务（可以为空）；为 null 表示
+ * 该 gate 不创建 task，因而不枚举也不断言 task 状态。
+ */
+export async function cleanupRemote(log, ctx, objectUris, taskResources = null) {
   const w = ctx.workloadId;
   const cleanup = { markerVerified: false, deleted: [], residuals: [], objectUris };
   try {
@@ -429,9 +456,13 @@ export async function cleanupRemote(log, ctx, objectUris) {
       cleanup.residuals.push("ownership never established; namespace left untouched");
     }
     if (cleanup.markerVerified) {
-      const taskResiduals = await cancelWorkloadTasks(ctx.client);
-      log.check(w, "cleanup.tasks", "no active tasks", taskResiduals.length, taskResiduals.length === 0);
-      if (taskResiduals.length > 0) cleanup.residuals.push(`${taskResiduals.length} active tasks`);
+      if (Array.isArray(taskResources)) {
+        const tasks = await cancelOwnedTasks(ctx.client, taskResources);
+        cleanup.cancelledTasks = tasks.cancelled;
+        log.check(w, "cleanup.tasks", "no active owned tasks", tasks.residuals.length, tasks.residuals.length === 0,
+          tasks.residuals.slice(0, 3).join(" | "));
+        if (tasks.residuals.length > 0) cleanup.residuals.push(`${tasks.residuals.length} owned tasks unresolved`);
+      }
       // OpenViking 拒绝删除自身用户根（403）；删除动作使用服务级基础用户身份。
       for (const uri of [`${ctx.userRoot}/resources/.pi-openviking`, `${ctx.userRoot}/resources`, ctx.userRoot]) {
         let ok = false;
@@ -496,15 +527,20 @@ export async function preflight(log, ctx, extra) {
     health.ok && health.data?.version === ctx.manifest.identities.openviking.version
       && health.data?.auth_mode === ctx.manifest.identities.openviking.authMode);
 
-  // 真实 Pi workload 只桥接任务模型凭证；VLM 凭证由受管 OpenViking 启动路径持有。
-  try {
-    ctx.taskApiKey = bridgeCredential(ctx.profile.taskModel);
-  } catch {
-    ctx.taskApiKey = "";
+  // 真实 Pi workload 只准备任务模型凭证；VLM 凭证由受管 OpenViking 启动路径持有。
+  let taskCredentialReady = false;
+  ctx.taskApiKey = "";
+  if (ctx.profile.taskModel.credentialKind === "api_key") {
+    try {
+      ctx.taskApiKey = bridgeCredential(ctx.profile.taskModel);
+      taskCredentialReady = Boolean(ctx.taskApiKey) && !ctx.taskApiKey.includes("\n");
+    } catch {
+      taskCredentialReady = false;
+    }
+  } else {
+    taskCredentialReady = credentialReady(ctx.profile.taskModel);
   }
-  log.check(g, "credential-bridged:task-model", "non-empty single line",
-    ctx.taskApiKey && !ctx.taskApiKey.includes("\n") ? "ok" : "failed",
-    Boolean(ctx.taskApiKey) && !ctx.taskApiKey.includes("\n"));
+  log.check(g, "credential-ready:task-model", true, taskCredentialReady, taskCredentialReady);
 
   for (const rel of ctx.manifest.identities.extensionLoadOrder) {
     log.check(g, `extension-exists:${rel}`, true, existsSync(join(LIVE_REPO, rel)), existsSync(join(LIVE_REPO, rel)));
@@ -519,8 +555,10 @@ export async function preflight(log, ctx, extra) {
  * gate 专属身份核对、workload 全部结束后的全局断言与 summary 附加字段分别经
  * preflightExtra / afterWorkloads / summaryExtra 接入。
  * manifest 声明 remoteOwnership=false 的 workload 不建立远端 namespace（如死端口 fail-open）。
+ * 创建 VLM task 的 gate 另外提供 collectTaskResources，返回本次构造的 task resource id；
+ * 未提供者不承担 task 取消义务。
  */
-export async function runLiveGate({ gate, manifestPath, manifestHashPath, runners, collectObjectUris, preflightExtra, afterWorkloads, summaryExtra }) {
+export async function runLiveGate({ gate, manifestPath, manifestHashPath, runners, collectObjectUris, collectTaskResources, preflightExtra, afterWorkloads, summaryExtra }) {
   const t0 = Date.now();
   const runId = `${gate}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(4).toString("hex")}`;
   const log = new AssertionLog();
@@ -597,14 +635,21 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
         log.fail(workload.id, "workload-exception", error);
       } finally {
         let objectUris = [];
+        let taskResources = collectTaskResources ? [] : null;
         try {
           objectUris = await collectObjectUris(wctx);
+          if (collectTaskResources) taskResources = await collectTaskResources(wctx);
         } catch (error) {
           log.fail(workload.id, "collect-cleanup-objects", error);
         }
-        wctx.cleanup = await cleanupRemote(log, wctx, objectUris);
+        wctx.cleanup = await cleanupRemote(log, wctx, objectUris, taskResources);
         workload.summary = { sessionId, runs: wctx.runs };
-        (ctx.deletedObjects ??= []).push({ workload: workload.id, userRoot: wctx.userRoot, objectUris: wctx.cleanup.objectUris });
+        (ctx.deletedObjects ??= []).push({
+          workload: workload.id,
+          userRoot: wctx.userRoot,
+          objectUris: wctx.cleanup.objectUris,
+          cancelledTasks: wctx.cleanup.cancelledTasks ?? null,
+        });
       }
     }
 
@@ -652,6 +697,7 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
     cleanup: {
       remote: log.items.filter((a) => a.id.startsWith("cleanup.")).map((a) => ({ workload: a.workload, id: a.id, pass: a.pass })),
       skeletonResurrected: Object.fromEntries((ctx.deletedObjects ?? []).map((d) => [d.workload, d.skeletonResurrected ?? null])),
+      cancelledTasks: Object.fromEntries((ctx.deletedObjects ?? []).map((d) => [d.workload, d.cancelledTasks])),
       local: null,
     },
     passed,

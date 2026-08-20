@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,6 +8,8 @@ import {
   buildDevPiArgs,
   buildDevServerConfig,
   createRunFiles,
+  ensurePiAuthBridge,
+  executeVlmProbe,
   isDevServerProcess,
   piWrapperSource,
   verifyDevServerConfig,
@@ -53,6 +55,20 @@ test("buildDevServerConfig 只使用 profile.vlm 且凭证为环境占位符", (
   assert.equal(config.embedding.dense.dimension, 128);
   assert.ok(config.embedding.dense.cache_dir.includes("models"));
   assert.ok(config.storage.workspace.includes("data"));
+});
+
+test("buildDevServerConfig 为 OAuth VLM 省略 api_key", () => {
+  const oauth = structuredClone(profile);
+  oauth.vlm = {
+    provider: "openai-codex",
+    model: "gpt-5.6-luna",
+    apiBase: "https://chatgpt.com/backend-api/codex",
+    credentialKind: "oauth",
+  };
+  const config = buildDevServerConfig(oauth);
+  assert.equal(config.vlm.provider, "openai-codex");
+  assert.equal(config.vlm.model, "gpt-5.6-luna");
+  assert.equal(config.vlm.api_key, undefined);
 });
 
 test("buildDevPiArgs 只使用 profile.taskModel 并拒绝命令行覆盖", () => {
@@ -160,6 +176,104 @@ test("buildChildEnv 只保留当前子进程职责所需的模型凭证", () => 
   const piEnv = buildChildEnv({ TASK_API_KEY: "selected-task-key" }, base, modelCredentialEnvs);
   assert.equal(piEnv.TASK_API_KEY, "selected-task-key");
   assert.equal(piEnv.VLM_API_KEY, undefined);
+});
+
+test("ensurePiAuthBridge 只引用用户 OAuth auth.json 并可安全撤销", () => {
+  withTmpDir((dir) => {
+    const sourceDir = join(dir, "global-pi");
+    const targetDir = join(dir, "isolated-pi");
+    const source = join(sourceDir, "auth.json");
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(source, "{}", { mode: 0o600 });
+
+    const oauth = { provider: "openai-codex", credentialKind: "oauth" };
+    const env = { PI_CODING_AGENT_DIR: sourceDir };
+    const target = ensurePiAuthBridge(oauth, targetDir, env);
+    const sourceStat = statSync(source);
+    const targetStat = statSync(target);
+    assert.equal(targetStat.dev, sourceStat.dev);
+    assert.equal(targetStat.ino, sourceStat.ino);
+    assert.equal(ensurePiAuthBridge(oauth, targetDir, env), target);
+
+    ensurePiAuthBridge({ credentialKind: "api_key" }, targetDir, env);
+    assert.equal(existsSync(target), false);
+  });
+});
+
+test("executeVlmProbe 证明真实 Session/Task 输出并清理所属 session", async () => {
+  const calls = [];
+  const client = {
+    async getSession() { calls.push("getSession"); return { ok: false, status: 404, result: null }; },
+    async createSession() { calls.push("createSession"); return true; },
+    async addMessage() { calls.push("addMessage"); return true; },
+    async commitSession() { calls.push("commitSession"); return { ok: true, result: { task_id: "task-1" } }; },
+    async getTask() {
+      calls.push("getTask");
+      return { ok: true, result: { task_id: "task-1", resource_id: "probe-session", task_type: "session_commit", status: "completed" } };
+    },
+    async getSessionContext() { calls.push("getSessionContext"); return { ok: true, result: { latest_archive_overview: "OK" } }; },
+    async deleteSession() { calls.push("deleteSession"); return { ok: true, result: null }; },
+  };
+
+  const result = await executeVlmProbe(client, { sessionId: "probe-session", pollMs: 0 });
+  assert.equal(result.sessionId, "probe-session");
+  assert.equal(result.taskId, "task-1");
+  assert.equal(result.outputBytes, 2);
+  assert.deepEqual(calls, [
+    "getSession", "createSession", "addMessage", "commitSession", "getTask",
+    "getSessionContext", "getTask", "deleteSession", "getSession",
+  ]);
+});
+
+test("executeVlmProbe 在提交失败后仍清理已创建 session", async () => {
+  let reads = 0;
+  const calls = [];
+  const client = {
+    async getSession() { reads += 1; calls.push("getSession"); return { ok: false, status: 404, result: null }; },
+    async createSession() { calls.push("createSession"); return true; },
+    async addMessage() { calls.push("addMessage"); return true; },
+    async commitSession() { calls.push("commitSession"); return { ok: false, result: null }; },
+    async deleteSession() { calls.push("deleteSession"); return { ok: true, result: null }; },
+  };
+
+  await assert.rejects(
+    executeVlmProbe(client, { sessionId: "probe-session", pollMs: 0 }),
+    /commit 未返回 task_id/,
+  );
+  assert.equal(reads, 2);
+  assert.deepEqual(calls, ["getSession", "createSession", "addMessage", "commitSession", "deleteSession", "getSession"]);
+});
+
+test("executeVlmProbe 超时时只取消 ownership 已证明的 active task", async () => {
+  let sessionReads = 0;
+  let taskReads = 0;
+  let cancelled = false;
+  const client = {
+    async getSession() { sessionReads += 1; return { ok: false, status: 404, result: null }; },
+    async createSession() { return true; },
+    async addMessage() { return true; },
+    async commitSession() { return { ok: true, result: { task_id: "task-1" } }; },
+    async getTask() {
+      taskReads += 1;
+      return {
+        ok: true,
+        result: {
+          task_id: "task-1", resource_id: "probe-session", task_type: "session_commit",
+          status: cancelled ? "cancelled" : "running",
+        },
+      };
+    },
+    async fetchJSON() { cancelled = true; return { ok: true, result: null }; },
+    async deleteSession() { return { ok: true, result: null }; },
+  };
+
+  await assert.rejects(
+    executeVlmProbe(client, { sessionId: "probe-session", timeoutMs: 1, pollMs: 2 }),
+    /未完成/,
+  );
+  assert.equal(cancelled, true);
+  assert.ok(taskReads >= 3);
+  assert.equal(sessionReads, 2);
 });
 
 test("pi wrapper 相对路径指向仓库 index.ts", () => {

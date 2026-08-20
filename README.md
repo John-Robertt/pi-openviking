@@ -137,6 +137,7 @@ docs/                        规范、设计、开发环境、用户文档与可
 - [`docs/roadmap.md`](./docs/roadmap.md)：阶段划分、当前实施状态和下一实施入口；
 - [`docs/verification.md`](./docs/verification.md)：证据标准与阶段门禁契约；
 - [`docs/development.md`](./docs/development.md)：开发环境的安装、运行、开发循环和清理；
+- [`docs/models.md`](./docs/models.md)：Pi/OpenViking 模型 provider、认证、配置字段与变更流程；
 - [`docs/design.md`](./docs/design.md)：当前实现的职责与数据流；
 - [`docs/usage.md`](./docs/usage.md)：安装、配置和故障排查；
 - [`docs/observability.md`](./docs/observability.md)：观察点契约、记录形状与脱敏边界。

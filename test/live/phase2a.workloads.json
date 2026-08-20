@@ -5,7 +5,7 @@
   "purpose": "Phase 2A 真实验收门禁：使用真实 OpenViking Content API 已提交且可 expand 的 Archive 与开发模型身份中的 VLM，机器断言 request/failure/checkpoint 追加事实、来源/hash、自证、重试、进程恢复、积压派生、多模态理解和吞吐。",
   "mechanism": {
     "selected": "Archive 回读证明 + OpenViking Session/Task 公开 API + ProducedRecordedEventV1 追加事实",
-    "evidence": "checkpoint 机制在此前开发模型身份下真实通过 114/114，并形成当前 240000ms 吞吐门限；当前 model profile 的最新真实 gate 为 101/114：多模态 checkpoint 61991ms/18787 tokens、明确失败后的重试 28417ms/17631 tokens、双 Archive 重启恢复 222369ms/43211 tokens 均成立，但一个 1000-token 文本 task 在门限时仍为 running，最终于 608033ms 完成并报告 17442 tokens，因而当前阶段出口重新打开且不放宽门限。deterministic checks 证明孤立 checkpoint 被拒绝、并发事实首写者收敛、三个 Archive 各三次 attempt 可追平、终态清理跨重启恢复、媒体缺少摘要保持 pending，且外部错误正文不进入事实。受管服务持有 VLM 凭证，扩展进程不读取或转发凭证。",
+    "evidence": "当前开发模型身份在固定 240000ms 质量边界下连续三次通过 114/114；accepted baseline 最慢观测为 72942ms。deterministic checks 证明孤立 checkpoint 被拒绝、并发事实首写者收敛、三个 Archive 各三次 attempt 可追平、终态清理跨重启恢复、媒体缺少摘要保持 pending，且外部错误正文不进入事实。受管服务持有 VLM 凭证，扩展进程不读取或转发凭证。",
     "falsifiedAlternatives": [
       "扩展直接调用 VLM provider：运行时没有 VLM 凭证所有权，且会绕过受管服务固定身份",
       "把 checkpoint 仅保存在本地队列：重启后无法由 Archive/request/failure/checkpoint 事实恢复",
@@ -33,7 +33,7 @@
     },
     "modelProfile": {
       "path": "dev/model-profile.json",
-      "sha256": "42313a69464c572b71138505ede211b257692fa9f69697811c1802eb52473bab",
+      "sha256": "38f28aed9d6ec9a129d9c554a85e47ef316ae226897e066bc9324f05f29ab246",
       "consumer": "受管 OpenViking 读取 profile.vlm 并独占 VLM 凭证；preflight 核对实际 ov.conf、状态指纹和 profile。"
     },
     "protocol": {
@@ -137,16 +137,14 @@
     "baseline": {
       "measuredAt": "2026-08-20",
       "runs": [
-        { "scenario": "1000-token 文本 checkpoint A", "archiveTokens": 1000, "wallMs": 53765, "totalTokens": 15746, "checkpointPersisted": true },
-        { "scenario": "1000-token 文本 checkpoint B", "archiveTokens": 1000, "wallMs": 24465, "totalTokens": 15165, "checkpointPersisted": true },
-        { "scenario": "嵌入 PNG 多模态 checkpoint A", "archiveTokens": 1000, "wallMs": 163981, "totalTokens": 22080, "abstractBytes": 224 },
-        { "scenario": "嵌入 PNG 多模态 checkpoint B", "archiveTokens": 1000, "wallMs": 103530, "totalTokens": 17874, "abstractBytes": 173 },
-        { "scenario": "明确失败后的真实 VLM 重试", "archiveTokens": 1000, "wallMs": 21844, "totalTokens": 15228, "attempt": 2 },
-        { "scenario": "双 Archive request/task 重启恢复", "archiveTokens": 2000, "wallMs": 54356, "totalTokens": 37322, "checkpointCount": 2 }
+        { "scenario": "1000-token 文本 checkpoint", "archiveTokens": 1000, "wallMs": 23392, "totalTokens": 11291, "checkpointPersisted": true },
+        { "scenario": "嵌入 PNG 多模态 checkpoint", "archiveTokens": 1000, "wallMs": 72942, "totalTokens": 12420, "abstractBytes": 248 },
+        { "scenario": "明确失败后的真实 VLM 重试", "archiveTokens": 1000, "wallMs": 19041, "totalTokens": 11216, "attempt": 2 },
+        { "scenario": "双 Archive request/task 重启恢复", "archiveTokens": 2000, "wallMs": 49193, "totalTokens": 25565, "checkpointCount": 2 }
       ],
       "expectedChange": "request 在 VLM 前持久化；只有来源与完整 request/failure 链可核验的 completed task 形成 checkpoint；明确失败进入下一 attempt；进程重建与并发进程复用首个有效 request/task；终态事实恢复清理；两个未消费 Archive 派生 lagging 并在追平时恢复。",
       "falsification": "任一来源/hash/事实链/唯一性/并发恢复/积压/终态清理断言失败，媒体无摘要仍形成 checkpoint，外部错误正文进入事实，或真实 VLM/媒体处理超过阈值，即重新打开 Phase 2A 约束。",
-      "thresholdRationale": "checkpointWallMs 保持已通过基线确定的 240000ms；基线最慢的两次多模态观测为 163981ms 与 103530ms，原门限保留约 1.46 倍余量。当前 model profile 出现 608033ms 文本 task 长尾并已证伪该边界，因此重新打开阶段出口而不调高门限；正确性继续使用确定性身份、规范字节、完整事实链、集合和状态等值断言，Phase 3 再以多个 100k+ workload 校准发布预算。"
+      "thresholdRationale": "checkpointWallMs 保持 240000ms 质量边界；当前开发模型身份的 accepted baseline 最慢观测为 72942ms，保留约 3.29 倍余量，同一边界连续三次均通过 114/114。正确性使用确定性身份、规范字节、完整事实链、集合和状态等值断言，Phase 3 再以多个 100k+ workload 校准发布预算。"
     }
   }
 }

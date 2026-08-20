@@ -27,23 +27,16 @@ manifest/hash 下覆盖成功 recall/同步、断线、409 冲突、URI 拒绝�
 `verify:phase1:live` 在真实 Pi lifecycle 与受管 OpenViking 上覆盖 Archive 形成、崩溃残留恢复、受管重启
 幂等和完整性冲突 fail-open；常驻 `verify:observability:live` 全量通过。
 
-**Phase 2A 生产实现已完成，阶段出口因当前 VLM 吞吐重新打开。** checkpoint request、代码拥有的明确 failure
-与结构化 checkpoint 作为自产 `RecordedEventV1` 进入既有 immutable event namespace；消费状态、完整
-parent/attempt 链、积压和终态清理义务只从 Archive 与这些事实派生。deterministic checks 证明孤立 checkpoint
-拒绝、并发首写者收敛、逐 Archive 三次 attempt、媒体失败 pending、外部错误脱敏和跨重启清理。当前
-`verify:phase2a:live` 在真实 0.4.15 Content/Session/Task API 上以 101/114 结束：多模态、明确失败后的真实
-VLM 重试和双 Archive 恢复成立，但一个文本 task 在 240000ms 门限时仍为 running，最终 608033ms 才完成，
-并级联导致门禁截止时的 checkpoint 与 active-task 清理断言失败。门限不放宽；当前 model profile 通过或被替换前，
-Phase 2A 不作为 Phase 2B 的已确认输入。常驻 `verify:observability:live` 已覆盖现行 registry。
+**Phase 2A 阶段出口已关闭。** checkpoint request、代码拥有的明确 failure 与结构化 checkpoint 作为自产
+`RecordedEventV1` 进入既有 immutable event namespace；消费状态、完整 parent/attempt 链、积压和终态清理
+义务只从 Archive 与这些事实派生。deterministic checks 证明孤立 checkpoint 拒绝、并发首写者收敛、逐 Archive
+三次 attempt、媒体失败 pending、外部错误脱敏和跨重启清理。
 
-**环境注意**：服务端队列可能因既往强制终止留下 `status=processing` 且不再完成的条目，此时
-`/api/v1/system/wait` 必然超时、受管重启会变慢。`.dev/runs/openviking/data` 是可重建运行态，删除后
-`npm run dev -- up` 即恢复。
+`verify:phase2a:live` 在当前开发模型身份和受管 OpenViking 上覆盖文本、多模态、明确失败后的真实 VLM 重试及
+双 Archive 重启恢复，固定 240000ms 质量边界连续三次均通过 114/114；accepted baseline、身份、阈值和成功
+标准由 `test/live/phase2a.workloads.json` 及其固定 hash 承载。常驻 `verify:observability:live` 覆盖现行 registry。
 
-**验证基础设施待修复**：`test/live/live-support.mjs` 的 task 清理虽然使用 workload 随机用户身份，但仍会枚举并
-取消该身份下的全部 active task，没有按本次 gate 记录的 `resource_id`/task 身份逐项证明 ownership。下一次 live gate 前改为只取消明确所属任务，并在取消前回读核对归属。
-
-**当前工作是恢复 Phase 2A 的当前开发 VLM 吞吐门禁；Phase 2B 基线调查与实现尚未开始。**
+**当前工作是建立 Phase 2B 的基线、manifest 与 `ActiveContext` 最小实现；takeover 在 Phase 2C 前保持 inactive。**
 
 ## 实施顺序
 
@@ -272,6 +265,7 @@ Phase 0 建立事件与同步事实；Phase 1 建立原子 Archive；Phase 2 依
 
 ## 下一实施入口
 
-当前入口是恢复 Phase 2A 的开发 VLM 门禁：保持 `test/live/phase2a.workloads.json` 已固定的 240000ms
-质量边界，选定能够稳定满足该边界的开发 VLM 身份并重新取得 114/114；只有通过后的实测值才更新 accepted
-baseline 和阶段状态。在此之前不建立 Phase 2B manifest，takeover 保持 inactive，provider 继续使用完整 Pi 上下文。
+当前入口是建立 Phase 2B 基线：先固定 `ActiveContext` 身份、checkpoint/raw-tail/用户指令 anchor 边界、分支复用
+条件、容量计算和 dry-run payload 的成功标准与证伪条件，再以 Phase 2A 已确认 checkpoint 调查可重放的数据形状并
+建立 manifest/hash。基线成立后实现最小 `ActiveContext` 持久化、恢复和 dry-run materialize；provider 继续使用完整
+Pi 上下文，真实上下文切换只在 Phase 2C 实施。

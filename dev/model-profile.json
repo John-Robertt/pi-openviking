@@ -1,16 +1,14 @@
 {
   "taskModel": {
-    "provider": "opencode-go",
-    "model": "mimo-v2.5",
-    "credentialKind": "api_key",
-    "apiKeyEnv": "OPENCODE_API_KEY"
+    "provider": "openai-codex",
+    "model": "gpt-5.6-luna",
+    "credentialKind": "oauth"
   },
   "vlm": {
-    "provider": "opencode-go",
-    "model": "mimo-v2.5",
-    "apiBase": "https://opencode.ai/zen/go/v1",
-    "credentialKind": "api_key",
-    "apiKeyEnv": "OPENCODE_API_KEY"
+    "provider": "openai-codex",
+    "model": "gpt-5.6-luna",
+    "apiBase": "https://chatgpt.com/backend-api/codex",
+    "credentialKind": "oauth"
   },
   "embedding": {
     "dense": {

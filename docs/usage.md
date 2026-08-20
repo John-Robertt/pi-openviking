@@ -63,7 +63,8 @@ npx pi-openviking@latest server doctor
 ```
 
 受管服务文件位于 `~/.pi/openviking/`。`server status` 展示进程、健康、模型和代理摘要；
-`server doctor` 执行完整环境与模型诊断。
+`server doctor` 执行完整环境与模型诊断。Pi/OpenViking 支持的 provider、认证方式、模型字段和完整切换流程见
+[`docs/models.md`](./models.md)。
 
 卸载：
 

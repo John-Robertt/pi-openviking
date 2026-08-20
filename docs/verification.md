@@ -102,6 +102,10 @@ manifest 中的精确依赖、服务和模型身份是可重放的最近验证�
   随机 nonce 和 session ID 的 ownership marker，并逐字节回读。删除前逐字节复核 marker 与写入一致后，
   verifier 按构造的精确根路径删除该 namespace；删除后越过服务端目录物化窗口，全部已写对象必须持续
   不存在；OpenViking 0.4.15 重建的无文件目录骨架只记录，不作为产品对象残留；
+- 创建 VLM task 的 gate 在 marker 复核通过后取消本次 task：取消目标只来自由本次 run 的对象身份
+  确定性派生的 task resource id，逐项回读 task 自身声明的 `resource_id` 与 `task_type` 与该身份一致后
+  才发出取消，列表过滤条件不作为归属证明；归属未获证明的 task 不取消并计为残留，summary 记录实际
+  取消的 task。不创建 task 的 gate 不枚举也不断言 task 状态；
 - 受管环境可执行中断/重启；远端破坏性测试需要显式 opt-in。清理前先生成脱敏测量与证据 hash，随后
   成功或失败都删除远端对象；清理失败使 gate 失败；
 - 完成测量后，成功时删除整个本地 run 目录；失败时删除全部 raw payload，只保留字段白名单式脱敏诊断。

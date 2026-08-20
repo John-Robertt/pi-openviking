@@ -45,6 +45,7 @@
     "docs/observability.md",
     "docs/design.md",
     "docs/development.md",
+    "docs/models.md",
     "docs/usage.md"
   ],
   "dependencies": {
