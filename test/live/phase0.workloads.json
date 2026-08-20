@@ -183,7 +183,7 @@
     "启动前身份核对：node 满足 engines；pi 包版本 == identities.pi.version；OpenViking /health 版本 == 0.4.15 且 auth==dev；dev 服务 marker/state/pid/命令行核对通过；运行中 ov.conf、状态指纹与 modelProfile 生成配置一致；modelProfile 文件 hash 匹配；凭证桥接成功（不输出凭证）",
     "本地 ownership：run 目录 <repo>/test/.artifacts/live/<runId> 以 wx/0600 建立 owner.marker（runId、manifest hash、随机 nonce）；每次重启 Pi 前重新核对 marker 字节与权限",
     "远端 ownership：每个 workload 写入前 stat viking://user/<storageUser> 不存在；以 create_if_absent 在其 resources/.pi-openviking 下写入 owner marker（runId、manifest hash、nonce），逐字节回读",
-    "清理：先记录脱敏测量与证据 hash；逐 workload 复核 marker 字节与精确根路径后 DELETE recursive；stat 确认 404；等待 cleanupSettleMs 越过服务端目录骨架物化窗口后，逐 URI 断言全部已写对象（marker、direct、claim/chunks/commit、冲突注入）仍为 404；任何远端清理失败使 gate 失败。0.4.15 兼容性事实：namespace 删除后服务端目录语义管线会物化空目录骨架（不含任何文件），骨架再现作为观察记录，不构成失败",
+    "清理：先记录脱敏测量与证据 hash；逐 workload 复核 marker 字节后，按精确根路径 DELETE recursive；stat 确认 404；等待 cleanupSettleMs 越过服务端目录骨架物化窗口后，逐 URI 断言全部已写对象（marker、direct、claim/chunks/commit、冲突注入）仍为 404；任何远端清理失败使 gate 失败。0.4.15 兼容性事实：namespace 删除后服务端目录语义管线会物化空目录骨架（不含任何文件），骨架再现作为观察记录，不构成失败",
     "本地清理：删除前逐 segment 重算 hash 并与捕获时记录比对（payload 写出后不可变）；passed 时删除整个 run 目录；失败时删除全部 segment（raw provider payload）与会话 JSONL，仅保留白名单脱敏诊断（summary.json、owner.marker、ACK 文件）；任一删除失败使 gate 失败",
     "summary：版本化 JSON 输出到 stdout 并写入 run 目录，含 phase、runId、manifestSha256、逐项 expected/actual/delta、证据文件 hash、实际 token/时长、cleanup；passed 只由全部必要断言与清理派生，退出码一致"
   ],

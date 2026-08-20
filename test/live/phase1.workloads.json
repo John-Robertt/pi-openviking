@@ -209,7 +209,7 @@
     "启动前身份核对：node 满足 engines；pi 包版本 == identities.pi.version；OpenViking /health 版本 == 0.4.15 且 auth==dev；dev 服务 marker/state/pid/命令行核对通过；运行中 ov.conf、状态指纹与 modelProfile 生成配置一致；modelProfile 文件 hash 匹配；凭证桥接成功（不输出凭证）",
     "本地 ownership：run 目录 <repo>/test/.artifacts/live/<runId> 以 wx/0600 建立 owner.marker（runId、manifest hash、随机 nonce）；每次重启 Pi 前重新核对 marker 字节与权限",
     "远端 ownership：每个 workload 写入前 stat viking://user/<storageUser> 不存在；以 create_if_absent 在其 resources/.pi-openviking 下写入 owner marker（runId、manifest hash、nonce），逐字节回读",
-    "清理：先记录脱敏测量与证据 hash；逐 workload 复核 marker 字节与精确根路径后 DELETE recursive（语义刷新期间返回可重试的 path_busy，重试至删除成立）；等待 cleanupSettleMs 越过服务端目录骨架物化窗口后，逐 URI 断言全部已写对象（marker、事件、Archive manifest、注入对象）仍为 404",
+    "清理：先记录脱敏测量与证据 hash；逐 workload 复核 marker 字节后，按精确根路径 DELETE recursive（语义刷新期间返回可重试的 path_busy，重试至删除成立）；等待 cleanupSettleMs 越过服务端目录骨架物化窗口后，逐 URI 断言全部已写对象（marker、事件、Archive manifest、注入对象）仍为 404",
     "本地清理：passed 时删除整个 run 目录；失败时删除全部 segment 与会话 JSONL，仅保留白名单脱敏诊断；任一删除失败使 gate 失败",
     "summary：版本化 JSON 输出到 stdout，含 phase、runId、manifestSha256、逐项 expected/actual/delta、实际时长与 cleanup；passed 只由全部必要断言与清理派生，退出码一致"
   ],

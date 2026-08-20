@@ -207,7 +207,7 @@ recall 结果。记录 schema、脱敏、完整 run 与清理条件只由 [`docs
 
 `npm run verify:observability:live` 是常驻横切 gate。它要求隔离服务已由 `dev up` 启动，并会使用开发模型、随机
 session namespace、受控 409 对象及 URI 拒绝 workload；执行前必须取得真实模型调用和所属测试 namespace 写入/删除
-授权。verifier 只在 marker 与精确根匹配时删除，且在 OpenViking 目录骨架物化窗口后再次核对全部已写对象不存在。
+授权。verifier 在删除前逐字节复核 marker 与写入一致，随后按构造的精确根路径删除，且在 OpenViking 目录骨架物化窗口后再次核对全部已写对象不存在。
 
 ## 安全清理
 
