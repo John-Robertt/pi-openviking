@@ -71,3 +71,29 @@ export function parsePiSessionJsonl(text, { sessionId, leafId } = {}) {
     parentById,
   };
 }
+
+// 内存（非持久）session 没有 JSONL 可重读，同步触发时冻结一份来源快照供异步同步使用。
+// `getEntries()` 是整棵树，同步需要它；Archive 只需要当前 leaf 的祖先链，只能由
+// `getBranch()` 给出——两者必须分别克隆，混用会让 Archive 收录到已放弃分支上的事件。
+export function snapshotSessionSource(sessionManager) {
+  const persisted = typeof sessionManager?.isPersisted === "function" && sessionManager.isPersisted();
+  const sessionFile = typeof sessionManager?.getSessionFile === "function"
+    ? sessionManager.getSessionFile()
+    : undefined;
+  const leafId = typeof sessionManager?.getLeafId === "function" ? sessionManager.getLeafId() : null;
+  const entries = !persisted && typeof sessionManager?.getEntries === "function"
+    ? structuredClone(sessionManager.getEntries())
+    : !persisted && typeof sessionManager?.getBranch === "function"
+      ? structuredClone(sessionManager.getBranch())
+      : [];
+  const branch = !persisted && typeof sessionManager?.getBranch === "function"
+    ? structuredClone(sessionManager.getBranch())
+    : [];
+  return {
+    isPersisted: () => persisted,
+    getSessionFile: () => sessionFile,
+    getLeafId: () => leafId,
+    getEntries: () => entries,
+    getBranch: () => branch,
+  };
+}

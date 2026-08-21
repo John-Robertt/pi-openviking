@@ -277,12 +277,9 @@ test("recall 只记录来源、数量与注入结果，不记录 query、内容�
     minQueryLength: 3,
     peerId: "",
     recallLimit: 10,
-    recallMaxTokens: 1600,
     recallLimitConfigured: false,
-    recallMaxTokensConfigured: false,
     recallQueryExpansionConfigured: false,
     recallQueryExpansion: "auto",
-    recallDedupTurns: 5,
     recallPeerScope: "all",
     scoreThreshold: 0.35,
   }, () => "private-session", observation);

@@ -82,8 +82,9 @@ test("processor 在任一媒体没有非空语义摘要时保留同一 request �
     async statUri() { return { ok: true, exists: true, isDir: true, status: 200 }; },
     async getSession() { return response(true, { message_count: 0, commit_count: 0 }); },
     async fetchJSON(_path, options) {
-      const uri = JSON.parse(options.body).operations[0].uri;
-      return response(true, { created: [uri], unchanged: [] });
+      const body = JSON.parse(options.body);
+      const uri = body.operations[0].uri;
+      return response(true, { root_uri: body.root_uri, created: [uri], updated: [], unchanged: [] });
     },
     async abstract() { return null; },
     async addMessage() { added++; return true; },

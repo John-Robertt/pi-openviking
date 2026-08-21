@@ -17,7 +17,6 @@ const SOURCES = [
   { type: "skill", uri: "viking://user/skills", bucket: "skills" },
 ];
 const DEFAULT_CONTEXT_LIMIT = 10;
-const DEFAULT_CONTEXT_MAX_TOKENS = 1600;
 const CODING_QUOTA_WEIGHTS = {
   events: 1,
   entities: 2,
@@ -87,10 +86,6 @@ export function buildRecallEndpointBody(cfg = {}) {
  */
 export function buildContextSearchBody(cfg = {}, options = {}) {
   const limit = Math.max(1, Math.floor(Number(cfg.recallLimit || DEFAULT_CONTEXT_LIMIT)));
-  const maxTokens = Math.max(
-    64,
-    Math.floor(Number(cfg.recallMaxTokens || DEFAULT_CONTEXT_MAX_TOKENS)),
-  );
   const body = {
     query: "",
     mode: "context",
@@ -98,9 +93,7 @@ export function buildContextSearchBody(cfg = {}, options = {}) {
     score_threshold: Number.isFinite(Number(cfg.scoreThreshold)) ? Number(cfg.scoreThreshold) : 0.35,
   };
   const limitConfigured = cfg.recallLimitConfigured === true;
-  const maxTokensConfigured = cfg.recallMaxTokensConfigured === true;
   if (limitConfigured) body.quotas = codingQuotas(limit);
-  if (maxTokensConfigured) body.max_tokens = maxTokens;
   if (cfg.recallPeerScope === "actor") body.peer_scope = "actor";
 
   const sessionId = String(options.sessionId || "").trim();
@@ -110,11 +103,8 @@ export function buildContextSearchBody(cfg = {}, options = {}) {
     if (queryExpansionConfigured) {
       body.query_expansion = cfg.recallQueryExpansion === "off" ? "off" : "auto";
     }
-    const dedupTurns = Number(cfg.recallDedupTurns);
-    const resolvedDedupTurns = Number.isFinite(dedupTurns)
-      ? Math.max(0, Math.floor(dedupTurns))
-      : 5;
-    if (resolvedDedupTurns > 0) body.dedup_turns = resolvedDedupTurns;
+    // 跨轮去重账本的服务端默认值：5 轮。
+    body.dedup_turns = 5;
   }
 
   const excludeUris = Array.isArray(options.excludeUris) ? options.excludeUris.slice(0, 200) : [];
@@ -141,15 +131,13 @@ const EXPANSION_REQUEST_TIMEOUT_MS = 15000;
  * stages will run: reading `cfg` alone cannot tell a bare retrieval from one
  * that also spends the expansion fuse.
  */
-export function contextRequestTimeoutMs(cfg = {}, body = {}) {
+export function contextRequestTimeoutMs(body = {}) {
   // `query_expansion` defaults to "auto" server-side, so only an explicit "off"
   // takes the expansion fuse back out of the budget.
   const wantsExpansion = Boolean(body.session_id) && body.query_expansion !== "off";
   if (!wantsExpansion) return undefined;
 
-  const configured = Number(cfg.recallContextTimeoutMs);
-  if (Number.isFinite(configured) && configured > 0) return Math.max(1000, Math.floor(configured));
-  return Math.max(Number(cfg.timeoutMs) || 0, EXPANSION_REQUEST_TIMEOUT_MS);
+  return EXPANSION_REQUEST_TIMEOUT_MS;
 }
 
 function clampScore(v) {
@@ -388,7 +376,7 @@ export async function fetchAssembledContext(fetchJSON, cfg, query, options = {})
   const res = await fetchJSON(openVikingApiPath("/search/search"), {
     method: "POST",
     body: JSON.stringify(body),
-  }, { actorPeerId, timeoutMs: contextRequestTimeoutMs(cfg, body) });
+  }, { actorPeerId, timeoutMs: contextRequestTimeoutMs(body) });
 
   if (!res.ok) {
     const status = res.status || 0;

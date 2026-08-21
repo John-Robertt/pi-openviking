@@ -65,8 +65,8 @@ user prompt
   → provider-visible messages
 ```
 
-`index.ts` 绑定 Pi 生命周期并协调健康检查、同步、召回和工具；`sync.ts` 是来源、事件写入和 ACK 的唯一
-协调者；`shared/checkpoint-store.mjs` 从已提交 Archive 与追加事实协调 VLM 消费；`client.ts` 只负责 OpenViking transport。
+`index.ts` 绑定 Pi 生命周期并协调健康检查、同步、召回和工具；`sync.ts` 是 Pi 来源事件写入与 ACK 的唯一
+协调者（checkpoint 的 request/failure/checkpoint 事实由 checkpoint manager 经同一 adapter 追加）；`shared/checkpoint-store.mjs` 从已提交 Archive 与追加事实协调 VLM 消费；`client.ts` 只负责 OpenViking transport。
 Checkpoint、`ActiveContext` 和上下文接管的当前可用范围由 `docs/roadmap.md` 的实施状态及对应阶段
 gate 共同证明；配置字段只表达其权威文档定义的策略。
 

@@ -212,6 +212,35 @@ test("按 archiveId 展开得到确定且完整的源事件序列", async () => 
   assert.deepEqual(expanded.events.map(recordedEventBytes), range.map(recordedEventBytes));
 });
 
+test("展开结果按 archiveId 在进程内缓存，checkpoint 轮询不重复下载", async () => {
+  const events = eventsOf();
+  const { transport, manager } = await storedManager(events);
+  const range = events.slice(0, 3);
+  const { archiveId: id } = await manager.commit(SESSION, range);
+
+  const first = await manager.expand(SESSION, id);
+  // 缓存命中不再读取：删除底层 manifest 后展开仍成功。
+  const manifestUri = archiveStorageLocation(USER_ROOT, SESSION, id).manifestUri;
+  const stored = transport.files.get(manifestUri);
+  transport.files.delete(manifestUri);
+  const second = await manager.expand(SESSION, id);
+  assert.equal(second, first, "同一 archiveId 命中同一展开结果");
+
+  // 失败不缓存：恢复文件后的重试必须真实重新读取并成功。
+  transport.files.set(manifestUri, stored);
+  const recovered = new ArchiveManager(transport, { userRoot: USER_ROOT, adapter: manager.adapter, budgets: BUDGETS });
+  const third = await recovered.expand(SESSION, id);
+  assert.deepEqual(third.events.map((event) => event.eventId), range.map((event) => event.eventId));
+
+  // 新实例先遇到读取失败，恢复后重试成功——证明失败条目不被沿用。
+  transport.files.delete(manifestUri);
+  const retrying = new ArchiveManager(transport, { userRoot: USER_ROOT, adapter: manager.adapter, budgets: BUDGETS });
+  await assert.rejects(() => retrying.expand(SESSION, id));
+  transport.files.set(manifestUri, stored);
+  const retried = await retrying.expand(SESSION, id);
+  assert.deepEqual(retried.events.map((event) => event.eventId), range.map((event) => event.eventId));
+});
+
 test("展开时事件被改写即失败，未提交的 archiveId 不可读", async () => {
   const events = eventsOf();
   const { transport, manager } = await storedManager(events);

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
-import { parsePiSessionJsonl } from "../shared/pi-session-source.mjs";
+import { parsePiSessionJsonl, snapshotSessionSource } from "../shared/pi-session-source.mjs";
 import { projectPiEntries } from "../shared/recorded-event.mjs";
 
 const usage = {
@@ -105,4 +105,46 @@ test("真实 Pi SessionManager 持久化的 JSONL 可完整恢复、分支并投
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("内存 session 的来源快照分离整树与当前分支，且冻结触发时刻状态", () => {
+  const manager = SessionManager.inMemory("/workspace", { id: randomUUID() });
+  const userId = manager.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: "main user" }],
+    timestamp: Date.now(),
+  });
+  const assistantId = manager.appendMessage({
+    role: "assistant",
+    content: [{ type: "text", text: "main answer" }],
+    api: "runtime-test",
+    provider: "runtime-test",
+    model: "runtime-test",
+    usage,
+    stopReason: "stop",
+    timestamp: Date.now(),
+  });
+  manager.branch(userId);
+  manager.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: "sibling user" }],
+    timestamp: Date.now(),
+  });
+
+  const snapshot = snapshotSessionSource(manager);
+  assert.equal(snapshot.isPersisted(), false);
+  assert.equal(snapshot.getLeafId(), manager.getLeafId());
+  // 整棵树包含被放弃的 main 分支；当前分支只含 user 与 sibling。
+  assert.equal(snapshot.getEntries().length, 3);
+  assert.deepEqual(snapshot.getBranch().map((entry) => entry.id), [userId, manager.getLeafId()]);
+  assert.ok(!snapshot.getBranch().some((entry) => entry.id === assistantId));
+
+  // 快照是触发时刻的深拷贝：之后 session 的变化不进入已冻结的来源。
+  manager.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: "after snapshot" }],
+    timestamp: Date.now(),
+  });
+  assert.equal(snapshot.getEntries().length, 3);
+  assert.equal(snapshot.getBranch().length, 2);
 });

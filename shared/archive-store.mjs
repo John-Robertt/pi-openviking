@@ -66,6 +66,7 @@ export class ArchiveManager {
     // 已在本进程确认提交的 archiveId。键必须是身份而不是位置：分支切换后同一下标
     // 指向不同事件，按位置缓存会让另一条分支上的 Archive 被静默跳过。
     this.confirmed = new Set();
+    this.expandedCache = new Map();
     this.state = { committed: 0, lastArchiveId: null, pending: 0, lastFailure: null };
   }
 
@@ -250,6 +251,18 @@ export class ArchiveManager {
    * 自身证明。
    */
   async expand(sessionId, archiveId) {
+    // Archive 是不可变自证对象，archiveId 由内容身份决定：同一 archiveId 的展开结果在进程内
+    // 永久有效。checkpoint 轮询期间会反复展开同一 Archive，缓存避免重复下载与逐事件 hash。
+    // 失败不缓存——传输类失败必须能在下一轮重试。
+    const cached = this.expandedCache.get(archiveId);
+    if (cached) return cached;
+    const pending = this.expandUncached(sessionId, archiveId);
+    this.expandedCache.set(archiveId, pending);
+    pending.catch(() => this.expandedCache.delete(archiveId));
+    return pending;
+  }
+
+  async expandUncached(sessionId, archiveId) {
     const manifest = await this.read(sessionId, archiveId);
     const reversed = [];
     let cursor = manifest.lastEventId;

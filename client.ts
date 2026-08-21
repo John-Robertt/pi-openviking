@@ -56,7 +56,7 @@ export interface OVResponse<T> {
 export interface OVBatchWriteOperation {
   uri: string;
   content_base64: string;
-  precondition: { kind: "create_if_absent" };
+  precondition: { kind: "create_if_absent" } | { kind: "replace_if_hash"; base_hash: string };
 }
 
 export interface OVBatchWriteRequest {

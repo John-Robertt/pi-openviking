@@ -1,5 +1,5 @@
 import { openVikingApiPath } from "./openviking-api.mjs";
-import { ensureDirectoryChain } from "./content-objects.mjs";
+import { acceptBatchResult, ContentWriteError, ensureDirectoryChain } from "./content-objects.mjs";
 import { embeddedImages, renderCheckpointInput } from "./checkpoint.mjs";
 import { observation as processObservation } from "./observe.mjs";
 
@@ -128,10 +128,13 @@ export class OpenVikingCheckpointProcessor {
         },
         MEDIA_WAIT_MS,
       );
-      const accepted = response.ok && (
-        response.result?.created?.includes(uri) || response.result?.unchanged?.includes(uri)
-      );
-      if (!accepted) return null;
+      // 响应判定收敛到协议层：形状、root_uri 与 URI 全覆盖由 acceptBatchResult 保证，
+      // 失败以 ContentWriteError 体系分类。create_if_absent 下 updated 意味着服务端改写了
+      // 字节，VLM 输入不再可信，按协议失败处理而不是静默接受。
+      const accepted = acceptBatchResult(response, taskRoot, [uri]);
+      if (accepted.updated.has(uri)) {
+        throw new ContentWriteError("OpenViking modified a checkpoint media object", { uri });
+      }
       const abstract = await this.client.abstract(uri);
       if (typeof abstract !== "string" || !abstract.trim()) return null;
       media.push({

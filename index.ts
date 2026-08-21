@@ -16,6 +16,7 @@ import { createStatusRefresh } from "./shared/status-refresh.mjs";
 import { clearVikingFooter, formatVikingCommand, setVikingFooter } from "./shared/viking-status.mjs";
 import { guardVikingUriToolCall } from "./lib/uri-guard-adapter.mjs";
 import { registerTools, VIKING_TOOL_NAMES } from "./tools.js";
+import { snapshotSessionSource } from "./shared/pi-session-source.mjs";
 
 const HEALTH_REFRESH_INTERVAL_MS = 5000;
 const OBSERVATION_ENTRY_TYPE = "ov-observation";
@@ -484,26 +485,6 @@ function matchBypass(cwd: string, pattern: string): boolean {
     return cwd.startsWith(pattern.slice(0, -1));
   }
   return cwd === pattern || cwd.startsWith(pattern + "/");
-}
-
-function snapshotSessionSource(sessionManager: any): any {
-  const persisted = typeof sessionManager?.isPersisted === "function" && sessionManager.isPersisted();
-  const sessionFile = typeof sessionManager?.getSessionFile === "function"
-    ? sessionManager.getSessionFile()
-    : undefined;
-  const leafId = typeof sessionManager?.getLeafId === "function" ? sessionManager.getLeafId() : null;
-  const entries = !persisted && typeof sessionManager?.getEntries === "function"
-    ? structuredClone(sessionManager.getEntries())
-    : !persisted && typeof sessionManager?.getBranch === "function"
-      ? structuredClone(sessionManager.getBranch())
-      : [];
-  return {
-    isPersisted: () => persisted,
-    getSessionFile: () => sessionFile,
-    getLeafId: () => leafId,
-    getEntries: () => entries,
-    getBranch: () => entries,
-  };
 }
 
 /** Build the <openviking-context> profile block. */

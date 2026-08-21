@@ -356,6 +356,38 @@ test("进程内来源的 Archive 只覆盖当前 leaf 的祖先链，不收录 s
   }
 });
 
+test("切换到不足以形成 Archive 的分支后，checkpoint 队列清空而不是继续消费旧分支", async () => {
+  const sessionId = "checkpoint-branch-switch";
+  const { main, tree } = forkedTree(sessionId);
+  const transport = new MemoryContentTransport();
+  const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => null });
+  await sync.ensureSession(sessionId);
+
+  const waitFor = async (predicate, timeoutMs = 2000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return predicate();
+  };
+
+  // main 分支形成 Archive 并进入 checkpoint 消费队列（伪 client 使后台 reconcile 停在 pending）。
+  const first = await sync.syncSession({ isPersisted: () => false, getEntries: () => tree, getBranch: () => main });
+  assert.equal(first.allDelivered, true, first.failure ?? "");
+  assert.ok(sync.status.archive.committed > 0);
+  assert.ok(await waitFor(() => sync.status.checkpoint.pending > 0), "旧分支的 Archive 应先进入消费队列");
+
+  // 切换到权重不足以形成首个 Archive 的分支（单 entry 约 1000 token，低于 rawTail + chunk
+  // 阈值）：当前分支的 Archive 全集为空，checkpoint 队列必须随之清空，而不是继续为旧分支
+  // 生产 checkpoint。
+  const short = main.slice(0, 1);
+  const second = await sync.syncSession({ isPersisted: () => false, getEntries: () => tree, getBranch: () => short });
+  assert.equal(second.allDelivered, true, second.failure ?? "");
+  assert.ok(await waitFor(() => sync.status.checkpoint.mode === "caught_up" && sync.status.checkpoint.pending === 0),
+    "空 Archive 全集也必须刷新 checkpoint 消费队列");
+  assert.equal(sync.status.checkpoint.currentArchiveId, null);
+});
 test("持久 JSONL 切换到较短 sibling leaf 后，Archive 描述新分支且复用共同前缀身份", async () => {
   const sessionId = "jsonl-fork";
   const { main, sibling, tree } = forkedTree(sessionId);

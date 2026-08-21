@@ -16,10 +16,11 @@
 
 - 绑定 Pi 生命周期；
 - 在 `session_start` 初始化会话来源和 ACK；
-- 在 `turn_end`、`session_compact` 非阻塞调度会话来源检查或同步；
+- 在 `turn_end`、`session_compact`、`session_tree`、`session_info_changed`、`model_select`、`thinking_level_select` 非阻塞调度会话来源检查或同步；
 - `session_shutdown` 给予同步 500ms grace 后取消 transport，未确认内容留在 Pi 来源；观察已启用时只用该期限的
   剩余时间完成独立记录；
-- recall 实际注入时追加 `ov-observation` custom entry，再由同一事件链同步；
+- `before_agent_start` 把 profile block 注入 system prompt 并排队 recall，`context` hook 等待检索结果并注入消息；recall 实际注入时追加 `ov-observation` custom entry，再由同一事件链同步；
+- `tool_call` 对 `viking_*` 工具执行 URI 边界校验；
 - OpenViking 不可用时只更新待重放诊断，不阻塞 Pi 主任务；
 - 不触发 Pi compaction，不构造 Archive，不替换 provider 上下文。
 
@@ -152,6 +153,28 @@ Archive 只取当前分支：跨 sibling branch 的范围没有对应的上下�
 - `managedServer.proxy` 与扩展策略共享 JSONC 文件，但由服务管理模块消费；
 - 未知字段和损坏 JSONC 不静默回退。
 
+### `recall.ts` 与 `shared/recall-core.mjs`
+
+- `RecallManager` 在用户 prompt 到达时排队检索，下一轮 `before_agent_start` 前取出结果并注入消息；
+- 检索 body 只声明意图（coding purpose、session、预算上限），quota 配比、分层降级与跨轮去重留给服务端默认值；
+- 会话内跨轮去重与查询扩展由服务端账本承担，扩展只在显式配置时覆盖；
+- recall 失败不阻塞 prompt：注入被跳过，诊断进入 `/viking`。
+
+### `shared/profile-inject.mjs`
+
+- 在 `session_start` 从 `viking://user/<space>/memories/` 的 profile、preferences、entities 装配 `<user-profile>` 上下文块，供 `before_agent_start` 注入 system prompt；
+- 读取失败时返回空块，不改变 provider 上下文。
+
+### `tools.ts` 与 `lib/uri-guard-adapter.mjs`
+
+- `tools.ts` 注册 `viking_*` 工具，把调用转发给 `OVClient`；
+- `uri-guard-adapter` 在 `tool_call` hook 校验 `viking://` URI 的用户与会话边界，越界调用被拒绝并返回可诊断原因；
+- session 隔离关闭时不施加命名空间边界。
+
+### `shared/viking-status.mjs` 与 `shared/status-refresh.mjs`
+
+- `viking-status` 维护 `/viking` 命令与页脚的只读诊断视图；
+- `status-refresh` 只拥有 status 刷新的并发与生命周期，状态数据归调用方。
 ## 数据流
 
 ```text
@@ -182,6 +205,17 @@ recorded-event-adapter ───────────────────
         │ derived checkpoint/backlog state
         ▼
 /viking diagnostics
+
+user prompt
+        │
+        ▼
+before_agent_start: profile-inject（system prompt）+ recall.queueSearch
+        │
+        ▼
+recall-core ───► OpenViking search API
+        │ recall block（失败时为空，不阻塞 prompt）
+        ▼
+context hook: recall.injectRecall ───► provider-visible messages
 ```
 
 观察链与上述产品链正交：各责任模块在实际 boundary、decision、state 或 failure 处调用固定 no-op/observer，统一写入

@@ -378,16 +378,18 @@ export class SyncManager {
     parentById: Map<string, string | null>,
     events: any[],
   ): Promise<void> {
-    if (!this.archives || !this.piSessionId || branch.length === 0) return;
+    if (!this.archives || !this.piSessionId) return;
     const acknowledged = new Set<string>();
     for (const entry of branch) {
       if (!isEntryAcknowledged(this.ack, entry.id, parentById)) break;
       acknowledged.add(entry.id);
     }
-    if (acknowledged.size === 0) return;
     const branchEvents = events.filter((event) => acknowledged.has(event.source.entryId));
     const result = await this.archives.formArchives(this.piSessionId, branchEvents);
-    if (result.archives.length > 0) void this.checkpoints?.schedule(this.piSessionId, result.archives);
+    // 当前分支已确认前缀的 Archive 全集总是刷新 checkpoint 消费队列——包括空集（刚切换到
+    // 权重不足的新分支）。否则队列会保留上一分支的 Archive，继续为已放弃的上下文链生产
+    // checkpoint。
+    void this.checkpoints?.schedule(this.piSessionId, result.archives);
   }
 
   private setCapability(next: SyncStatus["capability"]): void {
