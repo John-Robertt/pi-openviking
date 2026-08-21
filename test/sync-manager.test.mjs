@@ -3,11 +3,11 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import test from "node:test";
 
 import { SyncManager } from "../sync.ts";
-import { buildArchiveManifest, planArchives } from "../shared/archive.mjs";
-import { checkpointEventId } from "../shared/checkpoint.mjs";
+import { buildArchiveManifest, describeArchives, planArchives } from "../shared/archive.mjs";
+import { buildCheckpointEvent, buildCheckpointRequestEvent, checkpointEventId, checkpointId } from "../shared/checkpoint.mjs";
 import { archiveStorageLocation } from "../shared/archive-store.mjs";
 import { recordedEventStorageLocation } from "../shared/recorded-event-adapter.mjs";
-import { projectPiEntries } from "../shared/recorded-event.mjs";
+import { projectPiEntries, recordedEventBytes } from "../shared/recorded-event.mjs";
 import { ARCHIVE_USER_ROOT, MemoryContentTransport, archiveEntryChain } from "./fixtures/archive-fixtures.mjs";
 import { buildLongToolLoopTrace } from "./fixtures/long-tool-loop-trace.mjs";
 
@@ -51,6 +51,7 @@ function client() {
 function manager(store, ackPath) {
   return new SyncManager(client(), {
     ackPathForSession: () => ackPath,
+    activeContextPathForSession: () => null,
     adapterFactory: () => store,
   });
 }
@@ -278,6 +279,7 @@ test("未配置用户时把解析空间同时绑定到 URI、header 和 ACK targ
   let adapterRoot = "";
   const sync = new SyncManager(resolvingClient, {
     ackPathForSession: () => null,
+    activeContextPathForSession: () => null,
     adapterFactory: (_client, userRoot) => {
       adapterRoot = userRoot;
       return store;
@@ -333,7 +335,7 @@ test("进程内来源的 Archive 只覆盖当前 leaf 的祖先链，不收录 s
   const sessionId = "in-memory-fork";
   const { main, sibling, tree } = forkedTree(sessionId);
   const transport = new MemoryContentTransport();
-  const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => null });
+  const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => null, activeContextPathForSession: () => null });
   await sync.ensureSession(sessionId);
 
   const result = await sync.syncSession({
@@ -361,7 +363,7 @@ test("切换到不足以形成 Archive 的分支后，checkpoint 队列清空而
   const sessionId = "checkpoint-branch-switch";
   const { main, tree } = forkedTree(sessionId);
   const transport = new MemoryContentTransport();
-  const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => null });
+  const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => null, activeContextPathForSession: () => null });
   await sync.ensureSession(sessionId);
 
   const waitFor = async (predicate, timeoutMs = 2000) => {
@@ -394,7 +396,7 @@ test("分支切换在 Archive I/O 前使旧 checkpoint scope 失效", async () =
   const sessionId = "checkpoint-scope-linearization";
   const { main, tree } = forkedTree(sessionId);
   const transport = new MemoryContentTransport();
-  const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => null });
+  const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => null, activeContextPathForSession: () => null });
   await sync.ensureSession(sessionId);
 
   let releaseAdvance;
@@ -455,7 +457,7 @@ test("持久 JSONL 切换到较短 sibling leaf 后，Archive 描述新分支且
       ...tree.map((entry) => JSON.stringify(entry)),
       "",
     ].join("\n"));
-    const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => `${root}/ack.json` });
+    const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => `${root}/ack.json`, activeContextPathForSession: () => `${root}/active-context.json` });
     await sync.ensureSession(sessionId);
 
     const onMainLeaf = { isPersisted: () => true, getSessionFile: () => file, getLeafId: () => main.at(-1).id };
@@ -484,7 +486,7 @@ test("Archive 失败不阻断事件同步与 ACK 推进", async () => {
   const client = contentClient(transport);
   // Archive 命名空间不可达；事件命名空间照常工作。
   client.mkdirUri = async (uri) => (uri.includes("/archives/") ? { ok: false, status: 503 } : transport.mkdirUri(uri));
-  const sync = new SyncManager(client, { ackPathForSession: () => null });
+  const sync = new SyncManager(client, { ackPathForSession: () => null, activeContextPathForSession: () => null });
   await sync.ensureSession(sessionId);
 
   const result = await sync.syncSession({ isPersisted: () => false, getEntries: () => main, getBranch: () => main });
@@ -506,7 +508,7 @@ test("Archive 暂时性传输失败不替换 checkpoint 消费范围", async () 
   const { main } = forkedTree(sessionId);
   const transport = new MemoryContentTransport();
   const client = contentClient(transport);
-  const sync = new SyncManager(client, { ackPathForSession: () => null });
+  const sync = new SyncManager(client, { ackPathForSession: () => null, activeContextPathForSession: () => null });
   await sync.ensureSession(sessionId);
 
   const schedules = [];
@@ -532,6 +534,130 @@ test("Archive 暂时性传输失败不替换 checkpoint 消费范围", async () 
   assert.deepEqual(schedules.at(-1), acceptedScope);
 });
 
+test("旧 checkpoint consumption 完成后不得用旧分支快照覆盖新活动上下文", async () => {
+  const sessionId = "active-context-stale-consumption";
+  const { main, sibling, tree } = forkedTree(sessionId);
+  const siblingBranch = [...main.slice(0, 2), ...sibling];
+  const transport = new MemoryContentTransport();
+  const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => null, activeContextPathForSession: () => null });
+  await sync.ensureSession(sessionId);
+
+  const allEvents = projectPiEntries(sessionId, tree);
+  const eventsFor = (branch) => {
+    const ids = new Set(branch.map((entry) => entry.id));
+    return allEvents.filter((event) => ids.has(event.source.entryId));
+  };
+  const selectable = (events, archives) => archives.filter((descriptor) =>
+    events.findIndex((event) => event.eventId === descriptor.manifest.lastEventId) < events.length - 1);
+  const mainEvents = eventsFor(main);
+  const siblingEvents = eventsFor(siblingBranch);
+  const mainArchives = describeArchives(sessionId, mainEvents, ARCHIVE_BUDGETS);
+  const siblingArchives = describeArchives(sessionId, siblingEvents, ARCHIVE_BUDGETS);
+  const nextAfter = (events, descriptor) => {
+    const index = events.findIndex((event) => event.eventId === descriptor.manifest.lastEventId);
+    return index < 0 ? null : events[index + 1] ?? null;
+  };
+  const mainConsumed = selectable(mainEvents, mainArchives)
+    .find((descriptor) => nextAfter(mainEvents, descriptor)?.source.entryId.startsWith("m-"));
+  const siblingConsumed = selectable(siblingEvents, siblingArchives)
+    .find((descriptor) => nextAfter(siblingEvents, descriptor)?.source.entryId.startsWith("s-") &&
+      checkpointId(descriptor.manifest) !== (mainConsumed ? checkpointId(mainConsumed.manifest) : ""));
+  assert.ok(mainConsumed && siblingConsumed, "fixture 必须为两条分支提供不同且后面仍有 raw tail 的 checkpoint");
+
+  const writeCheckpoint = (descriptor, overview) => {
+    const requestEvent = buildCheckpointRequestEvent({
+      manifest: descriptor.manifest, previousCheckpointId: null, attempt: 1, submittedAt: "2026-08-21T00:00:00.000Z",
+    });
+    const checkpointEvent = buildCheckpointEvent({
+      manifest: descriptor.manifest, requestEvent, overview, completedAt: "2026-08-21T00:00:10.000Z",
+    });
+    transport.files.set(
+      recordedEventStorageLocation(ARCHIVE_USER_ROOT, sessionId, checkpointEvent.eventId).directUri,
+      recordedEventBytes(checkpointEvent),
+    );
+  };
+  writeCheckpoint(mainConsumed, "## Task & Goals\n- old branch");
+  writeCheckpoint(siblingConsumed, "## Task & Goals\n- new branch");
+
+  let releaseOld;
+  const oldConsumption = new Promise((resolve) => { releaseOld = resolve; });
+  sync.checkpoints = { status: { lastCheckpointId: null }, stop: async () => {}, observeFinalState: () => {} };
+  sync.formArchives = async (branch) => {
+    const useSibling = branch.at(-1)?.id === siblingBranch.at(-1)?.id;
+    sync.committedArchives = useSibling ? siblingArchives : mainArchives;
+    sync.checkpoints.status.lastCheckpointId = checkpointId((useSibling ? siblingConsumed : mainConsumed).manifest);
+    return { consumption: useSibling ? Promise.resolve() : oldConsumption };
+  };
+
+  const taskModel = { capacity: { contextWindow: 272000, maxTokens: 128000 }, systemPrompt: "", toolDefinitions: "" };
+  await sync.advanceDerivedState(main, new Map(), allEvents, taskModel);
+  assert.equal(sync.status.activeContext.checkpointId, checkpointId(mainConsumed.manifest));
+
+  await sync.advanceDerivedState(siblingBranch, new Map(), allEvents, taskModel);
+  await sync.waitForIdle(1000);
+  assert.equal(sync.status.activeContext.checkpointId, checkpointId(siblingConsumed.manifest));
+
+  releaseOld();
+  await sync.waitForIdle(1000);
+  assert.equal(sync.status.activeContext.checkpointId, checkpointId(siblingConsumed.manifest),
+    "旧 consumption 的延迟回调不得清除或覆盖新分支活动上下文");
+});
+
+test("活动上下文的 raw tail 覆盖当前分支尚未确认的最新事件", async () => {
+  const sessionId = "active-context-tail";
+  const branch = archiveEntryChain(Array.from({ length: 6 }, () => ({ role: "assistant", chars: 4000 })));
+  const transport = new MemoryContentTransport();
+  const client = contentClient(transport);
+  const events = projectPiEntries(sessionId, branch);
+  const descriptors = describeArchives(sessionId, events, ARCHIVE_BUDGETS);
+  const consumed = descriptors[0];
+
+  // 第一个 Archive 已被消费：checkpoint 事实先于同步存在。
+  const requestEvent = buildCheckpointRequestEvent({
+    manifest: consumed.manifest, previousCheckpointId: null, attempt: 1, submittedAt: "2026-08-21T00:00:00.000Z",
+  });
+  const checkpointEvent = buildCheckpointEvent({
+    manifest: consumed.manifest, requestEvent,
+    overview: "## Task & Goals\n- keep the raw tail complete", completedAt: "2026-08-21T00:00:10.000Z",
+  });
+  for (const event of [requestEvent, checkpointEvent]) {
+    transport.files.set(
+      recordedEventStorageLocation(ARCHIVE_USER_ROOT, sessionId, event.eventId).directUri,
+      recordedEventBytes(event),
+    );
+  }
+
+  // 最后一个 entry 的事件对象被外部写入不同字节：它永远无法确认，但仍在当前分支上。
+  const blockedEvent = events.find((event) => event.source.entryId === branch.at(-1).id);
+  transport.files.set(
+    recordedEventStorageLocation(ARCHIVE_USER_ROOT, sessionId, blockedEvent.eventId).directUri,
+    Buffer.from("foreign bytes"),
+  );
+
+  const sync = new SyncManager(client, { ackPathForSession: () => null, activeContextPathForSession: () => null });
+  await sync.ensureSession(sessionId);
+  sync.checkpoints = {
+    status: { ...sync.checkpoints.status, lastCheckpointId: checkpointId(consumed.manifest) },
+    schedule: async () => {},
+    stop: async () => {},
+    observeFinalState: () => {},
+  };
+  const result = await sync.syncSession(
+    { isPersisted: () => false, getEntries: () => branch, getBranch: () => branch },
+    { capacity: { contextWindow: 272000, maxTokens: 128000 }, systemPrompt: "", toolDefinitions: "" },
+  );
+
+  assert.equal(result.allDelivered, false, "冲突 entry 必须停止 ACK 推进");
+  const context = sync.status.activeContext;
+  const startIndex = events.findIndex((event) => event.eventId === context.rawTailStartEventId);
+  assert.equal(context.checkpointId, checkpointId(consumed.manifest));
+  assert.equal(startIndex, consumed.endIndex + 1);
+  assert.equal(context.rawTailEvents, events.length - startIndex,
+    "raw tail 必须包含分支上尚未确认的最新事件");
+  assert.equal(context.eligibility, "eligible");
+  assert.equal(context.headroomTokens, context.usableTokens - context.payloadTokens);
+});
+
 test("某个 entry 永久无法同步时，已确认前缀仍然形成 Archive", async () => {
   const sessionId = "blocked-entry";
   const shape = Array.from({ length: 6 }, () => ({ role: "assistant", chars: 4000 }));
@@ -546,7 +672,7 @@ test("某个 entry 永久无法同步时，已确认前缀仍然形成 Archive",
     Buffer.from("foreign bytes"),
   );
 
-  const sync = new SyncManager(client, { ackPathForSession: () => null });
+  const sync = new SyncManager(client, { ackPathForSession: () => null, activeContextPathForSession: () => null });
   await sync.ensureSession(sessionId);
   const result = await sync.syncSession({ isPersisted: () => false, getEntries: () => branch, getBranch: () => branch });
   assert.equal(result.allDelivered, false, "冲突 entry 必须停止 ACK 推进");

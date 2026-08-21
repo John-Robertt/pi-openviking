@@ -9,7 +9,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfigFromModuleUrl, type OVConfig } from "./config.js";
 import { OVClient } from "./client.js";
 import { RecallManager } from "./recall.js";
-import { SyncManager } from "./sync.js";
+import { SyncManager, type TaskModelContext } from "./sync.js";
 import { buildProfileBlock } from "./shared/profile-inject.mjs";
 import { observation } from "./shared/observe.mjs";
 import { createStatusRefresh } from "./shared/status-refresh.mjs";
@@ -122,6 +122,29 @@ export default async function (pi: ExtensionAPI) {
     setVikingFooter(ctx, { connected: client.connected });
   };
 
+  /**
+   * Pi 报告的任务模型上下文事实。
+   *
+   * 容量、system prompt 与活动工具定义都只有 Pi 拥有，takeover eligibility 必须以这些
+   * 报告值为准而不是自行估算。任一项不可用时返回空值，由下游降级为 inactive。
+   */
+  const taskModelContext = (ctx: any): TaskModelContext => {
+    const model = ctx?.model;
+    const capacity = Number.isFinite(model?.contextWindow) && Number.isFinite(model?.maxTokens)
+      ? { contextWindow: model.contextWindow, maxTokens: model.maxTokens }
+      : null;
+    let systemPrompt = "";
+    let toolDefinitions = "";
+    try {
+      systemPrompt = typeof ctx?.getSystemPrompt === "function" ? String(ctx.getSystemPrompt() ?? "") : "";
+      const active = new Set(pi.getActiveTools());
+      toolDefinitions = JSON.stringify(pi.getAllTools().filter((tool: any) => active.has(tool?.name)));
+    } catch (error: unknown) {
+      observation.emit("index_failure", error, "task_model_context", "degrade", "continue_pi");
+    }
+    return { capacity, systemPrompt, toolDefinitions };
+  };
+
   const scheduleSync = (ctx: any, trigger: string): void => {
     if (bypassed) {
       observation.emit("sync_schedule", trigger, client.connected, "skip_bypassed");
@@ -135,7 +158,7 @@ export default async function (pi: ExtensionAPI) {
     const connected = client.connected;
     observation.emit("sync_schedule", trigger, connected);
     const operation = connected
-      ? sync.syncSession(source)
+      ? sync.syncSession(source, taskModelContext(ctx))
       : sync.observeSession(source);
     void operation.then(() => {
       if (statusContext === ctx) renderStatus(ctx);
@@ -432,7 +455,7 @@ export default async function (pi: ExtensionAPI) {
           ctx.ui.notify("OpenViking：未连接，事件保留在 Pi 来源中等待重放", "warning");
           return;
         }
-        const result = await sync.syncSession(ctx.sessionManager);
+        const result = await sync.syncSession(ctx.sessionManager, taskModelContext(ctx));
         renderStatus(ctx);
         ctx.ui.notify(
           result.allDelivered

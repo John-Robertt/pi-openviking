@@ -22,7 +22,7 @@
     },
     "registry": {
       "schemaVersion": 1,
-      "sha256": "0594ab4068c21c9ca791bea94e74f094802082a1577651b4cab78ee332bd853e"
+      "sha256": "6ab00c707ac4a0b1757553bea0584b20ae13c6e884173259969268ed920e6628"
     },
     "extensionLoadOrder": ["index.ts"]
   },
@@ -53,6 +53,9 @@
         { "stage": "event_representation", "data": { "branch": "direct" } },
         { "stage": "archive_plan", "data": { "branch": "idle", "planned": 0 } },
         { "stage": "archive_state", "data": { "mode": "snapshot", "committed": 0, "current": null } },
+        { "stage": "active_context_select", "data": { "branch": "unavailable" } },
+        { "stage": "active_context_eligibility", "data": { "branch": "no_context" } },
+        { "stage": "active_context_state", "data": { "mode": "snapshot", "status": "no_context", "checkpoint": null } },
         { "stage": "recall_request", "data": { "branch": "search" } },
         { "stage": "recall_source", "data": { "branch": "context_face" } },
         { "stage": "recall_result", "data": { "operation": "inject", "branch": "injected" } }

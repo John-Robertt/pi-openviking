@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJsonBytes } from "./canonical-json.mjs";
+import { eventTokenWeight } from "./context-weight.mjs";
 import { recordedEventBytes } from "./recorded-event.mjs";
 
 const ARCHIVE_SCHEMA_VERSION = 1;
@@ -119,24 +120,6 @@ export function parseArchiveManifest(bytes) {
     throw new ArchiveIntegrityError("Archive manifest bytes are not canonical", manifest.archiveId);
   }
   return normalized;
-}
-
-/**
- * 一个事件在任务模型上下文中的 token 权重。
- *
- * 度量对象是事件实际进入上下文的内容，不是一次请求的累计 usage：`chunkTokenBudget`
- * 与 `rawTailTokenBudget` 约束的是“这段事件占多少上下文”，而 provider 的 usage 是
- * 含 system prompt 与工具定义的请求总量，两者不同尺度。
- *
- * 折算按 UTF-8 字节数除以 4，而不是字符数除以 4：后者对 CJK 会低估约三倍，使同一预算
- * 在不同语种下表达完全不同的上下文量。这个常数是策略量，最终值由端到端校准确定；同一
- * 事件恒得同一权重，因此不依赖 provider 是否报告计量。
- */
-export function eventTokenWeight(event) {
-  const part = event?.payload?.part;
-  const value = part ? part.value : event?.payload?.entry ?? null;
-  const bytes = typeof value === "string" ? Buffer.byteLength(value, "utf8") : canonicalJsonBytes(value).length;
-  return Math.ceil(bytes / 4);
 }
 
 /** 沿事件链累加的上下文压力；由构造单调不减。 */

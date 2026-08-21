@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import test from "node:test";
 
 import { OVClient } from "../client.ts";
 import { RecallManager } from "../recall.ts";
 import { SyncManager } from "../sync.ts";
-import { archiveManifestBytes, buildArchiveManifest, planArchives } from "../shared/archive.mjs";
+import { ActiveContextManager } from "../shared/active-context.mjs";
+import { archiveManifestBytes, buildArchiveManifest, describeArchives, planArchives } from "../shared/archive.mjs";
 import { ArchiveManager, archiveStorageLocation } from "../shared/archive-store.mjs";
+import { buildCheckpointEvent, buildCheckpointRequestEvent, checkpointId } from "../shared/checkpoint.mjs";
 import { OpenVikingCheckpointProcessor } from "../shared/checkpoint-processor.mjs";
 import { CheckpointManager } from "../shared/checkpoint-store.mjs";
 import { OBSERVATION_STAGE_REGISTRY, createObservation, validateObservationRecord } from "../shared/observe.mjs";
@@ -409,6 +411,79 @@ test("checkpoint 请求、VLM 边界、状态与失败只记录安全计数和�
   assert.ok(records.some((record) => record.stage === "checkpoint_process" && record.data.outcome === "completed"));
   assert.ok(records.some((record) => record.stage === "checkpoint_state" && record.data.status === "caught_up"));
   assert.ok(records.some((record) => record.stage === "checkpoint_failure" && record.data.errorCode === "task_failed"));
+});
+
+test("活动上下文的选择、容量判定与降级只记录枚举、计数与协议 hash", async () => {
+  const { path, observation } = observationFor("active-context");
+  const sessionId = "private-active-context-session";
+  const events = archiveEvents(sessionId, [
+    { role: "user", chars: 4000 },
+    { role: "assistant", chars: 4000 },
+    { role: "assistant", chars: 4000 },
+  ]);
+  const budgets = { chunkTokenBudget: 1000, rawTailTokenBudget: 1000 };
+  const descriptors = describeArchives(sessionId, events, budgets);
+  const consumed = descriptors[0];
+  const checkpointEvent = buildCheckpointEvent({
+    manifest: consumed.manifest,
+    requestEvent: buildCheckpointRequestEvent({
+      manifest: consumed.manifest, previousCheckpointId: null, attempt: 1, submittedAt: "2026-08-21T00:00:00.000Z",
+    }),
+    overview: "## Task & Goals\n- private checkpoint narrative",
+    completedAt: "2026-08-21T00:00:10.000Z",
+  });
+  let available = true;
+  const adapter = {
+    async readEvent() {
+      if (!available) throw new Error("private OpenViking failure");
+      return { event: checkpointEvent, bytes: Buffer.from("{}") };
+    },
+  };
+  const input = {
+    branchEvents: events,
+    archives: descriptors,
+    lastCheckpointId: checkpointId(consumed.manifest),
+    capacity: { contextWindow: 272000, maxTokens: 128000 },
+    systemPrompt: "private system prompt",
+  };
+
+  mkdirSync(`${ROOT}/active-context`, { recursive: true });
+  writeFileSync(`${ROOT}/active-context/blocker`, "", { mode: 0o600 });
+  const manager = new ActiveContextManager({
+    path: `${ROOT}/active-context/context.json`, adapter, observation,
+    takeover: { enabled: true, contextTokenThreshold: 0 },
+  });
+  assert.equal((await manager.update(sessionId, input)).eligibility, "eligible");
+  assert.equal((await manager.update(sessionId, { ...input, branchEvents: events.slice(0, 1), archives: [], lastCheckpointId: null })).eligibility, "no_context");
+
+  // 持久化失败与来源事实不可读都只降级诊断，产品继续使用完整 Pi 上下文。
+  const blocked = new ActiveContextManager({
+    path: `${ROOT}/active-context/blocker/context.json`, adapter, observation,
+    takeover: { enabled: true, contextTokenThreshold: 1000 },
+  });
+  const capped = await blocked.update(sessionId, input);
+  assert.equal(capped.eligibility, "capacity_mismatch");
+  available = false;
+  const cold = new ActiveContextManager({
+    path: null, adapter, observation, takeover: { enabled: true, contextTokenThreshold: 0 },
+  });
+  const degraded = await cold.update(sessionId, input);
+  assert.equal(degraded.eligibility, "facts_unavailable");
+  manager.observeFinalState();
+  await observation.finish();
+
+  const { raw, records } = readRun(path);
+  assert.doesNotMatch(raw, /private-active-context-session|private checkpoint narrative|private system prompt|private OpenViking failure/);
+  assert.ok(records.some((record) => record.stage === "active_context_select" && record.data.branch === "selected"));
+  assert.ok(records.some((record) => record.stage === "active_context_select" && record.data.branch === "invalidated"));
+  assert.ok(records.some((record) => record.stage === "active_context_eligibility" && record.data.branch === "eligible"));
+  assert.ok(records.some((record) => record.stage === "active_context_eligibility" && record.data.branch === "capacity_mismatch"));
+  assert.ok(records.some((record) => record.stage === "active_context_eligibility" && record.data.branch === "facts_unavailable"));
+  assert.ok(records.some((record) => record.stage === "active_context_state" && record.data.mode === "change"));
+  assert.ok(records.some((record) => record.stage === "active_context_failure" && record.data.errorCode === "persist"));
+  assert.ok(records.some((record) => record.stage === "active_context_failure" && record.data.errorCode === "materialize"));
+  const headroom = records.find((record) => record.stage === "active_context_eligibility" && record.data.branch === "capacity_mismatch");
+  assert.ok(headroom.data.headroom < 0, "容量不匹配的余量必须可读为负值");
 });
 
 test.after(() => {

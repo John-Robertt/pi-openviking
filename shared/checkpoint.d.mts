@@ -59,6 +59,7 @@ export interface CheckpointMediaInput {
 export function checkpointId(manifest: ArchiveManifestV1): string;
 export function checkpointTaskId(manifest: ArchiveManifestV1, previousCheckpointId: string | null, attempt: number): string;
 export function checkpointEventId(manifest: ArchiveManifestV1): string;
+export function checkpointEventIdFor(checkpointId: string): string;
 export function checkpointRequestEventId(manifest: ArchiveManifestV1, previousCheckpointId: string | null, attempt: number): string;
 export function checkpointFailureEventId(manifest: ArchiveManifestV1, previousCheckpointId: string | null, attempt: number): string;
 export function checkpointFromOverview(manifest: ArchiveManifestV1, overview: string): CheckpointV1;
@@ -68,5 +69,7 @@ export function buildCheckpointEvent(input: { manifest: ArchiveManifestV1; reque
 export function parseCheckpointRequestEvent(event: ProducedRecordedEventV1): CheckpointRequestV1;
 export function parseCheckpointFailureEvent(event: ProducedRecordedEventV1): CheckpointFailureV1;
 export function parseCheckpointEvent(event: ProducedRecordedEventV1, manifest: ArchiveManifestV1): CheckpointV1;
+export function parseCheckpointEventById(event: ProducedRecordedEventV1, expectedCheckpointId: string): CheckpointV1;
+export function renderCheckpointBlock(checkpoint: CheckpointV1): string;
 export function embeddedImages(events: PiRecordedEventV1[]): Array<{ eventId: string; mimeType: string; bytes: Buffer; contentHash: string }>;
 export function renderCheckpointInput(manifest: ArchiveManifestV1, events: PiRecordedEventV1[], previousCheckpoint: CheckpointV1 | null, media?: CheckpointMediaInput[]): string;

@@ -37,7 +37,18 @@ manifest/hash 下覆盖成功 recall/同步、断线、409 冲突、URI 拒绝�
 身份、阈值和成功标准由 `test/live/checkpoint.workloads.json` 及其固定 hash 承载。常驻
 `verify:observability:live` 覆盖现行 registry。
 
-**当前工作是建立活动上下文的基线、manifest 与 `ActiveContext` 最小实现；真实接管在上下文切换阶段前保持 inactive。**
+**活动上下文构造的出口已关闭。** `ActiveContext` 只持久化 `docs/spec.md` 定义的两个字段，选自当前分支上最后一个
+已消费的 checkpoint；anchor 由 raw tail 起点的 turn 身份重算，因而不进入持久状态。deterministic checks 证明候选
+选择、跨重启复用、来源边界离开祖先链后的失效、anchor 重算、dry-run payload 与容量判定两侧。
+
+`verify:context:live` 在真实 Pi lifecycle、真实已提交 Archive 与真实 VLM checkpoint 上通过 140/140：持久化边界等于
+从 Pi JSONL 与 Archive manifest 独立重算的候选，raw tail 逐字节等于源事件且覆盖全部未归档事件、不拆开 step，
+Pi 报告的 272000/128000 容量在 eligibility 两侧分别得到 132831 与 -10169 的实测余量（manifest baseline 记录的是
+实现前一次性探针的预期值，两者各自承担门禁结果与证伪基线）；同一次运行的真实 provider
+payload 仍包含归档前缀原文且不含 checkpoint 正文，证明接管保持 inactive。常驻 `verify:observability:live` 覆盖
+现行 registry。
+
+**当前工作是上下文切换与 fail-open：用 `context` hook 原子替换 provider 可见上下文，并在降级与容量不匹配时保持完整 Pi 上下文。**
 
 ## 实施顺序
 
@@ -267,7 +278,8 @@ manifest/hash 下覆盖成功 recall/同步、断线、409 冲突、URI 拒绝�
 
 ## 下一实施入口
 
-当前入口是建立活动上下文基线：先固定 `ActiveContext` 身份、checkpoint/raw-tail/用户指令 anchor 边界、分支复用
-条件、容量计算和 dry-run payload 的成功标准与证伪条件，再以已确认 checkpoint 调查可重放的数据形状并
-建立 manifest/hash。基线成立后实现最小 `ActiveContext` 持久化、恢复和 dry-run materialize；provider 继续使用完整
-Pi 上下文，真实上下文切换只在上下文切换阶段实施。
+当前入口是建立上下文切换基线：先固定"何时到达高水位、每次高水位只替换一次、替换后追加在稳定前缀之后"的
+成功标准与证伪条件，再用开发模型身份的 task provider 调查真实请求 payload 与 cache epoch 的可观察形状，
+建立 `test/live/takeover.workloads.json` 并固定 hash。基线成立后用 `context` hook 消费已就绪的 `ActiveContext`
+执行原子替换，并保证无有效上下文、OpenViking/VLM 降级或容量不匹配时继续使用完整 Pi 上下文；Pi 仍是
+compaction 的唯一触发方。

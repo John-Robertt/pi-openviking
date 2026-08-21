@@ -1,16 +1,12 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 
-import { canonicalJsonBytes } from "./canonical-json.mjs";
+import { stateFileKey, writeStateFile } from "./state-file.mjs";
 
 export const SYNC_ACK_IDENTITY_VERSION = 1;
 const SYNC_ACK_DOMAIN = "pi-openviking/sync-ack";
 
 export function syncAckFileKey(target, sessionId) {
-  return createHash("sha256")
-    .update(canonicalJsonBytes([SYNC_ACK_DOMAIN, SYNC_ACK_IDENTITY_VERSION, target, sessionId]))
-    .digest("hex");
+  return stateFileKey(SYNC_ACK_DOMAIN, SYNC_ACK_IDENTITY_VERSION, target, sessionId);
 }
 
 export function normalizeSyncAck(value) {
@@ -58,14 +54,5 @@ export async function readSyncAck(path) {
 }
 
 export async function writeSyncAck(path, ack) {
-  const normalized = normalizeSyncAck(ack);
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.tmp.${process.pid}.${Date.now()}`;
-  try {
-    await writeFile(temporary, `${JSON.stringify(normalized)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
-  return normalized;
+  return writeStateFile(path, normalizeSyncAck(ack));
 }

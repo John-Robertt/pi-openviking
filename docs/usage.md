@@ -22,7 +22,9 @@ thinking、tool call/result、真实错误和 aborted 状态、未知 part、cus
 已确认事件按 `archive` 预算归入 Archive：一段事件与一份 manifest 原子绑定，可按 `archiveId`
 确定性展开回原始事件。每个已提交 Archive 由受管 OpenViking 的 VLM 异步生成结构化 checkpoint；request、
 明确 failure 与 checkpoint 都是可重放的追加事件；failure 只保存稳定分类、错误码和通用消息，有效 checkpoint 必须有连续且匹配的 request/failure parent 链。VLM 或网络失败不改变 raw event、ACK 或 Archive。
-当前阶段尚不创建 `ActiveContext`，也不替换 Pi 上下文；Pi 是 compaction 唯一触发方。
+首个已消费的 checkpoint 会固定一个 `ActiveContext`：它记录接管时使用的 checkpoint 与最近原始上下文的起点，
+并按 Pi 报告的模型容量判断这段上下文是否装得下。该边界一经形成即保持不变，只有它离开当前分支的祖先链才重新
+选择。当前阶段仍不替换 Pi 上下文：任务模型始终看到完整 Pi 上下文，Pi 是 compaction 唯一触发方。
 
 ## 2. 前置条件
 
@@ -125,8 +127,9 @@ npx pi-openviking@latest credentials
 ```
 
 `archive.chunkTokenBudget` 控制每次 Archive 的目标增量，`archive.rawTailTokenBudget` 控制归档后保留
-最近原始上下文。`takeover` 已为 checkpoint 输出预算提供策略值；在 `ActiveContext` 实现并通过验收前，
-provider 仍使用完整 Pi 上下文，不执行上下文替换。`recallTokenBudget` 直接限制服务端为一次检索装配的上下文 token 预算。
+最近原始上下文。`takeover.enabled` 与 `takeover.contextTokenThreshold` 已参与活动上下文的容量判定：
+阈值为 `0` 时按 Pi 报告的模型容量自动确定可用窗口，大于 `0` 时只把可用窗口压得更低。当前阶段的判定结果
+只用于诊断，provider 仍使用完整 Pi 上下文，不执行上下文替换。`recallTokenBudget` 直接限制服务端为一次检索装配的上下文 token 预算。
 
 ### 受管服务代理
 
@@ -176,9 +179,11 @@ OpenViking Resource API 不能把导入对象绑定到该会话用户命名空�
 
 ```text
 ~/.pi/openviking/sync-ack/<target-and-session-hash>.json
+~/.pi/openviking/active-context/<target-and-session-hash>.json
 ```
 
-ACK 文件不包含 transcript。删除 ACK 只会使下一次从 Pi JSONL 幂等重放。
+ACK 文件不包含 transcript，活动上下文文件只包含 `checkpointId` 与 raw tail 起点的事件 ID。删除 ACK 只会使
+下一次从 Pi JSONL 幂等重放；删除活动上下文只会使下一次同步从已消费 checkpoint 重新选择边界。
 
 ## 7. 状态与手动重放
 
@@ -195,7 +200,8 @@ ACK 文件不包含 transcript。删除 ACK 只会使下一次从 Pi JSONL 幂�
 - 待重放 entry；
 - Archive 已提交数、待提交数与最近 `archiveId`；
 - checkpoint 的已赶上/处理中/消费落后/失败状态、已消费数、积压 Archive/token 与最近 `checkpointId`；
-- 最近同步失败、最近 Archive/checkpoint 失败及 fail-open 状态；
+- 活动上下文：是否可接管、来源 `checkpointId`、raw tail 起点与事件数，以及 Pi 报告容量、输出预留、可用窗口和候选需求；
+- 最近同步失败、最近 Archive/checkpoint/活动上下文失败及 fail-open 状态；
 - 独立观察状态：未启用、就绪或不完整，以及 accepted/dropped 计数。
 
 进入 checkpoint 消费落后、真正恢复到 processing/caught-up、或 VLM task 明确失败时会通知；第三次失败明确提示重试已耗尽，不把 failed 当作恢复。同一进程的同一

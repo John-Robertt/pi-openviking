@@ -3,6 +3,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { OVClient } from "./client.js";
+import {
+  ActiveContextManager,
+  activeContextFileKey,
+  type ActiveContextStatus,
+  type TaskModelCapacity,
+} from "./shared/active-context.mjs";
 import { describeArchives, type ArchiveDescriptor } from "./shared/archive.mjs";
 import { ArchiveManager } from "./shared/archive-store.mjs";
 import { CheckpointManager, type CheckpointStatus } from "./shared/checkpoint-store.mjs";
@@ -43,10 +49,19 @@ export interface SyncStatus {
   lastFailure: string | null;
   archive: ArchiveStatus;
   checkpoint: CheckpointStatus;
+  activeContext: ActiveContextStatus;
+}
+
+/** Pi 报告的任务模型上下文事实；只有 Pi 拥有这些值，因此由生命周期层传入。 */
+export interface TaskModelContext {
+  capacity: TaskModelCapacity | null;
+  systemPrompt: string;
+  toolDefinitions: string;
 }
 
 interface SyncManagerOptions {
   ackPathForSession?: (sessionId: string) => string | null;
+  activeContextPathForSession?: (sessionId: string) => string | null;
   adapterFactory?: (client: OVClient, userRoot: string) => RecordedEventAdapter;
   observation?: Observation;
   notify?: (message: string, level: "info" | "warning") => void;
@@ -59,6 +74,14 @@ function defaultAckPath(
 ): string {
   const key = syncAckFileKey(target, sessionId);
   return join(homedir(), ".pi", "openviking", "sync-ack", `${key}.json`);
+}
+
+function defaultActiveContextPath(
+  sessionId: string,
+  target: { endpoint: string; account: string; user: string },
+): string {
+  const key = activeContextFileKey(target, sessionId);
+  return join(homedir(), ".pi", "openviking", "active-context", `${key}.json`);
 }
 
 function branchContinuesFrom(
@@ -83,10 +106,13 @@ export class SyncManager {
   private adapter: RecordedEventAdapter | null = null;
   private archives: ArchiveManager | null = null;
   private checkpoints: CheckpointManager | null = null;
+  private activeContext: ActiveContextManager | null = null;
   private ack: SyncAck = { acknowledgedLeaves: [] };
   private ackPath: string | null = null;
   private knownParents = new Map<string, string | null>();
   private checkpointBranchLeafId: string | null = null;
+  private committedArchives: ArchiveDescriptor[] = [];
+  private derivedStateVersion = 0;
   private operationTail: Promise<void> = Promise.resolve();
   private syncStatus: SyncStatus = {
     source: "none",
@@ -98,6 +124,12 @@ export class SyncManager {
     checkpoint: {
       mode: "caught_up", consumed: 0, pending: 0, backlogTokens: 0,
       lastCheckpointId: null, currentArchiveId: null, lastFailure: null,
+    },
+    activeContext: {
+      checkpointId: null, rawTailStartEventId: null, rawTailEvents: 0,
+      eligibility: "no_context",
+      capacityTokens: null, reserveTokens: null, usableTokens: null,
+      payloadTokens: null, headroomTokens: null, lastFailure: null,
     },
   };
 
@@ -115,6 +147,7 @@ export class SyncManager {
       acknowledgedLeaves: [...this.syncStatus.acknowledgedLeaves],
       archive: this.archives ? this.archives.status : { ...this.syncStatus.archive },
       checkpoint: this.checkpoints ? this.checkpoints.status : { ...this.syncStatus.checkpoint },
+      activeContext: this.activeContext ? this.activeContext.status : { ...this.syncStatus.activeContext },
     };
   }
 
@@ -123,6 +156,7 @@ export class SyncManager {
     this.observe.emit("sync_ack", "snapshot", this.ack, null, this.syncStatus.pendingEntries);
     this.archives?.observeFinalState();
     this.checkpoints?.observeFinalState();
+    this.activeContext?.observeFinalState();
   }
 
   /**
@@ -143,6 +177,8 @@ export class SyncManager {
     if (this.piSessionId !== piSessionId) {
       this.knownParents.clear();
       this.checkpointBranchLeafId = null;
+      this.committedArchives = [];
+      this.derivedStateVersion = 0;
     }
     this.piSessionId = piSessionId;
     this.observe.bindSession(piSessionId);
@@ -167,6 +203,14 @@ export class SyncManager {
       archiveManager: this.archives,
       observation: this.observe,
       notify: this.options.notify,
+    });
+    this.activeContext = new ActiveContextManager({
+      path: this.options.activeContextPathForSession
+        ? this.options.activeContextPathForSession(piSessionId)
+        : defaultActiveContextPath(piSessionId, this.client.recordedEventTarget),
+      adapter: this.adapter,
+      takeover: this.client.cfg.takeover,
+      observation: this.observe,
     });
 
     this.ackPath = this.options.ackPathForSession
@@ -281,15 +325,15 @@ export class SyncManager {
     }
   }
 
-  async syncSession(sessionManager: any): Promise<SyncBranchResult> {
-    return this.serialize(() => this.syncSessionNow(sessionManager));
+  async syncSession(sessionManager: any, taskModel: TaskModelContext | null = null): Promise<SyncBranchResult> {
+    return this.serialize(() => this.syncSessionNow(sessionManager, taskModel));
   }
 
-  private async syncSessionNow(sessionManager: any): Promise<SyncBranchResult> {
+  private async syncSessionNow(sessionManager: any, taskModel: TaskModelContext | null): Promise<SyncBranchResult> {
     if (!this.piSessionId || !this.adapter) return this.uninitializedResult();
     try {
       const { entries, branch, parentById, source } = await this.sessionSource(sessionManager);
-      return await this.syncSource(entries, branch, parentById, source);
+      return await this.syncSource(entries, branch, parentById, source, taskModel);
     } catch (error: any) {
       this.observe.emit("sync_failure", error, "source", "abort_operation", "pending_replay", 0, this.syncStatus.pendingEntries);
       return this.failResult(error?.message || String(error));
@@ -301,6 +345,7 @@ export class SyncManager {
     branch: any[],
     parentById: Map<string, string | null>,
     source: SyncStatus["source"],
+    taskModel: TaskModelContext | null,
   ): Promise<SyncBranchResult> {
     if (!this.piSessionId || !this.adapter) return this.uninitializedResult();
 
@@ -373,12 +418,12 @@ export class SyncManager {
         );
         // 已确认前缀的 Archive 不依赖后面这个 entry：某个事件的永久完整性冲突不应让
         // 整个会话此后不再产生任何 Archive。
-        await this.formArchives(branch, parentById, events);
+        await this.advanceDerivedState(branch, parentById, events, taskModel);
         return { added, allDelivered: false, pending: this.syncStatus.pendingEntries, failure };
       }
     }
 
-    await this.formArchives(branch, parentById, events);
+    await this.advanceDerivedState(branch, parentById, events, taskModel);
     this.publishStatus();
     return { added, allDelivered: true, pending: 0, failure: null };
   }
@@ -420,6 +465,64 @@ export class SyncManager {
   }
 
   /**
+   * 推进当前分支上的派生状态：先形成 Archive，再据此固定活动上下文。
+   *
+   * 顺序不能颠倒——活动上下文选择的是"最后一个已消费 Archive 之后"的边界，因此必须在本轮
+   * Archive 规划完成之后才有正确的输入。
+   *
+   * 活动上下文消费的是当前分支的**全部**事件，而不是 Archive 使用的已确认前缀：接管替换的
+   * 只是已归档前缀，尚未确认的最新事件仍然在任务模型上下文里，必须留在 raw tail 内；同时，
+   * "raw tail 起点是否还在分支上"因此只反映真实的分支变化，不会被 ACK 丢失或传输失败误判成
+   * 分支切换而丢掉已固定的边界。
+   */
+  private async advanceDerivedState(
+    branch: any[],
+    parentById: Map<string, string | null>,
+    events: any[],
+    taskModel: TaskModelContext | null,
+  ): Promise<void> {
+    // 结果用对象包住 checkpoint 消费的 promise：直接返回 promise 会被 await 展开，
+    // 同步就会等待异步 VLM 消费完成。
+    const version = ++this.derivedStateVersion;
+    const sessionId = this.piSessionId;
+    const { consumption } = await this.formArchives(branch, parentById, events);
+    const onBranch = new Set(branch.map((entry) => entry.id));
+    const branchEvents = events.filter((event) => onBranch.has(event.source.entryId));
+    await this.updateActiveContext(branchEvents, taskModel);
+    // checkpoint 消费是异步的：它完成后立即用新的消费状态再收敛一次活动上下文，使边界在
+    // 同一轮同步内固定，而不是等到下一轮。收敛排在同一操作队列上，因此 shutdown grace 覆盖它。
+    // 后续同步或会话切换会产生更新的分支快照；旧 consumption 完成后不得用旧 branchEvents
+    // 混合当前 checkpoint 状态来覆盖新分支的 ActiveContext。
+    if (consumption) {
+      // consumption 的失败由 checkpoint 协调者记录，收敛本身的降级由 updateActiveContext 记录；
+      // 这里只防止 fire-and-forget 链把未处理的 rejection 变成进程级失败。
+      void consumption
+        .then(() => this.serialize(async () => {
+          if (this.piSessionId !== sessionId || this.derivedStateVersion !== version) return;
+          await this.updateActiveContext(branchEvents, taskModel);
+        }))
+        .catch(() => {});
+    }
+  }
+
+  /** 活动上下文只服务接管：它的失败不改变事件、ACK、Archive 或 checkpoint。 */
+  private async updateActiveContext(branchEvents: any[], taskModel: TaskModelContext | null): Promise<void> {
+    if (!this.activeContext || !this.piSessionId) return;
+    try {
+      await this.activeContext.update(this.piSessionId, {
+        branchEvents,
+        archives: this.committedArchives,
+        lastCheckpointId: this.checkpoints?.status.lastCheckpointId ?? null,
+        capacity: taskModel?.capacity ?? null,
+        systemPrompt: taskModel?.systemPrompt ?? "",
+        toolDefinitions: taskModel?.toolDefinitions ?? "",
+      });
+    } catch (error: any) {
+      this.observe.emit("active_context_failure", error, "materialize", "degrade", "keep_full_context");
+    }
+  }
+
+  /**
    * 在当前分支已确认的事件前缀上形成 Archive。
    *
    * 只取分支而不是整棵树：Archive 表达任务模型走过的一条上下文，跨 sibling branch 的
@@ -430,8 +533,8 @@ export class SyncManager {
     branch: any[],
     parentById: Map<string, string | null>,
     events: any[],
-  ): Promise<void> {
-    if (!this.archives || !this.piSessionId) return;
+  ): Promise<{ consumption: Promise<void> | null }> {
+    if (!this.archives || !this.piSessionId) return { consumption: null };
     const branchLeafId = branch.at(-1)?.id ?? null;
     const previousLeafId = this.checkpointBranchLeafId;
     if (previousLeafId !== null && !branchContinuesFrom(parentById, branchLeafId, previousLeafId)) {
@@ -448,13 +551,13 @@ export class SyncManager {
       if (!isEntryAcknowledged(this.ack, entry.id, parentById)) break;
       acknowledged.add(entry.id);
     }
-    const branchEvents = events.filter((event) => acknowledged.has(event.source.entryId));
-    const result = await this.archives.formArchives(this.piSessionId, branchEvents);
+    const acknowledgedEvents = events.filter((event) => acknowledged.has(event.source.entryId));
+    const result = await this.archives.formArchives(this.piSessionId, acknowledgedEvents);
     // 只有完整走完本轮计划，结果才足以替换消费范围。暂时性传输失败保留上一范围；
     // 分支切换已在 I/O 前失效旧范围，因而不会继续消费已放弃分支。
-    if (result.reconciled) {
-      void this.checkpoints?.schedule(this.piSessionId, result.archives, archiveChains);
-    }
+    if (!result.reconciled) return { consumption: null };
+    this.committedArchives = result.archives;
+    return { consumption: this.checkpoints?.schedule(this.piSessionId, result.archives, archiveChains) ?? null };
   }
 
   private setCapability(next: SyncStatus["capability"]): void {

@@ -18,11 +18,11 @@ import {
   archiveContentHash,
   archiveManifestBytes,
   buildArchiveManifest,
-  eventTokenWeight,
   parseArchiveManifest,
   planArchives,
 } from "../../shared/archive.mjs";
 import { archiveSessionRoot, archiveStorageLocation } from "../../shared/archive-store.mjs";
+import { eventTokenWeight } from "../../shared/context-weight.mjs";
 import { openVikingApiPath } from "../../shared/openviking-api.mjs";
 import { parsePiSessionJsonl } from "../../shared/pi-session-source.mjs";
 import { projectPiEntries, recordedEventBytes } from "../../shared/recorded-event.mjs";

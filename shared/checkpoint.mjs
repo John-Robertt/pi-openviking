@@ -84,11 +84,13 @@ export function checkpointTaskId(manifest, previousCheckpointId, attempt) {
 }
 
 export function checkpointEventId(manifest) {
-  return recordedEventId({
-    system: "pi-openviking",
-    sourceId: checkpointId(manifest),
-    sourceType: "checkpoint",
-  });
+  return checkpointEventIdFor(checkpointId(manifest));
+}
+
+/** 只凭 checkpoint 身份定位其事件：读取方不必先持有来源 Archive manifest。 */
+export function checkpointEventIdFor(id) {
+  if (!CHECKPOINT_ID_PATTERN.test(id)) throw new TypeError("checkpoint event lookup requires a checkpoint id");
+  return recordedEventId({ system: "pi-openviking", sourceId: id, sourceType: "checkpoint" });
 }
 
 export function checkpointRequestEventId(manifest, previousCheckpointId, attempt) {
@@ -230,6 +232,24 @@ export function buildCheckpointEvent({ manifest, requestEvent, overview, complet
   });
 }
 
+/**
+ * 任务模型方向的 checkpoint 块。
+ *
+ * 只渲染身份头与 narrative：completed/openItems/nextEntry/retrievalCues 都是 narrative
+ * 的派生投影，重复注入会让同一事实在上下文中占用两份。
+ */
+export function renderCheckpointBlock(checkpoint) {
+  if (!CHECKPOINT_ID_PATTERN.test(checkpoint?.checkpointId) || typeof checkpoint?.narrative !== "string" ||
+      !checkpoint.narrative || !ARCHIVE_ID_PATTERN.test(checkpoint?.sourceArchiveId)) {
+    throw new TypeError("checkpoint block requires a parsed checkpoint");
+  }
+  return [
+    `<openviking-checkpoint id="${checkpoint.checkpointId}" archive="${checkpoint.sourceArchiveId}">`,
+    checkpoint.narrative,
+    "</openviking-checkpoint>",
+  ].join("\n");
+}
+
 export function parseCheckpointRequestEvent(event) {
   const payload = event?.payload;
   const fields = [
@@ -292,6 +312,29 @@ export function parseCheckpointEvent(event, manifest) {
     throw new TypeError("checkpoint event is not valid for the source Archive");
   }
   return value;
+}
+
+/**
+ * 只凭 `checkpointId` 校验一个 checkpoint 事件。
+ *
+ * `checkpointId` 由来源 Archive 的身份与内容 hash 派生，因此事件自带的
+ * `sourceArchiveId`/`sourceArchiveHash` 能否复算出同一个 id，本身就是来源绑定的证明；
+ * 读取方不必先持有 manifest。消费链（parent/attempt/无 failure）由 checkpoint 协调者
+ * 在写入时校验，不在此重复。
+ */
+export function parseCheckpointEventById(event, expectedCheckpointId) {
+  if (!CHECKPOINT_ID_PATTERN.test(expectedCheckpointId)) {
+    throw new TypeError("checkpoint lookup requires a checkpoint id");
+  }
+  const value = event?.payload?.checkpoint;
+  const checkpoint = parseCheckpointEvent(event, {
+    archiveId: value?.sourceArchiveId,
+    contentHash: value?.sourceArchiveHash,
+  });
+  if (checkpoint.checkpointId !== expectedCheckpointId) {
+    throw new TypeError("checkpoint event does not match the requested checkpoint id");
+  }
+  return checkpoint;
 }
 
 export function embeddedImages(events) {

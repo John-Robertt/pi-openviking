@@ -7,12 +7,12 @@ import {
   archiveId,
   archiveManifestBytes,
   buildArchiveManifest,
-  eventTokenWeight,
   parseArchiveManifest,
   planArchives,
 } from "../shared/archive.mjs";
 import { ArchiveManager, archiveStorageLocation } from "../shared/archive-store.mjs";
 import { ContentBusyError, ContentConflictError } from "../shared/content-objects.mjs";
+import { eventTokenWeight } from "../shared/context-weight.mjs";
 import { RecordedEventAdapter } from "../shared/recorded-event-adapter.mjs";
 import { recordedEventBytes } from "../shared/recorded-event.mjs";
 import { projectPiEntries } from "../shared/recorded-event.mjs";

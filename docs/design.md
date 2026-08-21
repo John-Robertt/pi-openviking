@@ -21,6 +21,7 @@
   剩余时间完成独立记录；
 - `before_agent_start` 把 profile block 注入 system prompt 并排队 recall，`context` hook 等待检索结果并注入消息；recall 实际注入时追加 `ov-observation` custom entry，再由同一事件链同步；
 - `tool_call` 阻止通用文件与 shell 工具直接处理 `viking://` URI，并引导使用对应 `viking_*` 工具；
+- 在调度同步时提供 Pi 报告的任务模型容量、输出预留、system prompt 与活动工具定义，供活动上下文判定容量；
 - OpenViking 不可用时只更新待重放诊断，不阻塞 Pi 主任务；
 - 不触发 Pi compaction，不构造 Archive，不替换 provider 上下文。
 
@@ -70,6 +71,11 @@
 
 adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
 
+### `shared/context-weight.mjs`
+
+- 维护"内容进入任务模型上下文的权重"这一条策略量，供 Archive 压力轴与 `ActiveContext` 容量判定共同使用；
+- 不读取产品状态，也不决定任何边界。
+
 ### `shared/archive.mjs`
 
 - 生成 `archiveId`、聚合 `contentHash` 与 manifest 规范字节；
@@ -109,6 +115,20 @@ adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
 - 已进入追加事实写入的首写者可以完成，但当前状态只从新范围扫描并派生；
 - 发布失败、落后与恢复通知；失败不改变 raw event、ACK 或 Archive。
 
+### `shared/active-context.mjs`
+
+- 从当前分支上最后一个已消费 checkpoint 选择 `ActiveContext`，并以最小两字段对象原子替换写入本地文件；
+- 一经形成即保持固定，只有 raw tail 起点离开当前分支祖先链才失效并重新选择；推进到更新的 checkpoint 属于接管时的原子替换；
+- 从 raw tail 起点的 `turnId` 重算原始用户指令 anchor，因而 anchor 不是持久化字段；
+- dry-run materialize `system + checkpoint + anchor + raw tail` 四段候选 payload，段内直接引用不可变来源；
+- 用 Pi 报告的任务模型容量与输出预留计算 takeover eligibility，容量不匹配时保持 inactive；
+- 不改变 provider 可见上下文，不触发接管；来源事实不可读时保留既有边界并只降级诊断。
+
+### `shared/state-file.mjs`
+
+- 维护本地最小状态文件的键派生与原子写入：私有目录/文件权限、同目录临时文件 rename、失败不留残件；
+- 由 `SyncAck` 与 `ActiveContext` 共同消费；不拥有任何读路径语义——损坏内容如何处置属于各自模块。
+
 ### `shared/sync-ack.mjs`
 
 - 保存最小 `acknowledgedLeaves`；
@@ -131,7 +151,8 @@ ACK 文件不包含 transcript 或事件 payload。丢失 ACK 只会触发幂等
 6. 分支不再延续上一 leaf 时，在 Archive I/O 前使旧 checkpoint scope 失效；
 7. 以统一 descriptor 规划在当前分支已确认前缀上形成 Archive；暂时性传输失败不提交新的消费范围；
 8. 把当前分支已提交 Archive 交给 checkpoint manager 异步消费，并提供全树 Archive 候选链恢复失效 request 清理；
-9. 发布 source、capability、pending、Archive、checkpoint 和 failure 状态。
+9. 在同一轮同步内用当前分支事件、已提交 Archive 与 checkpoint 消费状态推进 `ActiveContext`，并在异步消费完成后再收敛一次；
+10. 发布 source、capability、pending、Archive、checkpoint、活动上下文和 failure 状态。
 
 `SyncManager` 自身只持久化 `SyncAck`，不持久化待发送事件副本；Archive 由来源事件重算。checkpoint manager
 把 request/failure/checkpoint 写成现有 event namespace 内的追加事实，积压与通知状态均从这些事实和当前 Archive 重建，
@@ -208,6 +229,9 @@ checkpoint-store ───► checkpoint-processor ───► OpenViking Sessi
 recorded-event-adapter ────────────────────────► OpenViking Content API
         │ derived checkpoint/backlog state
         ▼
+active-context ──► ~/.pi/openviking/active-context/<target-and-session>.json
+        │ checkpoint + raw-tail 边界、dry-run 候选 payload、takeover eligibility
+        ▼
 /viking diagnostics
 
 user prompt
@@ -244,6 +268,7 @@ context hook: recall.injectRecall ───► provider-visible messages
 - `test/recorded-event-adapter.test.mjs`：127/128/129 项、8/16 MiB、冲突和 chunk/commit 边界；
 - `test/archive.test.mjs`：Archive 身份、manifest 自证、边界选择、提交/恢复/冲突与 expand；
 - `test/checkpoint.test.mjs`、`test/checkpoint-processor.test.mjs`：checkpoint 身份/事实链、结构化投影、并发首写、三次重试、恢复清理、媒体失败与 Session/Task 边界；
+- `test/active-context.test.mjs`：活动上下文身份与持久化、候选选择、分支复用与失效、anchor 重算、dry-run payload 与容量判定两侧；
 - `test/client-content.test.mjs`：HTTP transport；
 - `test/openviking-api.test.mjs`：版本前缀与相对路径组合；
 - `test/sync-manager.test.mjs`：重启、ACK 丢失、分支和 fail-open；
@@ -255,7 +280,7 @@ context hook: recall.injectRecall ───► provider-visible messages
 - `test/viking-status.test.mjs`：运行诊断。
 
 真实边界由各 live gate 覆盖，各 gate 的断言范围见
-[`docs/verification.md`](./verification.md)。sync、archive、checkpoint 与 observability 四个 gate 共用
+[`docs/verification.md`](./verification.md)。sync、archive、checkpoint、context 与 observability 五个 gate 共用
 `test/live/live-support.mjs` 的身份核对、ownership、清理与 summary 骨架；Pi 驱动由需要 lifecycle 的 gate 使用，
 observability gate 的 Pi 观察采集经骨架的 capture 选项接入，checkpoint gate 直接为 Archive/VLM 边界建立同一 schema 的完整 run；
 tool-uri-rejection 的 guard 触发由 `test/live/scripted-provider.mjs` 的确定性脚本 provider 承担。

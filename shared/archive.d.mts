@@ -35,6 +35,5 @@ export function archiveContentHash(events: PiRecordedEventV1[]): string;
 export function buildArchiveManifest(sessionId: string, events: PiRecordedEventV1[]): ArchiveManifestV1;
 export function archiveManifestBytes(manifest: ArchiveManifestV1): Buffer;
 export function parseArchiveManifest(bytes: Buffer): ArchiveManifestV1;
-export function eventTokenWeight(event: PiRecordedEventV1): number;
 export function planArchives(events: PiRecordedEventV1[], budgets: ArchiveBudgets): ArchivePlan[];
 export function describeArchives(sessionId: string, events: PiRecordedEventV1[], budgets: ArchiveBudgets): ArchiveDescriptor[];

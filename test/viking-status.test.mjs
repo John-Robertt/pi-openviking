@@ -76,6 +76,62 @@ test("/viking 在 Archive 尚未形成或提交失败时给出可诊断状态", 
   assert.match(failed, /最近 checkpoint 失败：task failed/);
 });
 
+test("/viking 展示活动上下文的身份、边界与容量判定", () => {
+  const base = {
+    source: "persistent-jsonl",
+    capability: "ready",
+    acknowledgedLeaves: ["leaf-a"],
+    pendingEntries: 0,
+    lastFailure: null,
+    archive: { committed: 2, lastArchiveId: `arc_${"a".repeat(64)}`, pending: 0, lastFailure: null },
+    checkpoint: {
+      mode: "caught_up", consumed: 2, pending: 0, backlogTokens: 0,
+      lastCheckpointId: `chk_${"c".repeat(64)}`, currentArchiveId: null, lastFailure: null,
+    },
+  };
+  const eligible = formatVikingCommand({
+    connected: true,
+    sessionId: "pi-session",
+    sync: {
+      ...base,
+      activeContext: {
+        checkpointId: `chk_${"c".repeat(64)}`, rawTailStartEventId: `evt_${"e".repeat(64)}`, rawTailEvents: 3,
+        eligibility: "eligible", capacityTokens: 272000, reserveTokens: 128000,
+        usableTokens: 144000, payloadTokens: 10481, headroomTokens: 133519, lastFailure: null,
+      },
+    },
+    observation: { state: "disabled" },
+  });
+  assert.match(eligible, new RegExp(`活动上下文：可接管（余量 133519 tokens），checkpoint chk_c{64}，raw tail 起点 evt_e{64}（3 个事件）`));
+  assert.match(eligible, /上下文容量：Pi 报告 272000，输出预留 128000，可用 144000，候选需要 10481/);
+
+  const mismatch = formatVikingCommand({
+    connected: true,
+    sessionId: "pi-session",
+    sync: {
+      ...base,
+      activeContext: {
+        checkpointId: `chk_${"c".repeat(64)}`, rawTailStartEventId: `evt_${"e".repeat(64)}`, rawTailEvents: 3,
+        eligibility: "capacity_mismatch", capacityTokens: 272000, reserveTokens: 128000,
+        usableTokens: 1000, payloadTokens: 10481, headroomTokens: -9481, lastFailure: "Error: read failed",
+      },
+    },
+    observation: { state: "disabled" },
+  });
+  assert.match(mismatch, /活动上下文：inactive：容量不匹配，checkpoint chk_c{64}/);
+  assert.match(mismatch, /上下文容量：Pi 报告 272000，输出预留 128000，可用 1000，候选需要 10481/);
+  assert.match(mismatch, /最近活动上下文失败：Error: read failed/);
+
+  const empty = formatVikingCommand({
+    connected: true,
+    sessionId: "pi-session",
+    sync: { ...base, activeContext: { checkpointId: null, eligibility: "no_context" } },
+    observation: { state: "disabled" },
+  });
+  assert.match(empty, /活动上下文：尚未形成/);
+  assert.doesNotMatch(empty, /最近活动上下文失败/);
+});
+
 test("/viking 在断线时明确 fail-open 和最近失败", () => {
   const output = formatVikingCommand({
     connected: false,

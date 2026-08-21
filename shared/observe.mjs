@@ -21,6 +21,9 @@ const INTEGER = (min = 0, max = Number.MAX_SAFE_INTEGER) => ({ type: "integer", 
 const NUMBER = (min = 0) => ({ type: "number", min });
 const BOOLEAN = Object.freeze({ type: "boolean" });
 const NULLABLE_HASH = { type: "string", nullable: true, pattern: "^[0-9a-f]{64}$", maxLength: 64 };
+const NULLABLE_INTEGER = { type: "integer", nullable: true, min: 0, max: Number.MAX_SAFE_INTEGER };
+// 容量余量按定义可以为负：非正余量正是 capacity mismatch 的判据。
+const NULLABLE_SIGNED_INTEGER = { type: "integer", nullable: true, min: -Number.MAX_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER };
 const HASH = STRING(64, "^[0-9a-f]{64}$");
 const PHASE_BEGIN = ENUM(["begin"]);
 const PHASE_END = ENUM(["end"]);
@@ -108,6 +111,10 @@ const TIMEOUT_ERROR_CODES = new Set([
   "ETIMEDOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT",
 ]);
 const DISPOSITIONS = ["degrade", "retry", "ignore", "abort_operation"];
+// 活动上下文的判定结果是单一枚举：可接管，或说明为什么还不能接管。
+const ACTIVE_CONTEXT_STATES = [
+  "eligible", "capacity_mismatch", "capacity_unknown", "facts_unavailable", "no_context", "takeover_disabled",
+];
 const FAILURE_BASE = {
   errorClass: ENUM(ERROR_CLASSES),
   errorCode: STRING(64, "^[a-z0-9_]+$"),
@@ -167,7 +174,7 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
   })),
   index_failure: stage("index.ts", "failure", schema({
     ...FAILURE_BASE,
-    errorCode: ENUM(["health_refresh", "observation_append", "profile_load", "sync_schedule"]),
+    errorCode: ENUM(["health_refresh", "observation_append", "profile_load", "sync_schedule", "task_model_context"]),
     branch: ENUM(["continue_pi", "omit_profile"]),
   }, FAILURE_OPTIONAL)),
   tool_uri_guard: stage("lib/uri-guard-adapter.mjs", "decision", schema({
@@ -317,6 +324,46 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
     branch: ENUM(["pending_retry", "retry_attempt", "retry_exhausted", "retain_fact"]),
     pending: INTEGER(),
     backlogTokens: INTEGER(),
+  }, FAILURE_OPTIONAL)),
+  active_context_select: stage("shared/active-context.mjs", "decision", schema({
+    branch: ENUM(["reused", "selected", "invalidated", "unavailable"]),
+    archives: INTEGER(),
+    events: INTEGER(),
+  })),
+  active_context_eligibility: stage("shared/active-context.mjs", "decision", schema({
+    branch: ENUM(ACTIVE_CONTEXT_STATES),
+    capacity: NULLABLE_INTEGER,
+    usable: NULLABLE_INTEGER,
+    payload: NULLABLE_INTEGER,
+    headroom: NULLABLE_SIGNED_INTEGER,
+  })),
+  active_context_state: stage("shared/active-context.mjs", "state", variants("mode", {
+    snapshot: schema({
+      mode: MODE_SNAPSHOT,
+      status: ENUM(ACTIVE_CONTEXT_STATES),
+      checkpoint: NULLABLE_HASH,
+      rawTailStart: NULLABLE_HASH,
+      rawTailEvents: INTEGER(),
+      headroom: NULLABLE_SIGNED_INTEGER,
+    }),
+    change: schema({
+      mode: MODE_CHANGE,
+      fromStatus: ENUM(ACTIVE_CONTEXT_STATES),
+      toStatus: ENUM(ACTIVE_CONTEXT_STATES),
+      fromCheckpoint: NULLABLE_HASH,
+      toCheckpoint: NULLABLE_HASH,
+      fromRawTailStart: NULLABLE_HASH,
+      toRawTailStart: NULLABLE_HASH,
+      fromRawTailEvents: INTEGER(),
+      toRawTailEvents: INTEGER(),
+      fromHeadroom: NULLABLE_SIGNED_INTEGER,
+      toHeadroom: NULLABLE_SIGNED_INTEGER,
+    }),
+  })),
+  active_context_failure: stage("shared/active-context.mjs", "failure", schema({
+    ...FAILURE_BASE,
+    errorCode: ENUM(["materialize", "persist"]),
+    branch: ENUM(["keep_full_context"]),
   }, FAILURE_OPTIONAL)),
   recall_request: stage("recall.ts", "decision", schema({
     queryChars: INTEGER(),
@@ -515,6 +562,41 @@ const ENCODERS = Object.freeze({
     pending: safeInteger(pending),
     backlogTokens: safeInteger(backlogTokens),
   }),
+  active_context_select: (branch, archives, events) => ({
+    branch,
+    archives: safeInteger(archives),
+    events: safeInteger(events),
+  }),
+  active_context_eligibility: (eligibility, capacity, usable, payload, headroom) => ({
+    branch: eligibility,
+    capacity: nullableInteger(capacity),
+    usable: nullableInteger(usable),
+    payload: nullableInteger(payload),
+    headroom: nullableInteger(headroom),
+  }),
+  active_context_state: (mode, from, to) => mode === "snapshot"
+    ? {
+        mode,
+        status: from?.eligibility ?? "no_context",
+        checkpoint: checkpointDigest(from?.checkpointId),
+        rawTailStart: eventDigest(from?.rawTailStartEventId),
+        rawTailEvents: safeInteger(from?.rawTailEvents),
+        headroom: nullableInteger(from?.headroomTokens),
+      }
+    : {
+        mode,
+        fromStatus: from?.eligibility ?? "no_context",
+        toStatus: to?.eligibility ?? "no_context",
+        fromCheckpoint: checkpointDigest(from?.checkpointId),
+        toCheckpoint: checkpointDigest(to?.checkpointId),
+        fromRawTailStart: eventDigest(from?.rawTailStartEventId),
+        toRawTailStart: eventDigest(to?.rawTailStartEventId),
+        fromRawTailEvents: safeInteger(from?.rawTailEvents),
+        toRawTailEvents: safeInteger(to?.rawTailEvents),
+        fromHeadroom: nullableInteger(from?.headroomTokens),
+        toHeadroom: nullableInteger(to?.headroomTokens),
+      },
+  active_context_failure: (error, errorCode, disposition, branch) => failureData(error, errorCode, disposition, branch),
   recall_request: (branch, query) => ({ branch, queryChars: safeLength(query) }),
   recall_source: (branch, resultCount) => ({ branch, resultCount: safeInteger(resultCount) }),
   recall_result: (operation, state, value) => ({
@@ -1016,6 +1098,15 @@ function archiveDigest(value) {
 
 function checkpointDigest(value) {
   return /^chk_[0-9a-f]{64}$/.test(String(value ?? "")) ? String(value).slice(4) : null;
+}
+
+function eventDigest(value) {
+  return /^evt_[0-9a-f]{64}$/.test(String(value ?? "")) ? String(value).slice(4) : null;
+}
+
+/** 未知或不可用的计量记录为 null，而不是伪造成 0。 */
+function nullableInteger(value) {
+  return Number.isSafeInteger(value) ? value : null;
 }
 
 function failureData(error, errorCode, disposition, branch) {

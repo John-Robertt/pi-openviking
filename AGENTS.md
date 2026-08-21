@@ -58,6 +58,11 @@ committed Archives
   → source-proving checkpoint event
   → derived backlog / notification state
 
+consumed checkpoint + current branch
+  → ActiveContext (checkpointId + raw-tail start)
+  → dry-run candidate payload (system / checkpoint / anchor / raw tail)
+  → takeover eligibility from Pi-reported capacity
+
 user prompt
   → recall search
   → profile / recall block
@@ -65,8 +70,11 @@ user prompt
   → provider-visible messages
 ```
 
-`index.ts` 绑定 Pi 生命周期并协调健康检查、同步、召回和工具；`sync.ts` 是 Pi 来源事件写入与 ACK 的唯一
-协调者（checkpoint 的 request/failure/checkpoint 事实由 checkpoint manager 经同一 adapter 追加）；`shared/checkpoint-store.mjs` 从已提交 Archive 与追加事实协调 VLM 消费；`client.ts` 只负责 OpenViking transport。
+`index.ts` 绑定 Pi 生命周期并协调健康检查、同步、召回和工具，同时提供 Pi 报告的任务模型容量与 system/工具
+规模；`sync.ts` 是 Pi 来源事件写入与 ACK 的唯一协调者（checkpoint 的 request/failure/checkpoint 事实由
+checkpoint manager 经同一 adapter 追加）；`shared/checkpoint-store.mjs` 从已提交 Archive 与追加事实协调 VLM
+消费；`shared/active-context.mjs` 从已消费 checkpoint 固定接管边界并判定 eligibility；`client.ts` 只负责
+OpenViking transport。
 Checkpoint、`ActiveContext` 和上下文接管的当前可用范围由 `docs/roadmap.md` 的实施状态及对应阶段
 gate 共同证明；配置字段只表达其权威文档定义的策略。
 
@@ -82,6 +90,7 @@ gate 共同证明；配置字段只表达其权威文档定义的策略。
 - Pi 独立控制 compaction；扩展通过生命周期钩子观察结果并提供上下文。
 - Archive 只在 manifest 自证成立且回读证明全部引用事件有效后存在；崩溃残留不是 Archive，同一范围只有一个逻辑对象。
 - Archive、Checkpoint 和 `ActiveContext` 依次消费前一阶段已经通过 deterministic checks 与 live gate 的状态。
+- `ActiveContext` 只固定当前分支上已消费 checkpoint 的边界；来源边界离开祖先链即失效，容量不匹配或事实不可读时保持 inactive 并继续使用完整 Pi 上下文。
 - session-scoped 模式下，所有接收或返回 `viking://` URI 的工具执行绑定用户与会话边界校验。
 - 凭证只在已授权进程的内存和环境中传递，仓库、日志、状态文件、测试输入和 artifact 保持无凭证。
 - 删除和远端破坏性测试只作用于通过精确根路径、ownership marker 与随机 nonce 验证的所属资源。
@@ -97,6 +106,7 @@ gate 共同证明；配置字段只表达其权威文档定义的策略。
 | Content API、批次、大对象或冲突         | `docs/spec.md` 存储契约                       | `client.ts`、`shared/content-objects.mjs`、`shared/recorded-event-adapter.mjs`                 | `test/client-content.test.mjs`、`test/content-objects.test.mjs`、`test/recorded-event-adapter.test.mjs` |
 | Archive 身份、边界、提交或 expand       | `docs/spec.md`“Archive 是一个原子对象”         | `shared/archive.mjs`、`shared/archive-store.mjs`、`sync.ts`                                    | `test/archive.test.mjs`、`verify:archive:live`                                 |
 | checkpoint 身份、VLM、重试、恢复或积压 | `docs/spec.md`“Checkpoint 生成与消费状态”       | `shared/checkpoint*.mjs`、`shared/recorded-event*.mjs`、`sync.ts`                               | `test/checkpoint*.test.mjs`、`verify:checkpoint:live`                           |
+| 活动上下文边界、分支复用或容量判定     | `docs/spec.md`“活动上下文与 prompt cache 稳定性” | `shared/active-context.mjs`、`shared/context-weight.mjs`、`sync.ts`、`index.ts`                 | `test/active-context.test.mjs`、`verify:context:live`                           |
 | recall、profile 或 provider context     | `docs/spec.md` 检索/上下文边界                | `recall.ts`、`shared/recall-core.mjs`、`shared/profile-inject.mjs`                             | `test/recall.test.mjs`、阶段 provider payload gate                             |
 | 观察 registry、sink、脱敏或点位        | `docs/observability.md`                       | `shared/observe.mjs` 与 registry 声明的 owner                                                   | `test/observe.test.mjs`、`test/observability-integration.test.mjs`、observability gate |
 | `viking_*` 工具及 URI 权限              | `docs/usage.md`“会话隔离与数据位置”、“工具”   | `tools.ts`、`lib/uri-guard-adapter.mjs`、`shared/uri-guard.mjs`                                | `test/tools-boundary.test.mjs`                                                 |
