@@ -243,8 +243,8 @@ Archive 的原子性不依赖服务端写入语义，而由三条规则共同提
    Archive。崩溃残留因此等价于不存在：它从来不是已接受对象，恢复时按其实际 hash 就地替换；已自证
    但绑定不同内容的 manifest 才是完整性冲突，保留原对象并返回可诊断失败。
 
-同一 event 范围重复提交得到同一 `archiveId` 与同一字节，不产生第二个逻辑对象。Archive 失败不改变
-已经持久化的事件和 ACK。
+同一 event 范围重复提交得到同一 `archiveId` 与同一字节，不产生第二个逻辑对象。完整性冲突只排除对应
+Archive；暂时性传输失败保留上一 checkpoint 消费范围并等待重试。两类失败都不改变已经持久化的事件和 ACK。
 
 Archive 创建由 token/step 压力驱动，支持单个超长用户轮次，并保持
 assistant/tool call/result step 边界完整。压力轴是分支事件自身的上下文权重之和——度量对象是事件进入
@@ -284,7 +284,8 @@ provider/task 错误正文保留在受管 OpenViking 边界内。checkpoint 只�
 checkpoint 下连续 attempt 中存在、匹配且没有 failure 的 request 时才表示消费完成；来源 Archive 身份和
 hash 必须同时匹配。并发进程写入同一事实身份时采用首个通过该完整事实链校验的已提交对象。
 多模态输入只有在每个媒体对象都得到非空语义摘要后才提交 VLM；终态 request/failure/checkpoint 跨重启
-派生临时 Session 与 attempt 媒体根的清理义务，二者都确认不存在才算清理完成。
+派生临时 Session 与 attempt 媒体根的清理义务，二者都确认不存在才算清理完成。每次协调调度从既有 request
+事实发现一次失效 task，随后只重试已发现的正向义务，不形成第二份持久队列。
 
 VLM 消费状态由上述事实派生。最新 checkpoint 之后没有 Archive 时表示已经赶上；只有
 一个 Archive 时表示正常处理中；已有两个或更多 Archive 时表示消费落后。积压 token 是

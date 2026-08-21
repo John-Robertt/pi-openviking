@@ -111,7 +111,7 @@ export function validateExtensionConfig(value) {
       contextTokenThreshold: number(takeoverInput.contextTokenThreshold, "takeover.contextTokenThreshold", EXTENSION_CONFIG_DEFAULTS.takeover.contextTokenThreshold, { min: 0, max: 1_000_000 }),
       checkpointTokenBudget: number(takeoverInput.checkpointTokenBudget, "takeover.checkpointTokenBudget", EXTENSION_CONFIG_DEFAULTS.takeover.checkpointTokenBudget, { min: 100, max: 100_000 }),
     },
-    recallTokenBudget: number(root.recallTokenBudget, "recallTokenBudget", EXTENSION_CONFIG_DEFAULTS.recallTokenBudget, { min: 200, max: 50_000 }),
+    recallTokenBudget: number(root.recallTokenBudget, "recallTokenBudget", EXTENSION_CONFIG_DEFAULTS.recallTokenBudget, { min: 200, max: 32_000 }),
     recallMaxContentChars: number(root.recallMaxContentChars, "recallMaxContentChars", EXTENSION_CONFIG_DEFAULTS.recallMaxContentChars, { min: 100, max: 5_000 }),
     recallPreferAbstract: boolean(root.recallPreferAbstract, "recallPreferAbstract", EXTENSION_CONFIG_DEFAULTS.recallPreferAbstract),
     recallLimit: number(root.recallLimit, "recallLimit", EXTENSION_CONFIG_DEFAULTS.recallLimit, { min: 1, max: 50 }),

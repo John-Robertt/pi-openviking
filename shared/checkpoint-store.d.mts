@@ -36,7 +36,11 @@ export class CheckpointManager {
     now?: () => string;
   });
   readonly status: CheckpointStatus;
-  schedule(sessionId: string, archives: CheckpointArchiveDescriptor[]): Promise<void>;
+  schedule(
+    sessionId: string,
+    archives: CheckpointArchiveDescriptor[],
+    archiveChains?: CheckpointArchiveDescriptor[][],
+  ): Promise<void>;
   observeFinalState(): void;
   stop(): Promise<void>;
 }

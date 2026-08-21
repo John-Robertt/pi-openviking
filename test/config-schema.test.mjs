@@ -17,6 +17,11 @@ test("配置拒绝未知字段并返回完整路径", () => {
   assert.throws(() => validateExtensionConfig({ unexpected: true }), /unexpected/);
 });
 
+test("召回 token 预算与 OpenViking Context API 上限一致", () => {
+  assert.equal(validateExtensionConfig({ recallTokenBudget: 32_000 }).recallTokenBudget, 32_000);
+  assert.throws(() => validateExtensionConfig({ recallTokenBudget: 32_001 }), /recallTokenBudget/);
+});
+
 test("JSONC 损坏不会静默回退，注释与尾逗号保持字符串内容", () => {
   const parsed = parseJsoncObject(`{
     // comment

@@ -15,7 +15,9 @@ const MY_ROOT = `viking://user/${MY_USER}`;
 const OUTSIDE = "viking://user/dev--pi-OTHER/memories/secret.md";
 
 /** 桩服务器故意忽略 target_uri 并返回越界命中，用于验证扩展自身的核验。 */
-async function harness({ sessionScopedMemory = true, sync = { sessionId: "pi-x" } } = {}) {
+async function harness({
+  sessionScopedMemory = true, sync = { sessionId: "pi-x" }, foundUri = OUTSIDE, resourceRoot = OUTSIDE,
+} = {}) {
   const requests = [];
   const server = createServer(async (req, res) => {
     const chunks = [];
@@ -34,9 +36,10 @@ async function harness({ sessionScopedMemory = true, sync = { sessionId: "pi-x" 
     if (req.url === "/api/v1/search/find") {
       return json({
         status: "ok",
-        result: { memories: [{ uri: OUTSIDE, score: 0.95, abstract: "另一会话的记忆" }], resources: [], skills: [], total: 1 },
+        result: { memories: [{ uri: foundUri, score: 0.95, abstract: "匹配结果" }], resources: [], skills: [], total: 1 },
       });
     }
+    if (req.url === "/api/v1/resources") return json({ status: "ok", result: { root_uri: resourceRoot } });
     if (req.url.startsWith("/api/v1/content/")) return json({ status: "ok", result: "content body" });
     return json({ status: "ok", result: {} });
   });
@@ -55,7 +58,7 @@ async function harness({ sessionScopedMemory = true, sync = { sessionId: "pi-x" 
   const run = async (name, params) => {
     requests.length = 0;
     const result = await tools.get(name).execute("id", params, new AbortController().signal, () => {}, {});
-    return { text: result.content?.[0]?.text ?? "", requests: [...requests] };
+    return { text: result.content?.[0]?.text ?? "", result, requests: [...requests] };
   };
   const close = async () => {
     await client.close();
@@ -95,6 +98,32 @@ test("越界删除在发出请求前被拒绝：URI 直接指定与搜索命中�
   }
 });
 
+test("内部事实命名空间不可由 viking_forget 删除", async () => {
+  const internal = `${MY_ROOT}/resources/.pi-openviking/recorded-events/v1/hidden/.event.json`;
+  const { run, close } = await harness({ foundUri: internal });
+  try {
+    const byUri = await run("viking_forget", { uri: internal });
+    assert.match(byUri.text, /^Refused:/);
+    assert.deepEqual(byUri.requests, [], "内部事实 URI 不得发出 DELETE");
+
+    const duplicateSlash = internal.replace("/resources/", "/resources//");
+    const invalid = await run("viking_forget", { uri: duplicateSlash });
+    assert.match(invalid.text, /^Refused:/);
+    assert.deepEqual(invalid.requests, [], "重复斜杠不是合法 canonical URI");
+
+    const byQuery = await run("viking_forget", { query: "内部事实" });
+    assert.match(byQuery.text, /^Refused:/);
+    assert.equal(byQuery.requests.length, 1, "搜索本身仍需执行一次");
+    assert.ok(!byQuery.requests.some((request) => request.method === "DELETE"));
+
+    const memory = await run("viking_forget", { uri: `${MY_ROOT}/memories/outdated.md` });
+    assert.match(memory.text, /^Deleted:/);
+    assert.ok(memory.requests.some((request) => request.method === "DELETE"), "普通记忆仍可删除");
+  } finally {
+    await close();
+  }
+});
+
 test("搜索范围夹回绑定根，且越界结果不返回给模型", async () => {
   const { run, close } = await harness();
   try {
@@ -104,6 +133,57 @@ test("搜索范围夹回绑定根，且越界结果不返回给模型", async ()
     assert.equal(result.text, "No results found.", "服务端返回的越界命中必须被过滤");
   } finally {
     await close();
+  }
+});
+
+test("current-user shorthand 规范化后校验并以 canonical URI 执行", async () => {
+  const shorthand = "viking://user/memories/current.md";
+  const canonical = `${MY_ROOT}/memories/current.md`;
+  const { run, close } = await harness({ foundUri: shorthand });
+  try {
+    const read = await run("viking_read", { uri: shorthand, level: "full" });
+    assert.equal(read.requests[0].query, `uri=${canonical}`);
+
+    const browse = await run("viking_browse", { action: "stat", uri: shorthand });
+    assert.equal(browse.requests[0].query, `uri=${canonical}`);
+
+    const search = await run("viking_search", { query: "current" });
+    assert.match(search.text, new RegExp(canonical));
+    assert.equal(search.result.details.results[0].uri, canonical);
+
+    const forget = await run("viking_forget", { uri: shorthand });
+    assert.equal(forget.text, `Deleted: ${canonical}`);
+    assert.match(forget.requests[0].query, new RegExp(`^uri=${canonical}`));
+  } finally {
+    await close();
+  }
+});
+
+test("URI path 字节不被工具层解码，所有模式都拒绝非法 URI", async () => {
+  const { run, close } = await harness();
+  try {
+    for (const suffix of ["a%25b", "%3Fchild", "中文.md"]) {
+      const input = `viking://user/memories/${suffix}`;
+      const result = await run("viking_read", { uri: input, level: "full" });
+      assert.equal(result.requests[0].query, `uri=${MY_ROOT}/memories/${suffix}`);
+    }
+  } finally {
+    await close();
+  }
+
+  const shared = await harness({ sessionScopedMemory: false });
+  try {
+    for (const [tool, params] of [
+      ["viking_read", { uri: "not-a-viking-uri", level: "full" }],
+      ["viking_browse", { action: "stat", uri: "viking://user//broken" }],
+      ["viking_search", { query: "x", scope: "not-a-viking-uri" }],
+    ]) {
+      const result = await shared.run(tool, params);
+      assert.match(result.text, /^Refused:/);
+      assert.deepEqual(result.requests, []);
+    }
+  } finally {
+    await shared.close();
   }
 });
 
@@ -117,6 +197,40 @@ test("越界读取与浏览被拒绝，绑定根内放行", async () => {
     assert.equal(inside.requests[0].query, `uri=${MY_ROOT}`, "未指定 URI 时浏览绑定根");
   } finally {
     await close();
+  }
+});
+
+test("资源导入在会话隔离模式拒绝，关闭隔离后按服务身份执行", async () => {
+  const scopedHarness = await harness();
+  try {
+    const result = await scopedHarness.run("viking_add_resource", { url: "https://example.test" });
+    assert.match(result.text, /^Refused:/);
+    assert.deepEqual(result.requests, [], "无法绑定会话资源命名空间时不得产生全局副作用");
+  } finally {
+    await scopedHarness.close();
+  }
+
+  const resourceUri = "viking://resources/imported";
+  const sharedHarness = await harness({ sessionScopedMemory: false, resourceRoot: resourceUri });
+  try {
+    const result = await sharedHarness.run("viking_add_resource", {
+      url: "https://example.test", reason: "current project source",
+    });
+    assert.equal(result.text, `Ingested: ${resourceUri}`);
+    assert.deepEqual(result.requests[0].body, {
+      path: "https://example.test", reason: "current project source",
+    });
+  } finally {
+    await sharedHarness.close();
+  }
+
+  const malformedHarness = await harness({ sessionScopedMemory: false, resourceRoot: "not-a-viking-uri" });
+  try {
+    const result = await malformedHarness.run("viking_add_resource", { url: "https://example.test" });
+    assert.match(result.text, /^Failed to ingest:/);
+    assert.equal(result.result.details, undefined);
+  } finally {
+    await malformedHarness.close();
   }
 });
 
@@ -162,6 +276,31 @@ test("关闭 session 隔离时不施加命名空间边界", async () => {
     const result = await run("viking_read", { uri: OUTSIDE, level: "full" });
     assert.doesNotMatch(result.text, /^Refused:/);
     assert.equal(result.requests[0].query, `uri=${OUTSIDE}`);
+
+    const ordinaryDelete = await run("viking_forget", { uri: OUTSIDE });
+    assert.match(ordinaryDelete.text, /^Deleted:/, "关闭隔离后普通跨用户记忆仍可删除");
+
+    const otherInternal = "viking://user/other/resources/.pi-openviking/archives/v1/.manifest.json";
+    const protectedDelete = await run("viking_forget", { uri: otherInternal });
+    assert.match(protectedDelete.text, /^Refused:/);
+    assert.deepEqual(protectedDelete.requests, [], "任何用户的内部事实都不得由记忆工具删除");
+  } finally {
+    await close();
+  }
+});
+
+test("关闭隔离时仍拒绝 OpenViking user shorthand 指向的内部事实", async () => {
+  const shorthand = "viking://user/resources/.pi-openviking/recorded-events/v1/.event.json";
+  const { run, close } = await harness({ sessionScopedMemory: false, foundUri: shorthand });
+  try {
+    const direct = await run("viking_forget", { uri: shorthand });
+    assert.match(direct.text, /^Refused:/);
+    assert.deepEqual(direct.requests, []);
+
+    const searched = await run("viking_forget", { query: "internal event" });
+    assert.match(searched.text, /^Refused:/);
+    assert.equal(searched.requests.length, 1);
+    assert.ok(!searched.requests.some((request) => request.method === "DELETE"));
   } finally {
     await close();
   }

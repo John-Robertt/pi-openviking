@@ -4,7 +4,7 @@
   "purpose": "checkpoint 生产真实验收门禁：使用真实 OpenViking Content API 已提交且可 expand 的 Archive 与开发模型身份中的 VLM，机器断言 request/failure/checkpoint 追加事实、来源/hash、自证、重试、进程恢复、积压派生、多模态理解和吞吐。",
   "mechanism": {
     "selected": "Archive 回读证明 + OpenViking Session/Task 公开 API + ProducedRecordedEventV1 追加事实",
-    "evidence": "当前开发模型身份在固定 240000ms 质量边界下连续三次通过 114/114；accepted baseline 最慢观测为 72942ms。deterministic checks 证明孤立 checkpoint 被拒绝、并发事实首写者收敛、三个 Archive 各三次 attempt 可追平、终态清理跨重启恢复、媒体缺少摘要保持 pending，且外部错误正文不进入事实。受管服务持有 VLM 凭证，扩展进程不读取或转发凭证。",
+    "evidence": "当前开发模型身份在固定 240000ms 质量边界下覆盖五个 workload 并通过 135/135；accepted baseline 最慢观测为 72942ms。deterministic checks 证明孤立 checkpoint 被拒绝、并发事实首写者收敛、三个 Archive 各三次 attempt 可追平、分支失效及终态清理跨重启恢复、媒体缺少摘要保持 pending，且外部错误正文不进入事实。受管服务持有 VLM 凭证，扩展进程不读取或转发凭证。",
     "falsifiedAlternatives": [
       "扩展直接调用 VLM provider：运行时没有 VLM 凭证所有权，且会绕过受管服务固定身份",
       "把 checkpoint 仅保存在本地队列：重启后无法由 Archive/request/failure/checkpoint 事实恢复",
@@ -120,6 +120,20 @@
         "重启依赖本地临时状态、同一 Archive 产生多个 checkpoint 或跳过前一个 Archive",
         "积压数量/token 无法从当前 Archive/checkpoint 事实重算"
       ]
+    },
+    {
+      "id": "w5-scope-obsolete",
+      "summary": "真实 VLM 已完成且 checkpoint 事实写入尚未开始时切换当前 Archive 范围；协调器丢弃旧范围结果、清理 task，并从新范围派生 caught_up。",
+      "driver": "verifier 直接调用生产 CheckpointManager.schedule 确定性切换 scope；本 workload 不声明经过 Pi JSONL 或 SyncManager 分支切换。",
+      "successCriteria": [
+        "真实 OpenViking task completed 且 token usage 非零，写入开始前切换后旧 Archive 没有 checkpoint 事实",
+        "checkpoint_request:obsolete 记录一次范围失效决定，最终状态 caught_up/pending=0",
+        "raw event 与 Archive 在切换和清理前后保持不变"
+      ],
+      "falsification": [
+        "范围在写入开始前切换后仍写入旧 checkpoint，或旧 task 临时状态未清理",
+        "失效决定不可观察，或当前状态仍引用旧 Archive"
+      ]
     }
   ],
   "globalAssertions": [
@@ -134,16 +148,17 @@
     "pollMs": 1000,
     "cleanupSettleMs": 60000,
     "baseline": {
-      "measuredAt": "2026-08-20",
+      "measuredAt": "2026-08-21",
       "runs": [
         { "scenario": "1000-token 文本 checkpoint", "archiveTokens": 1000, "wallMs": 23392, "totalTokens": 11291, "checkpointPersisted": true },
         { "scenario": "嵌入 PNG 多模态 checkpoint", "archiveTokens": 1000, "wallMs": 72942, "totalTokens": 12420, "abstractBytes": 248 },
         { "scenario": "明确失败后的真实 VLM 重试", "archiveTokens": 1000, "wallMs": 19041, "totalTokens": 11216, "attempt": 2 },
-        { "scenario": "双 Archive request/task 重启恢复", "archiveTokens": 2000, "wallMs": 49193, "totalTokens": 25565, "checkpointCount": 2 }
+        { "scenario": "双 Archive request/task 重启恢复", "archiveTokens": 2000, "wallMs": 49193, "totalTokens": 25565, "checkpointCount": 2 },
+        { "scenario": "写入开始前范围失效后丢弃已完成 VLM 结果", "archiveTokens": 1000, "wallMs": 11746, "totalTokens": 10693, "checkpointPersisted": false, "obsoleteObserved": true }
       ],
-      "expectedChange": "request 在 VLM 前持久化；只有来源与完整 request/failure 链可核验的 completed task 形成 checkpoint；明确失败进入下一 attempt；进程重建与并发进程复用首个有效 request/task；终态事实恢复清理；两个未消费 Archive 派生 lagging 并在追平时恢复。",
-      "falsification": "任一来源/hash/事实链/唯一性/并发恢复/积压/终态清理断言失败，媒体无摘要仍形成 checkpoint，外部错误正文进入事实，或真实 VLM/媒体处理超过阈值，即重新打开 checkpoint 生产约束。",
-      "thresholdRationale": "checkpointWallMs 保持 240000ms 质量边界；当前开发模型身份的 accepted baseline 最慢观测为 72942ms，保留约 3.29 倍余量，同一边界连续三次均通过 114/114。正确性使用确定性身份、规范字节、完整事实链、集合和状态等值断言，端到端预算校准阶段再以多个 100k+ workload 校准发布预算。"
+      "expectedChange": "request 在 VLM 前持久化；只有来源与完整 request/failure 链可核验的 completed task 形成 checkpoint；当前 Archive 范围变化后停止尚未开始的旧 VLM 结果写入并清理其 task，已开始的 append-only 事实允许首写完成但不进入当前状态；明确失败进入下一 attempt；进程重建与并发进程复用首个有效 request/task；终态事实恢复清理；两个未消费 Archive 派生 lagging 并在追平时恢复。",
+      "falsification": "任一来源/hash/事实链/唯一性/并发恢复/积压/终态清理断言失败，写入开始前范围变化仍持久化旧 checkpoint，已开始事实进入当前范围状态，媒体无摘要仍形成 checkpoint，外部错误正文进入事实，或真实 VLM/媒体处理超过阈值，即重新打开 checkpoint 生产约束。",
+      "thresholdRationale": "checkpointWallMs 保持 240000ms 质量边界；当前 accepted baseline 最慢观测为 72942ms，保留约 3.29 倍余量。范围失效 workload 实测 11746ms/10693 tokens，完整 gate 135/135 通过；正确性继续使用确定性身份、规范字节、完整事实链、集合和状态等值断言，端到端预算校准阶段再以多个 100k+ workload 校准发布预算。"
     }
   }
 }

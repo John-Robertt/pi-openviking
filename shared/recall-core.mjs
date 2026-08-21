@@ -90,6 +90,7 @@ export function buildContextSearchBody(cfg = {}, options = {}) {
     query: "",
     mode: "context",
     purpose: "coding",
+    max_tokens: Math.floor(Number(cfg.recallTokenBudget || 2000)),
     score_threshold: Number.isFinite(Number(cfg.scoreThreshold)) ? Number(cfg.scoreThreshold) : 0.35,
   };
   const limitConfigured = cfg.recallLimitConfigured === true;

@@ -5,6 +5,16 @@ export interface PiSessionSourceResult {
   parentById: Map<string, string | null>;
 }
 
+export interface PiSessionSourceSnapshot {
+  isPersisted(): boolean;
+  getSessionFile(): string | undefined;
+  getLeafId(): string | null;
+  getEntries(): Record<string, any>[];
+  getBranch(): Record<string, any>[];
+}
+
+export function snapshotSessionSource(sessionManager: any): PiSessionSourceSnapshot;
+
 export function parsePiSessionJsonl(
   text: string,
   options?: { sessionId?: string; leafId?: string | null },

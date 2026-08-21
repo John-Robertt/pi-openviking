@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { OVClient } from "./client.js";
-import type { ArchiveManifestV1 } from "./shared/archive.mjs";
+import { describeArchives, type ArchiveDescriptor } from "./shared/archive.mjs";
 import { ArchiveManager } from "./shared/archive-store.mjs";
 import { CheckpointManager, type CheckpointStatus } from "./shared/checkpoint-store.mjs";
 import { parsePiSessionJsonl } from "./shared/pi-session-source.mjs";
@@ -61,6 +61,19 @@ function defaultAckPath(
   return join(homedir(), ".pi", "openviking", "sync-ack", `${key}.json`);
 }
 
+function branchContinuesFrom(
+  parentById: Map<string, string | null>,
+  leafId: string | null,
+  previousLeafId: string,
+): boolean {
+  let cursor = leafId;
+  while (cursor !== null) {
+    if (cursor === previousLeafId) return true;
+    cursor = parentById.get(cursor) ?? null;
+  }
+  return false;
+}
+
 export class SyncManager {
   private client: OVClient;
   private options: SyncManagerOptions;
@@ -73,6 +86,7 @@ export class SyncManager {
   private ack: SyncAck = { acknowledgedLeaves: [] };
   private ackPath: string | null = null;
   private knownParents = new Map<string, string | null>();
+  private checkpointBranchLeafId: string | null = null;
   private operationTail: Promise<void> = Promise.resolve();
   private syncStatus: SyncStatus = {
     source: "none",
@@ -126,7 +140,10 @@ export class SyncManager {
     if (this.piSessionId === piSessionId && this.adapter) return true;
     if (this.checkpoints) await this.checkpoints.stop();
     // in-memory 父子映射只描述当前会话的 entry 树，换会话即失效。
-    if (this.piSessionId !== piSessionId) this.knownParents.clear();
+    if (this.piSessionId !== piSessionId) {
+      this.knownParents.clear();
+      this.checkpointBranchLeafId = null;
+    }
     this.piSessionId = piSessionId;
     this.observe.bindSession(piSessionId);
     this.ovSessionId = deriveHarnessSessionId("pi-", piSessionId);
@@ -366,6 +383,42 @@ export class SyncManager {
     return { added, allDelivered: true, pending: 0, failure: null };
   }
 
+  private checkpointArchiveChains(
+    branch: any[],
+    parentById: Map<string, string | null>,
+    events: any[],
+  ): ArchiveDescriptor[][] {
+    if (!this.piSessionId) return [];
+    const parents = new Set([...parentById.values()].filter((id): id is string => id !== null));
+    const leaves = [...parentById.keys()].filter((id) => !parents.has(id));
+    const currentLeafId = branch.at(-1)?.id;
+    if (currentLeafId && !leaves.includes(currentLeafId)) leaves.push(currentLeafId);
+
+    const chains = [];
+    const seen = new Set<string>();
+    for (const leafId of leaves) {
+      const reversed = [];
+      let cursor: string | null = leafId;
+      while (cursor !== null) {
+        reversed.push(cursor);
+        cursor = parentById.get(cursor) ?? null;
+      }
+      const acknowledged = new Set<string>();
+      for (const entryId of reversed.reverse()) {
+        if (!isEntryAcknowledged(this.ack, entryId, parentById)) break;
+        acknowledged.add(entryId);
+      }
+      const branchEvents = events.filter((event) => acknowledged.has(event.source.entryId));
+      const descriptors = describeArchives(this.piSessionId, branchEvents, this.client.cfg.archive);
+      const key = descriptors.map((descriptor) => descriptor.manifest.archiveId).join(",");
+      if (descriptors.length > 0 && !seen.has(key)) {
+        seen.add(key);
+        chains.push(descriptors);
+      }
+    }
+    return chains;
+  }
+
   /**
    * 在当前分支已确认的事件前缀上形成 Archive。
    *
@@ -379,6 +432,17 @@ export class SyncManager {
     events: any[],
   ): Promise<void> {
     if (!this.archives || !this.piSessionId) return;
+    const branchLeafId = branch.at(-1)?.id ?? null;
+    const previousLeafId = this.checkpointBranchLeafId;
+    if (previousLeafId !== null && !branchContinuesFrom(parentById, branchLeafId, previousLeafId)) {
+      // Invalidate the abandoned branch before Archive reads: a completed old VLM result must not
+      // start an append while the new branch is still being revalidated.
+      void this.checkpoints?.schedule(this.piSessionId, []);
+    }
+    this.checkpointBranchLeafId = branchLeafId;
+
+    const archiveChains = this.checkpointArchiveChains(branch, parentById, events);
+
     const acknowledged = new Set<string>();
     for (const entry of branch) {
       if (!isEntryAcknowledged(this.ack, entry.id, parentById)) break;
@@ -386,10 +450,11 @@ export class SyncManager {
     }
     const branchEvents = events.filter((event) => acknowledged.has(event.source.entryId));
     const result = await this.archives.formArchives(this.piSessionId, branchEvents);
-    // 当前分支已确认前缀的 Archive 全集总是刷新 checkpoint 消费队列——包括空集（刚切换到
-    // 权重不足的新分支）。否则队列会保留上一分支的 Archive，继续为已放弃的上下文链生产
-    // checkpoint。
-    void this.checkpoints?.schedule(this.piSessionId, result.archives);
+    // 只有完整走完本轮计划，结果才足以替换消费范围。暂时性传输失败保留上一范围；
+    // 分支切换已在 I/O 前失效旧范围，因而不会继续消费已放弃分支。
+    if (result.reconciled) {
+      void this.checkpoints?.schedule(this.piSessionId, result.archives, archiveChains);
+    }
   }
 
   private setCapability(next: SyncStatus["capability"]): void {

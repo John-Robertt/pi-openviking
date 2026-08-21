@@ -32,13 +32,14 @@ test("checkpoint workload 固定成功、证伪、真实 VLM 与阈值", () => {
     "w2-multimodal-checkpoint",
     "w3-failure-retry",
     "w4-restart-backlog",
+    "w5-scope-obsolete",
   ]);
   for (const workload of manifest.workloads) {
     assert.ok(workload.summary);
     assert.ok(workload.successCriteria.length > 0);
     assert.ok(workload.falsification.length > 0);
   }
-  assert.ok(manifest.thresholds.baseline.runs.length >= 4);
+  assert.ok(manifest.thresholds.baseline.runs.length >= 5);
   assert.ok(manifest.thresholds.checkpointWallMs > 0);
   assert.match(manifest.environment.credentials, /受管 OpenViking/);
 });

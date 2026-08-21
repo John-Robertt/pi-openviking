@@ -32,9 +32,10 @@ manifest/hash 下覆盖成功 recall/同步、断线、409 冲突、URI 拒绝�
 义务只从 Archive 与这些事实派生。deterministic checks 证明孤立 checkpoint 拒绝、并发首写者收敛、逐 Archive
 三次 attempt、媒体失败 pending、外部错误脱敏和跨重启清理。
 
-`verify:checkpoint:live` 在当前开发模型身份和受管 OpenViking 上覆盖文本、多模态、明确失败后的真实 VLM 重试及
-双 Archive 重启恢复，固定 240000ms 质量边界连续三次均通过 114/114；accepted baseline、身份、阈值和成功
-标准由 `test/live/checkpoint.workloads.json` 及其固定 hash 承载。常驻 `verify:observability:live` 覆盖现行 registry。
+`verify:checkpoint:live` 在当前开发模型身份和受管 OpenViking 上覆盖文本、多模态、明确失败后的真实 VLM 重试、
+双 Archive 重启恢复及当前 Archive 范围失效，固定 240000ms 质量边界下通过 135/135；accepted baseline、
+身份、阈值和成功标准由 `test/live/checkpoint.workloads.json` 及其固定 hash 承载。常驻
+`verify:observability:live` 覆盖现行 registry。
 
 **当前工作是建立活动上下文的基线、manifest 与 `ActiveContext` 最小实现；真实接管在上下文切换阶段前保持 inactive。**
 

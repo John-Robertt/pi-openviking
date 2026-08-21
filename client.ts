@@ -499,10 +499,10 @@ export class OVClient {
 
   /** Ingest a URL or file path. */
   async addResource(
-    path: string, opts?: { to?: string },
+    path: string, opts?: { reason?: string },
   ): Promise<{ root_uri: string } | null> {
     const body: Record<string, unknown> = { path };
-    if (opts?.to) body.to = opts.to;
+    if (opts?.reason) body.reason = opts.reason;
     const res = await this.fetchJSON<{ root_uri: string }>(
       openVikingApiPath("/resources"),
       { method: "POST", body: JSON.stringify(body) },

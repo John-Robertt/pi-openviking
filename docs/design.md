@@ -20,7 +20,7 @@
 - `session_shutdown` 给予同步 500ms grace 后取消 transport，未确认内容留在 Pi 来源；观察已启用时只用该期限的
   剩余时间完成独立记录；
 - `before_agent_start` 把 profile block 注入 system prompt 并排队 recall，`context` hook 等待检索结果并注入消息；recall 实际注入时追加 `ov-observation` custom entry，再由同一事件链同步；
-- `tool_call` 对 `viking_*` 工具执行 URI 边界校验；
+- `tool_call` 阻止通用文件与 shell 工具直接处理 `viking://` URI，并引导使用对应 `viking_*` 工具；
 - OpenViking 不可用时只更新待重放诊断，不阻塞 Pi 主任务；
 - 不触发 Pi compaction，不构造 Archive，不替换 provider 上下文。
 
@@ -34,12 +34,10 @@
 
 ### `shared/pi-session-source.mjs`
 
-- 解析持久 Pi JSONL；
-- 校验 session header、entry ID 和 parent tree；
+- 解析持久 Pi JSONL，校验 session header、entry ID 和 parent tree；
 - 根据 leaf 恢复活动分支，同时返回完整 entry tree 和 parent map；
-- 同步层处理完整 tree，活动分支不排除 sibling branch 事实。
-
-非持久化 session 不经过该模块，由 `SyncManager` 在进程内维护已观察 parent map。
+- 为非持久化 session 在同步触发时分别冻结完整 entry tree 与当前分支，保持触发时刻状态；
+- 同步层处理完整 tree，Archive 只处理当前分支，活动分支不排除 sibling branch 的同步事实。
 
 ### `shared/recorded-event.mjs`
 
@@ -77,6 +75,7 @@ adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
 - 生成 `archiveId`、聚合 `contentHash` 与 manifest 规范字节；
 - 从字节复原 manifest 并要求其自证（复算 `archiveId`、拒绝未知字段与非规范编码）；
 - 按事件自身的上下文权重确定 Archive 边界，并把候选边界退回 step 起点之前；
+- 从边界统一构造 manifest、tokenCount 与索引范围，供提交和分支候选链共同使用；
 - 不接触传输，也不持久化任何状态。
 
 ### `shared/archive-store.mjs`
@@ -85,7 +84,8 @@ adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
 - 提交前逐项回读被引用事件并复算聚合 hash，作为 Archive 的接受证明；
 - 以单个 manifest 对象为唯一提交点，按残留/已提交/冲突三种情形决定写入方式；
 - 按 `archiveId` 确定性读取，并沿事件 `parentId` 链 materialize 与重新验证；
-- 发布 Archive 提交状态；失败只转为待重试，不改变事件与 ACK。
+- 发布 Archive 提交状态；暂时性传输失败只保留待重试并禁止替换 checkpoint 消费范围，完整性冲突只排除对应 Archive；
+- 失败不改变事件与 ACK。
 
 ### `shared/checkpoint.mjs`
 
@@ -104,8 +104,10 @@ adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
 
 - 按当前分支的已提交 Archive 顺序派生未消费范围、积压 Archive/token 与 caught-up/processing/lagging/failed 状态；
 - 在 VLM 前追加 request，明确失败时追加 failure，成功时追加唯一 checkpoint；回读时验证 Archive、前一 checkpoint、连续 attempt、parent 与无 failure 的完整链，并在并发冲突时采用首个通过该校验的事实；
-- 每个 Archive 最多执行三个确定性 attempt；重启从 request/failure/checkpoint 与 OpenViking 持久 task 恢复，并从终态事实重新执行未确认的临时清理，不依赖本地队列；
-- 顺序驱动一个在途 Archive，并发布失败、落后与恢复通知；失败不改变 raw event、ACK 或 Archive。
+- 每个 Archive 最多执行三个确定性 attempt；每次协调调度从 request 事实与全部 Pi 分支可重算的 Archive 链发现一次失效 task，Archive 消费循环不重复穷举，后续只重试已发现的清理义务；
+- 顺序驱动一个在途 Archive；当前分支范围变化时停止尚未开始的旧 checkpoint 写入，并清理其临时 task；
+- 已进入追加事实写入的首写者可以完成，但当前状态只从新范围扫描并派生；
+- 发布失败、落后与恢复通知；失败不改变 raw event、ACK 或 Archive。
 
 ### `shared/sync-ack.mjs`
 
@@ -126,9 +128,10 @@ ACK 文件不包含 transcript 或事件 payload。丢失 ACK 只会触发幂等
 3. 投影该 entry 的全部事件；
 4. 调用 Content adapter；
 5. 只有全部事件确认后推进 entry ACK；
-6. 在当前分支已确认的事件前缀上驱动 Archive 形成；
-7. 把当前分支已提交 Archive 交给 checkpoint manager 异步消费；
-8. 发布 source、capability、pending、Archive、checkpoint 和 failure 状态。
+6. 分支不再延续上一 leaf 时，在 Archive I/O 前使旧 checkpoint scope 失效；
+7. 以统一 descriptor 规划在当前分支已确认前缀上形成 Archive；暂时性传输失败不提交新的消费范围；
+8. 把当前分支已提交 Archive 交给 checkpoint manager 异步消费，并提供全树 Archive 候选链恢复失效 request 清理；
+9. 发布 source、capability、pending、Archive、checkpoint 和 failure 状态。
 
 `SyncManager` 自身只持久化 `SyncAck`，不持久化待发送事件副本；Archive 由来源事件重算。checkpoint manager
 把 request/failure/checkpoint 写成现有 event namespace 内的追加事实，积压与通知状态均从这些事实和当前 Archive 重建，
@@ -155,7 +158,7 @@ Archive 只取当前分支：跨 sibling branch 的范围没有对应的上下�
 
 ### `recall.ts` 与 `shared/recall-core.mjs`
 
-- `RecallManager` 在用户 prompt 到达时排队检索，下一轮 `before_agent_start` 前取出结果并注入消息；
+- `RecallManager` 在 `before_agent_start` 收到用户 prompt 时排队检索，同一次 provider 请求的 `context` hook 等待结果并注入消息；
 - 检索 body 只声明意图（coding purpose、session、预算上限），quota 配比、分层降级与跨轮去重留给服务端默认值；
 - 会话内跨轮去重与查询扩展由服务端账本承担，扩展只在显式配置时覆盖；
 - recall 失败不阻塞 prompt：注入被跳过，诊断进入 `/viking`。
@@ -167,9 +170,10 @@ Archive 只取当前分支：跨 sibling branch 的范围没有对应的上下�
 
 ### `tools.ts` 与 `lib/uri-guard-adapter.mjs`
 
-- `tools.ts` 注册 `viking_*` 工具，把调用转发给 `OVClient`；
-- `uri-guard-adapter` 在 `tool_call` hook 校验 `viking://` URI 的用户与会话边界，越界调用被拒绝并返回可诊断原因；
-- session 隔离关闭时不施加命名空间边界。
+- `tools.ts` 对每个输入只构造一次 canonical URI：保留 OpenViking path 字节，仅展开 current-user shorthand，归属判断与 transport 共用该值；所有模式都拒绝非法 URI；
+- Resource API 不能绑定会话用户命名空间，因而隔离模式在请求前拒绝资源导入，非隔离模式按服务身份执行；
+- `uri-guard-adapter` 在 `tool_call` hook 阻止通用文件与 shell 工具直接处理 `viking://` URI，并返回对应 `viking_*` 工具提示；
+- session 隔离关闭时不施加跨用户命名空间边界；所有模式都禁止记忆删除工具修改用户空间中 adapter 独占的 `.pi-openviking` 内部事实。
 
 ### `shared/viking-status.mjs` 与 `shared/status-refresh.mjs`
 

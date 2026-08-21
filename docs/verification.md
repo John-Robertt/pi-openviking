@@ -53,8 +53,7 @@ takeover 链路；固定 golden 回放只提供结果对照。
   与必要状态快照；verifier 逐 run 校验 start/end、accepted/dropped、连续 seq、boundary op/session 配对、观察状态和原始记录
   hash。子进程退出后由父进程同步并关闭其保留的 artifact FD，再读取最终字节；缺失、丢弃、写入、同步或关闭错误都使
   gate 失败；
-- verifier 同时断言观察记录未进入 Pi JSONL 和 OpenViking 事件命名空间，并按 `docs/observability.md`“代码放置与唯一性”
-  的边界检查生产运行路径没有第二套观察点。
+- verifier 同时断言观察记录未进入 Pi JSONL 和 OpenViking 事件命名空间；stage 完整性由 registry hash、live manifest 预期与 deterministic 实际记录共同证明，不维护豁免白名单，也不扫描生产或测试源码文本。
 
 原始观察 JSONL 只存在于 `test/.artifacts/live/{runId}`。summary 的 `observationRuns` 仅保留每个观察 run 的
 schema version、run、seq 范围、stage/kind/outcome 计数、accepted/dropped、完整性结论与原始文件 hash，不保留

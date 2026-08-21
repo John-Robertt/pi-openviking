@@ -126,22 +126,13 @@ function preflightObservability(log, ctx) {
   const registryHash = observationRegistrySha256();
   log.check(g, "registry-hash", ctx.manifest.identities.registry.sha256, registryHash,
     registryHash === ctx.manifest.identities.registry.sha256);
-  const activeStages = Object.keys(OBSERVATION_STAGE_REGISTRY);
-  const evidenceStages = new Set([
+  const expectedStages = new Set([
     "observe_run_start",
     "observe_run_end",
-    ...ctx.manifest.deterministicStages,
     ...ctx.manifest.workloads.flatMap((workload) => workload.expectedRecords.map((expected) => expected.stage)),
   ]);
-  const uncovered = activeStages.filter((stage) => !evidenceStages.has(stage));
-  const unknown = [...evidenceStages].filter((stage) => !OBSERVATION_STAGE_REGISTRY[stage]);
-  log.check(g, "stage-evidence-total", 0, uncovered.length + unknown.length,
-    uncovered.length === 0 && unknown.length === 0,
-    [...uncovered.map((stage) => `missing:${stage}`), ...unknown.map((stage) => `unknown:${stage}`)].join(","));
-  const ownerFiles = new Set(Object.values(OBSERVATION_STAGE_REGISTRY).map((descriptor) => descriptor.owner));
-  ownerFiles.delete("shared/observe.mjs"); // 统一 sink 自身的写出原语不属于第二观察点
-  const secondObserver = [...ownerFiles].filter((file) => /appendFileSync|console\.(?:log|debug)|process\.stderr\.write/.test(readFileSync(join(REPO, file), "utf8")));
-  log.check(g, "no-second-observer", 0, secondObserver.length, secondObserver.length === 0, secondObserver.join(","));
+  const unknown = [...expectedStages].filter((stage) => !OBSERVATION_STAGE_REGISTRY[stage]);
+  log.check(g, "expected-stages-known", 0, unknown.length, unknown.length === 0, unknown.join(","));
 }
 
 // ---------------------------------------------------------------------------
@@ -258,12 +249,18 @@ async function wConflict409(log, ctx) {
 async function wToolUriRejection(log, ctx) {
   const outsideRoot = `viking://user/dev--pi-${randomUUID()}`;
   const outsideUri = `${outsideRoot}/resources/not-owned.md`;
-  // 确定性触发：脚本 provider 固定以内置 read 逐字调用越界 URI，第二轮回复 DONE。
+  const internalUri = `${ctx.userRoot}/resources/.pi-openviking/recorded-events/v1/protected/.event.json`;
+  const resourceUrl = "https://example.com/";
+  // 依次验证通用工具 guard、内部事实删除拒绝和资源返回 URI 的 allow 边界。
   const scripted = await startScriptedProvider({
     agentDir: join(ctx.runDir, "pi"),
-    respond: (messages) => messages.some((message) => message.role === "tool")
-      ? { text: "DONE" }
-      : { toolCall: { name: "read", input: { path: outsideUri } } },
+    respond: (messages) => {
+      const toolResults = messages.filter((message) => message.role === "tool").length;
+      if (toolResults === 0) return { toolCall: { name: "read", input: { path: outsideUri } } };
+      if (toolResults === 1) return { toolCall: { name: "viking_forget", input: { uri: internalUri } } };
+      if (toolResults === 2) return { toolCall: { name: "viking_add_resource", input: { url: resourceUrl } } };
+      return { text: "DONE" };
+    },
   });
   try {
     const run = await runPi(ctx, {
@@ -276,12 +273,47 @@ async function wToolUriRejection(log, ctx) {
     });
     attachObservation(run);
     assertObsRun(log, ctx, run, ctx.workload.expectedRecords, [
-      ctx.sessionId, ctx.storageUser, ctx.userRoot, outsideRoot, outsideUri, ctx.workload.prompt, ctx.taskApiKey,
+      ctx.sessionId, ctx.storageUser, ctx.userRoot, outsideRoot, outsideUri, internalUri, resourceUrl,
+      ctx.workload.prompt, ctx.taskApiKey,
     ]);
-    log.check(ctx.workloadId, "scripted-provider-requests", 2, scripted.requests(), scripted.requests() === 2);
+    log.check(ctx.workloadId, "scripted-provider-requests", 4, scripted.requests(), scripted.requests() === 4);
     const toolEnd = run.events.find((event) => event.type === "tool_execution_end" && event.toolName === "read");
     const blocked = toolEnd?.isError === true && JSON.stringify(toolEnd.result || {}).includes("viking_read");
     log.check(ctx.workloadId, "pi-read-blocked", true, blocked, blocked);
+    const forgetEnd = run.events.find(
+      (event) => event.type === "tool_execution_end" && event.toolName === "viking_forget",
+    );
+    const protectedInternal = JSON.stringify(forgetEnd?.result || {}).includes("managed by pi-openviking");
+    log.check(ctx.workloadId, "internal-fact-delete-refused", true, protectedInternal, protectedInternal);
+    const deleteDenial = run.observation.records.find(
+      (record) => record.stage === "tool_scope" && record.data?.tool === "viking_forget"
+        && record.data?.operation === "delete" && record.data?.branch === "deny",
+    );
+    const disallowedDelete = run.observation.records.some((record) =>
+      deleteDenial
+        && record.seq > deleteDenial.seq
+        && record.stage === "client_http"
+        && record.data?.phase === "begin"
+        && record.data?.method === "DELETE",
+    );
+    log.check(ctx.workloadId, "no-openviking-delete-after-deny", false, disallowedDelete, !disallowedDelete);
+
+    const resourceEnd = run.events.find(
+      (event) => event.type === "tool_execution_end" && event.toolName === "viking_add_resource",
+    );
+    const resourceDenied = JSON.stringify(resourceEnd?.result || {}).includes("session-scoped memory");
+    log.check(ctx.workloadId, "resource-ingest-refused", true, resourceDenied, resourceDenied);
+    const resourceDecision = run.observation.records.some(
+      (record) => record.stage === "tool_scope" && record.data?.tool === "viking_add_resource"
+        && record.data?.operation === "resource_add" && record.data?.branch === "deny",
+    );
+    log.check(ctx.workloadId, "resource-add-denied", true, resourceDecision, resourceDecision);
+    const resourceRequest = run.observation.records.some(
+      (record) => record.stage === "client_http" && record.data?.phase === "begin"
+        && record.data?.route === "/api/v1/resources",
+    );
+    log.check(ctx.workloadId, "no-global-resource-request", false, resourceRequest, !resourceRequest);
+
     const guard = run.observation.records.find(
       (record) => record.stage === "tool_uri_guard" && record.data?.tool === "read",
     );

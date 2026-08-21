@@ -9,20 +9,9 @@ import { checkManifestHash } from "./live/live-support.mjs";
 const manifestBytes = readFileSync("test/live/observability.workloads.json");
 const manifest = JSON.parse(manifestBytes.toString("utf8"));
 
-test("observability manifest/hash/registry 是同一当前 active stage 集", () => {
+test("observability manifest/hash 绑定当前 registry", () => {
   assert.equal(checkManifestHash(manifestBytes, readFileSync("test/live/observability.workloads.sha256", "utf8")), true);
   assert.equal(manifest.identities.registry.sha256, observationRegistrySha256());
-  const evidence = new Set([
-    "observe_run_start",
-    "observe_run_end",
-    ...manifest.deterministicStages,
-    ...manifest.workloads.flatMap((workload) => workload.expectedRecords.map((expected) => expected.stage)),
-  ]);
-  assert.deepEqual([...evidence].sort(), Object.keys(OBSERVATION_STAGE_REGISTRY).sort());
-  const deterministicSource = readFileSync("test/observability-integration.test.mjs", "utf8");
-  for (const stage of manifest.deterministicStages) {
-    assert.match(deterministicSource, new RegExp(`record\\.stage === ["']${stage}["']`));
-  }
 });
 
 test("observability workload 具有成功标准、证伪条件和 registry 内 stage", () => {

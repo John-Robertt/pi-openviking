@@ -22,7 +22,7 @@
     },
     "registry": {
       "schemaVersion": 1,
-      "sha256": "b4b3ee62e9eb42fbce69c92758c8ba1cda7f8f19b1cabd4f83804932f9146b5d"
+      "sha256": "0594ab4068c21c9ca791bea94e74f094802082a1577651b4cab78ee332bd853e"
     },
     "extensionLoadOrder": ["index.ts"]
   },
@@ -31,7 +31,6 @@
     "isolation": "HOME、PI_CODING_AGENT_DIR、session 与 observation artifact 全部位于 test/.artifacts/live/<runId>",
     "credentials": "任务模型 key 由 verifier 按 taskModel 身份桥接给真实 Pi；VLM key 只由受管 OpenViking 启动路径持有；两者均不写入 manifest、observation、session、summary 或日志"
   },
-  "deterministicStages": ["archive_commit", "archive_failure", "checkpoint_failure", "checkpoint_process", "checkpoint_request", "checkpoint_state", "index_failure", "recall_failure", "tool_availability", "tool_scope"],
   "workloads": [
     {
       "id": "success-recall-sync",
@@ -130,21 +129,23 @@
     },
     {
       "id": "tool-uri-rejection",
-      "summary": "确定性脚本 provider 驱动真实 Pi 以内置 read 逐字调用越界 viking:// URI；生产 tool_call hook 在工具执行前阻止，随后显式 /viking sync 只负责收敛该次运行的事件证据。",
+      "summary": "确定性脚本 provider 依次驱动真实 Pi 调用越界 read、删除内部事实及导入 HTTP Resource；默认会话隔离下三个操作均在各自生产边界拒绝，显式 /viking sync 收敛运行事件证据。",
       "driver": "scripted-provider",
       "prompt": "读取那个文件，然后只回复 DONE。",
       "expectedRecords": [
         { "stage": "pi_lifecycle", "data": { "phase": "end", "hook": "session_shutdown", "outcome": "success" } },
-        { "stage": "tool_uri_guard", "data": { "tool": "read", "branch": "block" } }
+        { "stage": "tool_uri_guard", "data": { "tool": "read", "branch": "block" } },
+        { "stage": "tool_scope", "data": { "tool": "viking_forget", "operation": "delete", "scoped": true, "branch": "deny", "accepted": 0, "rejected": 1 } },
+        { "stage": "tool_scope", "data": { "tool": "viking_add_resource", "operation": "resource_add", "scoped": true, "branch": "deny", "accepted": 0, "rejected": 1 } }
       ],
       "successCriteria": [
-        "真实 Pi tool_execution_end 证明内置 read 被生产 hook 阻止",
-        "guard 后没有 OpenViking content/read，越界 namespace 保持不存在",
+        "真实 Pi tool_execution_end 证明 read、viking_forget 与会话隔离下的 viking_add_resource 均被拒绝",
+        "拒绝点之后没有 OpenViking content/read、DELETE 或全局 Resource 导入请求",
         "显式同步后观察 run 完整、全部源事件已确认，且 artifact 不含 URI、prompt、session/user 或工具返回内容"
       ],
       "falsification": [
-        "脚本输入未触发内置 read 调用或 Pi 未应用 hook block",
-        "guard 后发出 OpenViking content/read 或创建越界 namespace",
+        "脚本输入未触发三个工具调用，或任一拒绝边界未生效",
+        "拒绝后发出 OpenViking content/read、DELETE 或 /resources 请求",
         "URI、prompt 或工具返回出现在观察 artifact"
       ]
     }
@@ -154,8 +155,7 @@
     "每个观察 artifact 由父进程 fsync/close 后读取；完整性、原始 hash、stage/outcome 计数写入白名单 summary",
     "远端只使用随机 session namespace；写入前必须不存在，marker 逐字节回读；删除前逐字节复核 marker 与写入一致，按构造的精确根路径删除",
     "删除后等待 cleanupSettleMs 越过 0.4.15 目录语义物化窗口，全部已写对象必须持续不存在；服务重建的无文件 namespace 骨架仅记录，不伪报为产品数据残留",
-    "passed 删除整个本地 run 目录；failed 删除 session JSONL 与 raw provider payload，观察 JSONL 作为字段白名单脱敏诊断与 summary、ownership marker 一并保留",
-    "仓库生产运行路径不存在统一观察 sink 之外的第二套观察点（自由文本文件日志、stderr debug、logger transport）"
+    "passed 删除整个本地 run 目录；failed 删除 session JSONL 与 raw provider payload，观察 JSONL 作为字段白名单脱敏诊断与 summary、ownership marker 一并保留"
   ],
   "thresholds": {
     "piRunWallMs": 120000,
@@ -165,17 +165,17 @@
     "cleanupMs": 30000,
     "cleanupSettleMs": 60000,
     "baseline": {
-      "measuredAt": "2026-08-20T11:01:43.774Z",
+      "measuredAt": "2026-08-21T00:55:00.000Z",
       "expected": {
         "disabled": "deterministic baseline 的产品返回值、状态与调用顺序不变，观察依赖调用为 0",
         "enabled": "每个 run 完整、dropped=0，产品成功/ACK/fail-open/权限结果与对应 workload 断言一致"
       },
       "runs": [
-        { "workload": "success-recall-sync", "label": "success", "observedMs": 26740, "observedRecords": 211, "maxMs": 90000, "minRecords": 100, "maxRecords": 512 },
-        { "workload": "disconnect-fail-open", "label": "disconnect", "observedMs": 2641, "observedRecords": 39, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
-        { "workload": "conflict-409", "label": "conflict-prep", "observedMs": 3251, "observedRecords": 39, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
-        { "workload": "conflict-409", "label": "conflict-sync", "observedMs": 1375, "observedRecords": 69, "maxMs": 30000, "minRecords": 30, "maxRecords": 256 },
-        { "workload": "tool-uri-rejection", "label": "tool-uri-live", "observedMs": 2206, "observedRecords": 158, "maxMs": 90000, "minRecords": 20, "maxRecords": 256 }
+        { "workload": "success-recall-sync", "label": "success", "observedMs": 4374, "observedRecords": 136, "maxMs": 90000, "minRecords": 100, "maxRecords": 512 },
+        { "workload": "disconnect-fail-open", "label": "disconnect", "observedMs": 3008, "observedRecords": 39, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
+        { "workload": "conflict-409", "label": "conflict-prep", "observedMs": 3733, "observedRecords": 39, "maxMs": 30000, "minRecords": 20, "maxRecords": 128 },
+        { "workload": "conflict-409", "label": "conflict-sync", "observedMs": 454, "observedRecords": 72, "maxMs": 30000, "minRecords": 30, "maxRecords": 256 },
+        { "workload": "tool-uri-rejection", "label": "tool-uri-live", "observedMs": 777, "observedRecords": 228, "maxMs": 90000, "minRecords": 20, "maxRecords": 256 }
       ]
     }
   }

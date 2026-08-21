@@ -10,16 +10,15 @@ import { createHash } from "node:crypto";
 import {
   ArchiveIntegrityError,
   archiveContentHash,
-  archiveId,
   archiveManifestBytes,
   buildArchiveManifest,
+  describeArchives,
   parseArchiveManifest,
-  eventTokenWeight,
-  planArchives,
 } from "./archive.mjs";
 import { canonicalJsonBytes } from "./canonical-json.mjs";
 import {
   CREATE_IF_ABSENT,
+  ContentConflictError,
   ContentWriteError,
   ensureDirectoryChain,
   replaceIfHash,
@@ -63,10 +62,6 @@ export class ArchiveManager {
     this.budgets = budgets;
     this.observe = observation;
     this.createdDirectories = new Set();
-    // 已在本进程确认提交的 archiveId。键必须是身份而不是位置：分支切换后同一下标
-    // 指向不同事件，按位置缓存会让另一条分支上的 Archive 被静默跳过。
-    this.confirmed = new Set();
-    this.expandedCache = new Map();
     this.state = { committed: 0, lastArchiveId: null, pending: 0, lastFailure: null };
   }
 
@@ -82,48 +77,31 @@ export class ArchiveManager {
    * 在一条已确认事件链上形成全部到期的 Archive。
    *
    * 计划只由事件自身的上下文权重决定，因此重复调用得到同一组 Archive；提交是幂等的，
-   * 已确认的 Archive 只做一次读回自证。计数取自当前来源重算出的计划，不是进程内累加，
+   * 每轮按存储位置回读并幂等提交，计数取自当前来源重算出的计划，不是进程内累加，
    * 因此换分支或重启后仍然描述当前分支的真实进度。
    */
   async formArchives(sessionId, events) {
     const previous = { ...this.state };
     let planned = 0;
     let created = 0;
+    let reconciled = true;
     const archives = [];
     try {
-      const plans = planArchives(events, this.budgets).map((plan) => ({
-        ...plan,
-        archiveId: archiveId(
-          sessionId,
-          events[plan.startIndex].eventId,
-          events[plan.endIndex].eventId,
-          plan.endIndex - plan.startIndex + 1,
-        ),
-      }));
+      const plans = describeArchives(sessionId, events, this.budgets);
       planned = plans.length;
       // lastFailure 描述本轮：本轮出现的任何失败都会重新写入，因此持续存在的冲突会被
       // 持续报告，而不会被同一轮里其他 Archive 的成功抹掉。
       this.state.lastFailure = null;
-      this.state.committed = plans.filter((plan) => this.confirmed.has(plan.archiveId)).length;
+      this.state.committed = 0;
       this.state.pending = planned - this.state.committed;
       this.observe.emit("archive_plan", planned, this.state.pending, events.length);
-      for (const plan of plans) {
-        const range = events.slice(plan.startIndex, plan.endIndex + 1);
-        const descriptor = {
-          manifest: buildArchiveManifest(sessionId, range),
-          tokenCount: range.reduce((sum, event) => sum + eventTokenWeight(event), 0),
-        };
-        if (this.confirmed.has(plan.archiveId)) {
-          archives.push(descriptor);
-          continue;
-        }
+      for (const descriptor of plans) {
+        const range = events.slice(descriptor.startIndex, descriptor.endIndex + 1);
         try {
           const result = await this.commit(sessionId, range);
-          this.confirmed.add(result.archiveId);
           archives.push({ ...descriptor, manifest: result.manifest });
           this.state.committed += 1;
           this.state.pending = Math.max(0, this.state.pending - 1);
-          this.state.lastArchiveId = result.archiveId;
           if (result.branch !== "already_committed") created++;
         } catch (error) {
           // 各 Archive 是彼此独立的自证对象，范围互不重叠。绑定到某一个 archiveId 的
@@ -133,12 +111,15 @@ export class ArchiveManager {
         }
       }
     } catch (error) {
+      reconciled = false;
       this.recordFailure(error, "commit", "pending_retry");
     }
-    if (previous.committed !== this.state.committed || previous.pending !== this.state.pending) {
+    this.state.lastArchiveId = archives.at(-1)?.manifest.archiveId ?? null;
+    if (previous.committed !== this.state.committed || previous.pending !== this.state.pending ||
+        previous.lastArchiveId !== this.state.lastArchiveId) {
       this.observe.emit("archive_state", "change", previous, this.state);
     }
-    return { planned, created, archives, ...this.status };
+    return { planned, created, archives, reconciled, ...this.status };
   }
 
   /** Archive 失败不改变已经持久化的事件和 ACK：只记录处置，Pi 主任务继续。 */
@@ -155,6 +136,7 @@ export class ArchiveManager {
 
     const existing = await this.readManifestBytes(location.manifestUri);
     if (existing && existing.equals(bytes)) {
+      await this.proveReferencedEvents(sessionId, manifest, events);
       this.observe.emit("archive_commit", "already_committed", manifest.eventCount);
       return { archiveId: manifest.archiveId, branch: "already_committed", manifest };
     }
@@ -209,7 +191,16 @@ export class ArchiveManager {
   async proveReferencedEvents(sessionId, manifest, events) {
     const stored = [];
     for (const event of events) {
-      const readBack = await this.adapter.readEvent(sessionId, event.eventId);
+      let readBack;
+      try {
+        readBack = await this.adapter.readEventIfExists(sessionId, event.eventId);
+      } catch (error) {
+        if (!(error instanceof ContentConflictError)) throw error;
+        throw new ArchiveIntegrityError(`stored event is not a valid RecordedEvent: ${event.eventId}`, manifest.archiveId);
+      }
+      if (!readBack) {
+        throw new ArchiveIntegrityError(`stored event is missing: ${event.eventId}`, manifest.archiveId);
+      }
       if (!readBack.bytes.equals(recordedEventBytes(event))) {
         throw new ArchiveIntegrityError(`stored event bytes differ from the archived event: ${event.eventId}`, manifest.archiveId);
       }
@@ -251,18 +242,6 @@ export class ArchiveManager {
    * 自身证明。
    */
   async expand(sessionId, archiveId) {
-    // Archive 是不可变自证对象，archiveId 由内容身份决定：同一 archiveId 的展开结果在进程内
-    // 永久有效。checkpoint 轮询期间会反复展开同一 Archive，缓存避免重复下载与逐事件 hash。
-    // 失败不缓存——传输类失败必须能在下一轮重试。
-    const cached = this.expandedCache.get(archiveId);
-    if (cached) return cached;
-    const pending = this.expandUncached(sessionId, archiveId);
-    this.expandedCache.set(archiveId, pending);
-    pending.catch(() => this.expandedCache.delete(archiveId));
-    return pending;
-  }
-
-  async expandUncached(sessionId, archiveId) {
     const manifest = await this.read(sessionId, archiveId);
     const reversed = [];
     let cursor = manifest.lastEventId;

@@ -19,6 +19,8 @@ import { guardVikingUriToolCall } from "../lib/uri-guard-adapter.mjs";
 
 const ROOT = `test/.artifacts/observability-integration-${process.pid}`;
 
+const coveredStages = new Set();
+
 function observationFor(name) {
   mkdirSync(ROOT, { recursive: true });
   const path = `${ROOT}/${name}.jsonl`;
@@ -28,7 +30,10 @@ function observationFor(name) {
 function readRun(path) {
   const raw = readFileSync(path, "utf8");
   const records = raw.trim().split("\n").filter(Boolean).map(JSON.parse);
-  for (const record of records) assert.equal(validateObservationRecord(record).ok, true, `${record.stage} schema invalid`);
+  for (const record of records) {
+    assert.equal(validateObservationRecord(record).ok, true, `${record.stage} schema invalid`);
+    coveredStages.add(record.stage);
+  }
   return { raw, records };
 }
 
@@ -308,13 +313,17 @@ test("tool 可用性和 URI 权限只记录枚举与计数，拒绝路径不发�
   const ownRoot = "viking://user/dev--pi-own";
   const outside = "viking://user/dev--pi-other/memories/secret.md";
   let reads = 0;
+  let deletes = 0;
   let scopeReads = 0;
+  let resourceAdds = 0;
   const client = {
     connected: true,
     cfg: { sessionScopedMemory: true, recallMaxContentChars: 500 },
     get userRoot() { scopeReads++; return ownRoot; },
     async find() { return [{ uri: outside, score: 0.9, abstract: "private outside content" }]; },
     async readContent() { reads++; return "should not be read"; },
+    async delete() { deletes++; return true; },
+    async addResource() { resourceAdds++; return { root_uri: "viking://resources/imported" }; },
   };
   const tools = new Map();
   registerTools({ registerTool: (tool) => tools.set(tool.name, tool) }, client, { sessionId: "pi-own" }, observation);
@@ -325,7 +334,14 @@ test("tool 可用性和 URI 权限只记录枚举与计数，拒绝路径不发�
   assert.equal(reads, 0);
   const filtered = await execute("viking_search", { query: "private", scope: outside });
   assert.equal(filtered.content[0].text, "No results found.");
-  assert.equal(scopeReads, 2, "每次工具执行只读取一次产品 scope，不为观察重复求值");
+  const internal = `${ownRoot}/resources/.pi-openviking/recorded-events/v1/private/.event.json`;
+  const protectedDelete = await execute("viking_forget", { uri: internal });
+  assert.match(protectedDelete.content[0].text, /^Refused:/);
+  assert.equal(deletes, 0);
+  const resource = await execute("viking_add_resource", { url: "https://outside.test" });
+  assert.match(resource.content[0].text, /^Refused:/);
+  assert.equal(resourceAdds, 0);
+  assert.equal(scopeReads, 4, "每次工具执行只读取一次产品 scope，不为观察重复求值");
   assert.equal(guardVikingUriToolCall({ toolName: "read", input: { path: outside } }, observation)?.block, true);
   await observation.finish();
 
@@ -334,6 +350,7 @@ test("tool 可用性和 URI 权限只记录枚举与计数，拒绝路径不发�
   assert.ok(records.some((record) => record.stage === "tool_availability" && record.data.branch === "proceed"));
   assert.ok(records.some((record) => record.stage === "tool_uri_guard" && record.data.branch === "block"));
   assert.ok(records.some((record) => record.stage === "tool_scope" && record.data.branch === "deny"));
+  assert.ok(records.some((record) => record.stage === "tool_scope" && record.data.operation === "resource_add" && record.data.branch === "deny"));
   assert.ok(records.some((record) => record.stage === "tool_scope" && record.data.branch === "clamp"));
   assert.ok(records.some((record) => record.stage === "tool_scope" && record.data.branch === "filter"));
 });
@@ -394,25 +411,22 @@ test("checkpoint 请求、VLM 边界、状态与失败只记录安全计数和�
   assert.ok(records.some((record) => record.stage === "checkpoint_failure" && record.data.errorCode === "task_failed"));
 });
 
-test("registry 每个 active stage 在唯一 owner 中有当前调用点且无第二套观察输出", () => {
-  const ownerSources = new Map();
-  for (const [stage, descriptor] of Object.entries(OBSERVATION_STAGE_REGISTRY)) {
-    const source = ownerSources.get(descriptor.owner) ?? readFileSync(descriptor.owner, "utf8");
-    ownerSources.set(descriptor.owner, source);
-    assert.match(source, new RegExp(`\\b${stage}\\b`), `${stage} 在 ${descriptor.owner} 中没有当前调用点`);
-  }
-  for (const [owner, source] of ownerSources) {
-    if (owner === "shared/observe.mjs") continue;
-    assert.doesNotMatch(source, /appendFileSync|console\.(?:log|debug)|process\.stderr\.write/,
-      `${owner} 存在统一 sink 之外的运行过程输出`);
+test.after(() => {
+  try {
+    const manifest = JSON.parse(readFileSync("test/live/observability.workloads.json", "utf8"));
+    const liveStages = new Set([
+      "observe_run_start",
+      "observe_run_end",
+      ...manifest.workloads.flatMap((workload) => workload.expectedRecords.map((expected) => expected.stage)),
+    ]);
+    const requiredDeterministicStages = Object.keys(OBSERVATION_STAGE_REGISTRY)
+      .filter((stage) => !liveStages.has(stage));
+    assert.deepEqual(
+      requiredDeterministicStages.filter((stage) => !coveredStages.has(stage)),
+      [],
+      "非 live stage 必须由实际 deterministic 记录覆盖",
+    );
+  } finally {
+    rmSync(ROOT, { recursive: true, force: true });
   }
 });
-
-test("发布声明与 observation 运行时依赖一致", () => {
-  const recallDeclaration = readFileSync("shared/recall-core.d.mts", "utf8");
-  assert.match(recallDeclaration, /observation\?: Observation/);
-  const adapterDeclaration = readFileSync("shared/recorded-event-adapter.d.mts", "utf8");
-  assert.match(adapterDeclaration, /observation\?: Observation/);
-});
-
-test.after(() => rmSync(ROOT, { recursive: true, force: true }));

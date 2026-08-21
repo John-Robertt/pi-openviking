@@ -5,6 +5,7 @@ import {
   buildCheckpointRequestEvent,
   checkpointEventId,
   checkpointFailureEventId,
+  checkpointId,
   checkpointRequestEventId,
   parseCheckpointEvent,
   parseCheckpointFailureEvent,
@@ -45,6 +46,8 @@ export class CheckpointManager {
     this.now = now;
     this.sessionId = null;
     this.archives = [];
+    this.archiveChains = [];
+    this.scopeVersion = 0;
     this.cleanedTaskIds = new Set();
     this.pendingCleanupTaskIds = new Set();
     this.state = initialState();
@@ -59,14 +62,30 @@ export class CheckpointManager {
     return { ...this.state };
   }
 
-  schedule(sessionId, archives) {
+  schedule(sessionId, archives, archiveChains = [archives]) {
     if (this.stopped) return Promise.resolve();
-    this.sessionId = sessionId;
     const byId = new Map();
     for (const descriptor of archives ?? []) {
       if (descriptor?.manifest?.archiveId) byId.set(descriptor.manifest.archiveId, descriptor);
     }
-    this.archives = [...byId.values()];
+    const nextArchives = [...byId.values()];
+    const nextChains = (archiveChains ?? []).map((chain) => {
+      const unique = new Map();
+      for (const descriptor of chain ?? []) {
+        if (descriptor?.manifest?.archiveId) unique.set(descriptor.manifest.archiveId, descriptor);
+      }
+      return [...unique.values()];
+    });
+    const scopeChanged = sessionId !== this.sessionId || nextArchives.length < this.archives.length ||
+      this.archives.some((descriptor, index) => {
+        const next = nextArchives[index]?.manifest;
+        return descriptor.manifest.archiveId !== next?.archiveId ||
+          descriptor.manifest.contentHash !== next?.contentHash;
+      });
+    if (scopeChanged) this.scopeVersion++;
+    this.sessionId = sessionId;
+    this.archives = nextArchives;
+    this.archiveChains = nextChains;
     this.dirty = true;
     return this.kick();
   }
@@ -105,15 +124,33 @@ export class CheckpointManager {
   }
 
   async reconcile() {
-    if (this.stopped || !this.sessionId) return;
-    while (!this.stopped) {
-      const scan = await this.scanFacts();
+    const scope = {
+      version: this.scopeVersion,
+      sessionId: this.sessionId,
+      archives: this.archives,
+      archiveChains: this.archiveChains,
+    };
+    // scopeVersion only gates side effects that have not started. An append-only fact write already in
+    // flight may win after a branch change; its Archive-bound identity remains valid, while the next scan
+    // derives user-visible state solely from the new Archive scope.
+    const currentScope = () => scope.version === this.scopeVersion;
+    if (this.stopped || !currentScope() || !scope.sessionId) return;
+
+    // Append-only request facts may arrive after a previous run; each reconciliation discovers them once,
+    // outside the per-Archive loop, while pendingCleanupTaskIds retains only positive obligations.
+    if (!await this.cleanupObsoleteRequests(
+      scope.sessionId, scope.archives, scope.archiveChains, currentScope,
+    )) return;
+    while (!this.stopped && currentScope()) {
+      const scan = await this.scanFacts(scope.sessionId, scope.archives);
+      if (!currentScope()) return;
       this.publishState(scan);
       if (!await this.cleanupTerminalAttempts(scan.terminalTaskIds)) return;
-      if (!scan.current || scan.exhausted) return;
+      if (!currentScope() || !scan.current || scan.exhausted) return;
 
       const { manifest } = scan.current.descriptor;
-      const expanded = await this.archiveManager.expand(this.sessionId, manifest.archiveId);
+      const expanded = await this.archiveManager.expand(scope.sessionId, manifest.archiveId);
+      if (!currentScope()) return;
       if (expanded.manifest.contentHash !== manifest.contentHash) {
         throw new Error("checkpoint source Archive changed after scheduling");
       }
@@ -127,7 +164,8 @@ export class CheckpointManager {
           attempt: scan.current.attempt,
           submittedAt: this.now(),
         });
-        requestEvent = await this.writeFact(requestEvent);
+        requestEvent = await this.writeFact(scope.sessionId, requestEvent);
+        if (!currentScope()) return;
         requestBranch = "submit";
       }
       this.observe.emit("checkpoint_request", requestBranch, scan.current.attempt, scan.pending.length);
@@ -138,12 +176,19 @@ export class CheckpointManager {
         scan.previousCheckpoint?.checkpointId ?? null,
         scan.current.attempt,
       );
+      this.cleanedTaskIds.delete(request.taskId);
       const result = await this.processor.advance({
         taskId: request.taskId,
         manifest: expanded.manifest,
         events: expanded.events,
         previousCheckpoint: scan.previousCheckpoint,
       });
+      if (!currentScope()) {
+        this.observe.emit("checkpoint_request", "obsolete", request.attempt, scan.pending.length);
+        this.pendingCleanupTaskIds.add(request.taskId);
+        await this.cleanupAttempt(request.taskId);
+        return;
+      }
       if (result.status === "processing" || result.status === "pending") {
         if (result.error) this.recordOperationalFailure(result.error, result.error.errorCode, "pending_retry");
         this.schedulePoll();
@@ -156,7 +201,12 @@ export class CheckpointManager {
           failedAt: this.now(),
           error: result.error,
         });
-        const storedFailure = await this.writeFact(failureEvent);
+        const storedFailure = await this.writeFact(scope.sessionId, failureEvent);
+        if (!currentScope()) {
+          this.pendingCleanupTaskIds.add(request.taskId);
+          await this.cleanupAttempt(request.taskId);
+          return;
+        }
         const failure = this.validateFailureEvent(storedFailure, requestEvent);
         const retrying = request.attempt < CHECKPOINT_MAX_ATTEMPTS;
         this.observe.emit(
@@ -181,7 +231,12 @@ export class CheckpointManager {
         overview: result.overview,
         completedAt: this.now(),
       });
-      const storedCheckpoint = await this.writeFact(checkpointEvent);
+      const storedCheckpoint = await this.writeFact(scope.sessionId, checkpointEvent);
+      if (!currentScope()) {
+        this.pendingCleanupTaskIds.add(request.taskId);
+        await this.cleanupAttempt(request.taskId);
+        return;
+      }
       this.validateCheckpointEvent(storedCheckpoint, scan.current.descriptor, requestEvent);
       this.observe.emit("checkpoint_request", "complete", request.attempt, Math.max(0, scan.pending.length - 1));
       this.pendingCleanupTaskIds.add(request.taskId);
@@ -189,19 +244,19 @@ export class CheckpointManager {
     }
   }
 
-  async writeFact(event) {
+  async writeFact(sessionId, event) {
     try {
-      const result = await this.adapter.writeEvents(this.sessionId, [event]);
+      const result = await this.adapter.writeEvents(sessionId, [event]);
       if (result.acceptedEventIds.length !== 1 || result.acceptedEventIds[0] !== event.eventId) {
         throw new Error("OpenViking did not accept the checkpoint fact");
       }
     } catch (error) {
       if (!(error instanceof ContentConflictError)) throw error;
-      const raced = await this.adapter.readEventIfExists(this.sessionId, event.eventId);
+      const raced = await this.adapter.readEventIfExists(sessionId, event.eventId);
       if (!raced) throw error;
       return raced.event;
     }
-    const stored = await this.adapter.readEvent(this.sessionId, event.eventId);
+    const stored = await this.adapter.readEvent(sessionId, event.eventId);
     if (!stored.bytes || stored.event.eventId !== event.eventId) {
       throw new Error("checkpoint fact read-back failed");
     }
@@ -227,6 +282,43 @@ export class CheckpointManager {
   async cleanupTerminalAttempts(taskIds) {
     let complete = true;
     for (const taskId of new Set([...this.pendingCleanupTaskIds, ...taskIds])) {
+      if (!await this.cleanupAttempt(taskId)) complete = false;
+    }
+    return complete;
+  }
+
+  async cleanupObsoleteRequests(sessionId, currentArchives, archiveChains, currentScope) {
+    const currentIds = new Set(currentArchives.map((descriptor) => descriptor.manifest.archiveId));
+    const taskIds = new Set();
+    for (const chain of archiveChains) {
+      const previousCheckpointIds = [null];
+      for (const descriptor of chain) {
+        if (!currentScope()) return true;
+        if (!currentIds.has(descriptor.manifest.archiveId)) {
+          for (const previousCheckpointId of previousCheckpointIds) {
+            for (let attempt = 1; attempt <= CHECKPOINT_MAX_ATTEMPTS; attempt++) {
+              const stored = await this.adapter.readEventIfExists(
+                sessionId, checkpointRequestEventId(descriptor.manifest, previousCheckpointId, attempt),
+              );
+              if (!currentScope()) return true;
+              if (!stored) continue;
+              const request = this.validateRequestEvent(
+                stored.event, descriptor, previousCheckpointId, attempt,
+              );
+              taskIds.add(request.taskId);
+            }
+          }
+        }
+        previousCheckpointIds.push(checkpointId(descriptor.manifest));
+      }
+    }
+
+    if (!currentScope()) return true;
+    for (const taskId of taskIds) this.pendingCleanupTaskIds.add(taskId);
+
+    let complete = true;
+    for (const taskId of taskIds) {
+      if (!currentScope()) return true;
       if (!await this.cleanupAttempt(taskId)) complete = false;
     }
     return complete;
@@ -262,7 +354,7 @@ export class CheckpointManager {
     return checkpoint;
   }
 
-  async validateStoredCheckpoint(descriptor, previousCheckpoint, checkpointEvent) {
+  async validateStoredCheckpoint(sessionId, descriptor, previousCheckpoint, checkpointEvent) {
     const previousId = previousCheckpoint?.checkpointId ?? null;
     const terminalTaskIds = [];
     let gap = false;
@@ -270,11 +362,11 @@ export class CheckpointManager {
     for (let attempt = 1; attempt <= CHECKPOINT_MAX_ATTEMPTS; attempt++) {
       const [requestStored, failureStored] = await Promise.all([
         this.adapter.readEventIfExists(
-          this.sessionId,
+          sessionId,
           checkpointRequestEventId(descriptor.manifest, previousId, attempt),
         ),
         this.adapter.readEventIfExists(
-          this.sessionId,
+          sessionId,
           checkpointFailureEventId(descriptor.manifest, previousId, attempt),
         ),
       ]);
@@ -302,17 +394,17 @@ export class CheckpointManager {
       terminalTaskIds,
     };
   }
-  async scanFacts() {
+  async scanFacts(sessionId, archives) {
     const consumed = [];
     const pending = [];
     const terminalTaskIds = [];
     let previousCheckpoint = null;
     let sawPending = false;
-    for (const descriptor of this.archives) {
-      const stored = await this.adapter.readEventIfExists(this.sessionId, checkpointEventId(descriptor.manifest));
+    for (const descriptor of archives) {
+      const stored = await this.adapter.readEventIfExists(sessionId, checkpointEventId(descriptor.manifest));
       if (stored) {
         if (sawPending) throw new Error("checkpoint chain contains a consumed Archive after an unconsumed gap");
-        const validated = await this.validateStoredCheckpoint(descriptor, previousCheckpoint, stored.event);
+        const validated = await this.validateStoredCheckpoint(sessionId, descriptor, previousCheckpoint, stored.event);
         terminalTaskIds.push(...validated.terminalTaskIds);
         previousCheckpoint = validated.checkpoint;
         consumed.push({ descriptor, checkpoint: validated.checkpoint });
@@ -334,11 +426,11 @@ export class CheckpointManager {
     for (let attempt = 1; attempt <= CHECKPOINT_MAX_ATTEMPTS; attempt++) {
       const [requestStored, failureStored] = await Promise.all([
         this.adapter.readEventIfExists(
-          this.sessionId,
+          sessionId,
           checkpointRequestEventId(descriptor.manifest, previousId, attempt),
         ),
         this.adapter.readEventIfExists(
-          this.sessionId,
+          sessionId,
           checkpointFailureEventId(descriptor.manifest, previousId, attempt),
         ),
       ]);

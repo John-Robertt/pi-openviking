@@ -203,3 +203,15 @@ export function planArchives(events, { chunkTokenBudget, rawTailTokenBudget }) {
   }
   return plans;
 }
+
+/** 同一条事件链的 Archive descriptor；生产规划只由这一处构造。 */
+export function describeArchives(sessionId, events, budgets) {
+  return planArchives(events, budgets).map((plan) => {
+    const range = events.slice(plan.startIndex, plan.endIndex + 1);
+    return {
+      ...plan,
+      manifest: buildArchiveManifest(sessionId, range),
+      tokenCount: range.reduce((sum, event) => sum + eventTokenWeight(event), 0),
+    };
+  });
+}

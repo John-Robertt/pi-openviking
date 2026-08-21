@@ -370,6 +370,83 @@ async function w4(log, ctx) {
 }
 
 
+async function w5(log, ctx) {
+  await observedWorkload(log, ctx, async ({ observation, makeClient, managers }) => {
+    const client = makeClient();
+    const fixture = await createArchives(log, ctx, client, observation, { textEntries: 2, expectedArchives: 1 });
+    const descriptor = fixture.descriptors[0];
+    const real = new OpenVikingCheckpointProcessor(client, { observation });
+    let releaseResult;
+    const holdResult = new Promise((resolve) => { releaseResult = resolve; });
+    let markCompleted;
+    const completed = new Promise((resolve) => { markCompleted = resolve; });
+    let completionReported = false;
+    const cleanupResults = [];
+    const processor = {
+      async advance(input) {
+        const result = await real.advance(input);
+        if (result.status === "completed" && !completionReported) {
+          completionReported = true;
+          markCompleted({ input, result });
+          await holdResult;
+        }
+        return result;
+      },
+      async cleanup(taskId) {
+        const cleaned = await real.cleanup(taskId);
+        cleanupResults.push({ taskId, cleaned });
+        return cleaned;
+      },
+    };
+    const manager = new CheckpointManager(client, {
+      adapter: fixture.adapter, archiveManager: fixture.manager, processor,
+      observation, pollIntervalMs: ctx.manifest.thresholds.pollMs,
+    });
+    managers.push(manager);
+    const started = Date.now();
+    const scheduled = manager.schedule(ctx.sessionId, [descriptor], [[descriptor]]);
+
+    let timeout;
+    let terminal;
+    try {
+      terminal = await Promise.race([
+        completed,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("obsolete checkpoint workload timed out")), ctx.manifest.thresholds.checkpointWallMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeout);
+    }
+    const measurement = await taskMeasurement(
+      log, ctx, client, terminal.input.taskId, Date.now() - started, "obsolete",
+    );
+    const switched = manager.schedule(ctx.sessionId, [], [[descriptor]]);
+    releaseResult();
+    await Promise.all([scheduled, switched]);
+    await manager.schedule(ctx.sessionId, [], [[descriptor]]);
+
+    const checkpoint = await fixture.adapter.readEventIfExists(ctx.sessionId, checkpointEventId(descriptor.manifest));
+    log.check(ctx.workloadId, "obsolete-checkpoint-absent", false, Boolean(checkpoint), !checkpoint);
+    log.check(ctx.workloadId, "obsolete-final-state", "caught_up/0", `${manager.status.mode}/${manager.status.pending}`,
+      manager.status.mode === "caught_up" && manager.status.pending === 0);
+    const cleanupConfirmed = cleanupResults.some(
+      (item) => item.taskId === terminal.input.taskId && item.cleaned,
+    );
+    log.check(ctx.workloadId, "obsolete-cleanup-confirmed", true, cleanupConfirmed, cleanupConfirmed);
+    log.check(ctx.workloadId, "obsolete-cleanup-failure", null, manager.status.lastFailure,
+      manager.status.lastFailure === null);
+    await sourceStillIntact(log, ctx, fixture.adapter, fixture.manager, [descriptor], "after");
+    ctx.measurements = [measurement];
+  });
+  const obsolete = ctx.observationSummary.outcomeCounts["checkpoint_request:obsolete"] ?? 0;
+  log.check(ctx.workloadId, "obsolete-decision-observed", 1, obsolete, obsolete === 1);
+  ctx.runs.push({
+    label: "scope-obsolete", ...ctx.measurements[0],
+    observationSha256: ctx.observationSummary.evidenceSha256,
+  });
+}
+
 async function collectObjectUris(ctx) {
   const uris = ctx.markerUri ? [ctx.markerUri] : [];
   const includeFactIfStored = async (eventId) => {
@@ -423,6 +500,7 @@ const RUNNERS = {
   "w2-multimodal-checkpoint": w2,
   "w3-failure-retry": w3,
   "w4-restart-backlog": w4,
+  "w5-scope-obsolete": w5,
 };
 
 

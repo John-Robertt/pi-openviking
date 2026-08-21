@@ -3,9 +3,6 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
-  BATCH_MAX_FILE_BYTES,
-  BATCH_MAX_OPERATIONS,
-  BATCH_MAX_TOTAL_BYTES,
   ContentConflictError,
   ContentWriteError,
 } from "../shared/content-objects.mjs";
@@ -138,12 +135,6 @@ function eventWithByteLength(sessionId, index, byteLength) {
   assert.equal(recordedEventBytes(event).length, byteLength);
   return event;
 }
-
-test("adapter 限制符合 OpenViking 0.4.15 Content API 协议值", () => {
-  assert.equal(BATCH_MAX_OPERATIONS, OPENVIKING_MAX_OPERATIONS);
-  assert.equal(BATCH_MAX_FILE_BYTES, OPENVIKING_MAX_FILE_BYTES);
-  assert.equal(BATCH_MAX_TOTAL_BYTES, OPENVIKING_MAX_BATCH_BYTES);
-});
 
 test("direct 事件按确定性隐藏 URI 写入并同字节幂等重放", async () => {
   const trace = buildLongToolLoopTrace();

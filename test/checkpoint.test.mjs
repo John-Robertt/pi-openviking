@@ -365,16 +365,18 @@ test("恢复时从终态事实重新派生并完成临时状态清理", async ()
   await manager.stop();
 });
 
-test("当前分支在途处理完成后切换范围仍会重试终态临时清理", async () => {
+test("范围在 checkpoint 写入开始前变化时丢弃旧 VLM 结果并清理临时状态", async () => {
   const { adapter, archives, descriptors } = await archiveFixture();
   let releaseAdvance;
   let markEntered;
   const entered = new Promise((resolve) => { markEntered = resolve; });
   const blocked = new Promise((resolve) => { releaseAdvance = resolve; });
   let cleanupCalls = 0;
+  const observed = [];
   const manager = new CheckpointManager({}, {
     adapter,
     archiveManager: archives,
+    observation: { emit: (...args) => observed.push(args) },
     processor: {
       async advance() { markEntered(); await blocked; return { status: "completed", overview: OVERVIEW }; },
       async cleanup() { cleanupCalls++; return cleanupCalls > 1; },
@@ -388,8 +390,150 @@ test("当前分支在途处理完成后切换范围仍会重试终态临时清�
   releaseAdvance();
   await processing;
   await manager.schedule(SESSION, []);
+  assert.equal(
+    await adapter.readEventIfExists(SESSION, checkpointEventId(descriptors[0].manifest)),
+    null,
+    "已离开当前分支的 VLM 结果不得写成 checkpoint 事实",
+  );
+  assert.ok(observed.some(([stage, branch]) => stage === "checkpoint_request" && branch === "obsolete"));
   assert.equal(cleanupCalls, 2);
   assert.equal(manager.status.mode, "caught_up");
+  await manager.stop();
+});
+
+test("obsolete request 的清理义务可从 Archive 链跨重启恢复", async () => {
+  const { adapter, archives, descriptors } = await archiveFixture();
+  const descriptor = descriptors[1];
+  const chain = descriptors.slice(0, 2);
+  let releaseAdvance;
+  let markEntered;
+  const entered = new Promise((resolve) => { markEntered = resolve; });
+  const blocked = new Promise((resolve) => { releaseAdvance = resolve; });
+  let failedCleanups = 0;
+  const first = new CheckpointManager({}, {
+    adapter, archiveManager: archives,
+    processor: {
+      async advance() { markEntered(); await blocked; return { status: "completed", overview: OVERVIEW }; },
+      async cleanup() { failedCleanups++; return false; },
+    },
+    pollIntervalMs: 60_000, now: clock(),
+  });
+  const processing = first.schedule(SESSION, [descriptor], [chain]);
+  await entered;
+  void first.schedule(SESSION, [], [chain]);
+  releaseAdvance();
+  await processing;
+  await first.stop();
+  assert.ok(failedCleanups >= 1);
+  const request1 = await adapter.readEventIfExists(
+    SESSION, checkpointRequestEventId(descriptor.manifest, null, 1),
+  );
+  assert.ok(request1);
+
+  const cleaned = [];
+  const restarted = new CheckpointManager({}, {
+    adapter, archiveManager: archives,
+    processor: {
+      async advance() { throw new Error("obsolete request must not resume"); },
+      async cleanup(taskId) { cleaned.push(taskId); return true; },
+    },
+    pollIntervalMs: 60_000, now: clock(),
+  });
+  await restarted.schedule(SESSION, [], [chain]);
+  assert.deepEqual(cleaned, [checkpointTaskId(descriptor.manifest, null, 1)]);
+
+  const failure1 = buildCheckpointFailureEvent({
+    requestEvent: request1.event,
+    failedAt: "2026-08-20T00:01:00.000Z",
+    error: { errorClass: "provider", errorCode: "task_failed", message: "task failed" },
+  });
+  const request2 = buildCheckpointRequestEvent({
+    manifest: descriptor.manifest, previousCheckpointId: null, attempt: 2,
+    submittedAt: "2026-08-20T00:02:00.000Z",
+  });
+  await adapter.writeEvents(SESSION, [failure1, request2]);
+  await restarted.schedule(SESSION, [], [chain]);
+  assert.deepEqual(cleaned, [
+    checkpointTaskId(descriptor.manifest, null, 1),
+    checkpointTaskId(descriptor.manifest, null, 2),
+  ], "同一候选 scope 的晚到 request 仍会形成清理义务");
+  assert.equal(restarted.status.mode, "caught_up");
+  assert.equal(restarted.status.lastFailure, null);
+  await restarted.stop();
+});
+
+test("当前 Archive 列表只追加时不使在途 checkpoint 失效", async () => {
+  const { adapter, archives, descriptors } = await archiveFixture();
+  let releaseFirst;
+  let markFirst;
+  const firstEntered = new Promise((resolve) => { markFirst = resolve; });
+  const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
+  let advances = 0;
+  const observed = [];
+  const manager = new CheckpointManager({}, {
+    adapter, archiveManager: archives,
+    observation: { emit: (...args) => observed.push(args) },
+    processor: {
+      async advance() {
+        advances++;
+        if (advances === 1) { markFirst(); await firstBlocked; }
+        return { status: "completed", overview: OVERVIEW };
+      },
+      async cleanup() { return true; },
+    },
+    pollIntervalMs: 60_000, now: clock(),
+  });
+
+  const initial = manager.schedule(SESSION, [descriptors[0]]);
+  await firstEntered;
+  const extended = manager.schedule(SESSION, descriptors.slice(0, 2));
+  releaseFirst();
+  await initial;
+  await extended;
+  await manager.schedule(SESSION, descriptors.slice(0, 2));
+
+  assert.ok(await adapter.readEventIfExists(SESSION, checkpointEventId(descriptors[0].manifest)));
+  assert.ok(await adapter.readEventIfExists(SESSION, checkpointEventId(descriptors[1].manifest)));
+  assert.ok(!observed.some(([stage, branch]) => stage === "checkpoint_request" && branch === "obsolete"));
+  await manager.stop();
+});
+
+test("checkpoint 写入已开始后范围变化允许首写完成但当前状态只取新范围", async () => {
+  const { adapter, archives, descriptors } = await archiveFixture();
+  let releaseWrite;
+  let markWriteStarted;
+  const writeStarted = new Promise((resolve) => { markWriteStarted = resolve; });
+  const blockedWrite = new Promise((resolve) => { releaseWrite = resolve; });
+  const racingAdapter = {
+    readEvent: adapter.readEvent.bind(adapter),
+    readEventIfExists: adapter.readEventIfExists.bind(adapter),
+    async writeEvents(sessionId, events) {
+      if (events[0]?.payload?.type === "checkpoint") {
+        markWriteStarted();
+        await blockedWrite;
+      }
+      return adapter.writeEvents(sessionId, events);
+    },
+  };
+  const manager = new CheckpointManager({}, {
+    adapter: racingAdapter, archiveManager: archives,
+    processor: {
+      async advance() { return { status: "completed", overview: OVERVIEW }; },
+      async cleanup() { return true; },
+    },
+    pollIntervalMs: 60_000, now: clock(),
+  });
+
+  const processing = manager.schedule(SESSION, [descriptors[0]]);
+  await writeStarted;
+  void manager.schedule(SESSION, []);
+  releaseWrite();
+  await processing;
+  await manager.schedule(SESSION, []);
+
+  assert.ok(await adapter.readEventIfExists(SESSION, checkpointEventId(descriptors[0].manifest)));
+  assert.equal(manager.status.mode, "caught_up");
+  assert.equal(manager.status.currentArchiveId, null);
   await manager.stop();
 });
 

@@ -270,7 +270,7 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
     pending: INTEGER(),
   }, FAILURE_OPTIONAL)),
   checkpoint_request: stage("shared/checkpoint-store.mjs", "decision", schema({
-    branch: ENUM(["submit", "resume", "complete"]),
+    branch: ENUM(["submit", "resume", "complete", "obsolete"]),
     attempt: INTEGER(1, 3),
     pending: INTEGER(),
   })),
@@ -343,7 +343,7 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
   })),
   tool_scope: stage("tools.ts", "decision", schema({
     tool: ENUM(TOOLS),
-    operation: ENUM(["archive", "browse", "delete", "read", "search_request", "search_result"]),
+    operation: ENUM(["archive", "browse", "delete", "read", "resource_add", "search_request", "search_result"]),
     scoped: BOOLEAN,
     branch: ENUM(["allow", "deny", "clamp", "filter"]),
     accepted: INTEGER(),

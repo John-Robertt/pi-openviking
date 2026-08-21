@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { SyncManager } from "../sync.ts";
 import { buildArchiveManifest, planArchives } from "../shared/archive.mjs";
+import { checkpointEventId } from "../shared/checkpoint.mjs";
 import { archiveStorageLocation } from "../shared/archive-store.mjs";
 import { recordedEventStorageLocation } from "../shared/recorded-event-adapter.mjs";
 import { projectPiEntries } from "../shared/recorded-event.mjs";
@@ -388,6 +389,58 @@ test("切换到不足以形成 Archive 的分支后，checkpoint 队列清空而
     "空 Archive 全集也必须刷新 checkpoint 消费队列");
   assert.equal(sync.status.checkpoint.currentArchiveId, null);
 });
+
+test("分支切换在 Archive I/O 前使旧 checkpoint scope 失效", async () => {
+  const sessionId = "checkpoint-scope-linearization";
+  const { main, tree } = forkedTree(sessionId);
+  const transport = new MemoryContentTransport();
+  const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => null });
+  await sync.ensureSession(sessionId);
+
+  let releaseAdvance;
+  let markAdvance;
+  const advanceEntered = new Promise((resolve) => { markAdvance = resolve; });
+  const advanceBlocked = new Promise((resolve) => { releaseAdvance = resolve; });
+  sync.checkpoints.processor = {
+    async advance() { markAdvance(); await advanceBlocked; return { status: "completed", overview: "old branch" }; },
+    async cleanup() { return true; },
+  };
+
+  const first = await sync.syncSession({ isPersisted: () => false, getEntries: () => tree, getBranch: () => main });
+  assert.equal(first.allDelivered, true, first.failure ?? "");
+  await advanceEntered;
+  const oldArchiveId = archivedIds(sessionId, main, transport)[0];
+  const oldManifest = JSON.parse(
+    transport.files.get(archiveStorageLocation(ARCHIVE_USER_ROOT, sessionId, oldArchiveId).manifestUri).toString("utf8"),
+  );
+  const oldWork = sync.checkpoints.current;
+
+  let releaseForm;
+  let markForm;
+  const formEntered = new Promise((resolve) => { markForm = resolve; });
+  const formBlocked = new Promise((resolve) => { releaseForm = resolve; });
+  const formArchives = sync.archives.formArchives.bind(sync.archives);
+  sync.archives.formArchives = async (...args) => {
+    markForm();
+    await formBlocked;
+    return formArchives(...args);
+  };
+
+  const short = main.slice(0, 1);
+  const switching = sync.syncSession({ isPersisted: () => false, getEntries: () => tree, getBranch: () => short });
+  await formEntered;
+  releaseAdvance();
+  await oldWork;
+  assert.equal(
+    await sync.adapter.readEventIfExists(sessionId, checkpointEventId(oldManifest)),
+    null,
+    "新分支 Archive 重验仍在途时，旧 VLM 结果不得开始写 checkpoint",
+  );
+  releaseForm();
+  await switching;
+  await sync.stopBackground();
+});
+
 test("持久 JSONL 切换到较短 sibling leaf 后，Archive 描述新分支且复用共同前缀身份", async () => {
   const sessionId = "jsonl-fork";
   const { main, sibling, tree } = forkedTree(sessionId);
@@ -447,6 +500,37 @@ test("Archive 失败不阻断事件同步与 ACK 推进", async () => {
   }
 });
 
+
+test("Archive 暂时性传输失败不替换 checkpoint 消费范围", async () => {
+  const sessionId = "archive-transient-scope";
+  const { main } = forkedTree(sessionId);
+  const transport = new MemoryContentTransport();
+  const client = contentClient(transport);
+  const sync = new SyncManager(client, { ackPathForSession: () => null });
+  await sync.ensureSession(sessionId);
+
+  const schedules = [];
+  sync.checkpoints.schedule = async (_sessionId, archives) => {
+    schedules.push(archives.map((descriptor) => descriptor.manifest.archiveId));
+  };
+  const source = { isPersisted: () => false, getEntries: () => main, getBranch: () => main };
+  await sync.syncSession(source);
+  assert.ok(schedules.at(-1).length > 0);
+  const acceptedScope = schedules.at(-1);
+  const scheduleCount = schedules.length;
+
+  const statUri = client.statUri.bind(client);
+  client.statUri = async (uri) => uri.includes("/archives/")
+    ? { ok: false, status: 503, exists: false, isDir: false }
+    : statUri(uri);
+  await sync.syncSession(source);
+  assert.equal(schedules.length, scheduleCount, "暂时失败不得提交空或截短范围");
+  assert.ok(sync.status.archive.lastFailure);
+
+  client.statUri = statUri;
+  await sync.syncSession(source);
+  assert.deepEqual(schedules.at(-1), acceptedScope);
+});
 
 test("某个 entry 永久无法同步时，已确认前缀仍然形成 Archive", async () => {
   const sessionId = "blocked-entry";

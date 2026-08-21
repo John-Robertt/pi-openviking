@@ -126,7 +126,7 @@ npx pi-openviking@latest credentials
 
 `archive.chunkTokenBudget` 控制每次 Archive 的目标增量，`archive.rawTailTokenBudget` 控制归档后保留
 最近原始上下文。`takeover` 已为 checkpoint 输出预算提供策略值；在 `ActiveContext` 实现并通过验收前，
-provider 仍使用完整 Pi 上下文，不执行上下文替换。
+provider 仍使用完整 Pi 上下文，不执行上下文替换。`recallTokenBudget` 直接限制服务端为一次检索装配的上下文 token 预算。
 
 ### 受管服务代理
 
@@ -163,10 +163,12 @@ sanitize(baseUser || "default")--pi-sanitize(piSessionId)
 因此 `pi -c`、`pi -p` 沿用同一会话命名空间；新 session/fork 使用新命名空间。关闭该选项后使用
 配置用户或服务解析的当前用户。
 
-开启时，`viking_*` 工具把命名空间作为执行边界：读取、删除和浏览只接受绑定根本身或其子路径，
-越界调用被拒绝且不发出请求；搜索范围夹回绑定根，返回结果按同一规则过滤。`viking_archive_expand`
-的 Archive 位置由当前会话推导，跨会话展开在命名空间层面不可寻址，与该选项无关。关闭该选项后不
-施加读取、删除和浏览的边界。
+所有 `viking_*` URI 都先形成一次 canonical 值：工具不解码或改写 path 字节，`viking://user/<reserved>/...` shorthand 只展开到当前用户根；非法 URI 在所有模式下都被拒绝且不发出请求。开启隔离时，读取、删除和浏览只接受绑定根本身或其子路径；越界搜索范围夹回绑定根，返回结果按同一规则过滤。记忆删除工具在所有模式下
+都拒绝 `.pi-openviking` 内部事实，raw event、Archive manifest 和 checkpoint 只能由各自职责模块管理。
+OpenViking Resource API 不能把导入对象绑定到该会话用户命名空间，因此开启隔离时
+`viking_add_resource` 在请求前拒绝；关闭隔离后按服务身份导入。`viking_archive_expand` 的 Archive 位置由当前
+会话推导，跨会话展开在命名空间层面不可寻址，与该选项
+无关。关闭该选项后不施加跨用户读取、删除和浏览边界。
 
 原始 event files、Archive manifest 和 checkpoint 事实都使用 dot-prefixed 名称，普通 shard 列表不返回这些文件；
 上层 dot directory 仍可能可见，语义处理过滤 dot files。嵌入图片仅在 checkpoint attempt 的临时 Resource 中进入
@@ -215,7 +217,7 @@ ACK 文件不包含 transcript。删除 ACK 只会使下一次从 Pi JSONL 幂�
 | `viking_read`           | 按 abstract、overview 或 full 读取 |
 | `viking_browse`         | 浏览 URI 或查看元数据              |
 | `viking_remember`       | 显式提交一条待抽取记忆             |
-| `viking_forget`         | 删除 URI 或高置信匹配              |
+| `viking_forget`         | 删除普通记忆 URI 或高置信匹配      |
 | `viking_add_resource`   | 导入 HTTP URL                      |
 | `viking_archive_expand` | 按 `archiveId` 展开本会话 Archive  |
 

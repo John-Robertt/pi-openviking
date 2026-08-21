@@ -23,7 +23,6 @@ import {
   planArchives,
 } from "../../shared/archive.mjs";
 import { archiveSessionRoot, archiveStorageLocation } from "../../shared/archive-store.mjs";
-import { checkpointEventId, checkpointFailureEventId, checkpointId, checkpointRequestEventId } from "../../shared/checkpoint.mjs";
 import { openVikingApiPath } from "../../shared/openviking-api.mjs";
 import { parsePiSessionJsonl } from "../../shared/pi-session-source.mjs";
 import { projectPiEntries, recordedEventBytes } from "../../shared/recorded-event.mjs";
@@ -283,11 +282,6 @@ async function replaceManifestBytes(ctx, archiveId, bytes, baseBytes) {
 function recordWrittenObjects(ctx, branch, archiveIds) {
   ctx.knownEventIds = branch.map((event) => event.eventId);
   ctx.knownArchives = [...new Set([...(ctx.knownArchives ?? []), ...archiveIds])];
-  const manifests = new Map(ctx.knownArchiveManifests ?? []);
-  for (const item of expectedArchives(ctx, branch)) {
-    if (archiveIds.includes(item.manifest.archiveId)) manifests.set(item.manifest.archiveId, item.manifest);
-  }
-  ctx.knownArchiveManifests = [...manifests];
 }
 
 // ---------------------------------------------------------------------------
@@ -500,32 +494,15 @@ async function w4(log, ctx) {
 // Main
 // ---------------------------------------------------------------------------
 
-/** 该 workload 写入远端的全部对象 URI（marker、事件、Archive manifest），供持久删除核验。 */
+/** Archive gate 直接拥有的 marker、来源事件与 manifest URI，供持久删除核验。 */
 async function collectObjectUris(ctx) {
   const uris = ctx.markerUri ? [ctx.markerUri] : [];
-  const includeFactIfStored = async (eventId) => {
-    const uri = recordedEventStorageLocation(ctx.userRoot, ctx.sessionId, eventId).directUri;
-    const status = await ctx.client.statUri(uri);
-    if (!status.ok) throw new Error(`checkpoint fact stat failed: ${status.status}`);
-    if (status.exists) uris.push(uri);
-    return status.exists;
-  };
   for (const eventId of ctx.knownEventIds ?? []) {
     // 本 gate 的 workload 只产生 8 MiB 以内的事件，因此只有 direct 表示。
     uris.push(recordedEventStorageLocation(ctx.userRoot, ctx.sessionId, eventId).directUri);
   }
   for (const archiveId of ctx.knownArchives ?? []) {
     uris.push(archiveStorageLocation(ctx.userRoot, ctx.sessionId, archiveId).manifestUri);
-  }
-  let previousCheckpointId = null;
-  for (const [, manifest] of ctx.knownArchiveManifests ?? []) {
-    const checkpointStored = await includeFactIfStored(checkpointEventId(manifest));
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      await includeFactIfStored(checkpointRequestEventId(manifest, previousCheckpointId, attempt));
-      await includeFactIfStored(checkpointFailureEventId(manifest, previousCheckpointId, attempt));
-    }
-    if (!checkpointStored) break;
-    previousCheckpointId = checkpointId(manifest);
   }
   return uris;
 }

@@ -1,4 +1,4 @@
-import type { ArchiveBudgets, ArchiveManifestV1 } from "./archive.mjs";
+import type { ArchiveBudgets, ArchiveDescriptor, ArchiveManifestV1 } from "./archive.mjs";
 import type { ContentTransport } from "./content-objects.mjs";
 import type { Observation } from "./observe.mjs";
 import type { PiRecordedEventV1 } from "./recorded-event.mjs";
@@ -30,7 +30,7 @@ export class ArchiveManager {
   readonly status: ArchiveState;
   observeFinalState(): void;
   formArchives(sessionId: string, events: PiRecordedEventV1[]): Promise<
-    { planned: number; created: number; archives: Array<{ manifest: ArchiveManifestV1; tokenCount: number }> } & ArchiveState
+    { planned: number; created: number; reconciled: boolean; archives: ArchiveDescriptor[] } & ArchiveState
   >;
   commit(sessionId: string, events: PiRecordedEventV1[]): Promise<{
     archiveId: string;

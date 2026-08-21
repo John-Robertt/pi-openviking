@@ -27,39 +27,82 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
     return !client.connected;
   };
 
-  /**
-   * 唯一的归属判定：URI 必须是绑定根本身或其子路径。
-   *
-   * 前缀比较不足以表达归属——`<root>-other` 也以 root 开头却是另一个命名空间，
-   * 因此子路径必须显式带分隔符。所有进出工具的 URI 都经过这里，边界规则只有一处。
-   */
-  const inside = (uri: string, root = scoped()): boolean => {
-    if (!root) return true;
-    const want = String(uri || "").trim();
-    return want === root || want.startsWith(`${root}/`);
-  };
-
-  /** Reject URIs outside the bound namespace instead of silently rewriting. */
-  const denyOutside = (
-    uri: string, tool: string, operation: "read" | "browse" | "delete", root = scoped(),
-  ): string | null => {
-    const allowed = inside(uri, root);
-    observe.emit("tool_scope", tool, operation, Boolean(root), allowed ? "allow" : "deny", allowed ? 1 : 0, allowed ? 0 : 1);
-    return allowed
-      ? null
-      : `Refused: ${String(uri || "").trim()} is outside this session's memory namespace (${root}).`;
-  };
-
-  /** Search scope: never wider than the bound namespace. */
-  const scopeSearch = (tool: string, requested?: string, root = scoped()): string | undefined => {
-    if (!root) {
-      observe.emit("tool_scope", tool, "search_request", false, "allow", 1, 0);
-      return requested;
+  const userRelativeRoots = new Set(["memories", "resources", "skills", "peers", "privacy", "sessions"]);
+  const canonicalVikingUri = (input: unknown): string | null => {
+    const raw = String(input ?? "").trim();
+    if (raw === "viking://") return raw;
+    if (/[\u0000-\u001f\u007f]/.test(raw)) return null;
+    const match = /^viking:\/\/([^/?#]+)(?:\/([^?#]*))?$/.exec(raw);
+    if (!match) return null;
+    const path = match[2];
+    const segments = path === undefined ? [] : path.split("/");
+    const last = segments.length - 1;
+    if (segments.some((segment, index) =>
+      (!segment && index !== last) || segment === "." || segment === ".." || segment.includes("\\"),
+    )) return null;
+    if (match[1] === "user" && segments[0] && userRelativeRoots.has(segments[0])) {
+      const currentRoot = String(client.userRoot || "").replace(/\/+$/, "");
+      if (!/^viking:\/\/user\/[^/?#]+$/.test(currentRoot)) return null;
+      return `${currentRoot}/${path}`;
     }
-    const want = String(requested || "").trim();
-    const allowed = Boolean(want) && inside(want, root);
-    observe.emit("tool_scope", tool, "search_request", true, allowed ? "allow" : "clamp", 1, 0);
-    return allowed ? want : root;
+    return raw;
+  };
+
+  const insideCanonical = (uri: string, root: string): boolean =>
+    !root || uri === root || uri.startsWith(`${root}/`);
+
+  const authorizeUri = (
+    input: unknown, tool: string, operation: "read" | "browse", root = scoped(),
+  ): { uri: string | null; error: string | null } => {
+    const raw = String(input ?? "").trim();
+    const uri = canonicalVikingUri(raw);
+    const allowed = uri !== null && insideCanonical(uri, root);
+    observe.emit("tool_scope", tool, operation, Boolean(root), allowed ? "allow" : "deny", allowed ? 1 : 0, allowed ? 0 : 1);
+    if (allowed) return { uri, error: null };
+    return {
+      uri: null,
+      error: uri === null
+        ? `Refused: ${raw} is not a valid viking URI.`
+        : `Refused: ${raw} is outside this session's memory namespace (${root}).`,
+    };
+  };
+
+  /** Deletion is additionally forbidden for adapter-owned immutable facts. */
+  const authorizeDelete = (input: unknown, tool: string, root = scoped()): { uri: string | null; error: string | null } => {
+    const raw = String(input ?? "").trim();
+    const uri = canonicalVikingUri(raw);
+    const internal = Boolean(uri &&
+      /^viking:\/\/user\/[^/]+\/resources\/\.pi-openviking(?:\/|$)/.test(uri));
+    const allowed = uri !== null && insideCanonical(uri, root) && !internal;
+    observe.emit("tool_scope", tool, "delete", Boolean(root), allowed ? "allow" : "deny", allowed ? 1 : 0, allowed ? 0 : 1);
+    if (allowed) return { uri, error: null };
+    if (!uri) return { uri: null, error: `Refused: ${raw} is not a valid viking URI.` };
+    return {
+      uri: null,
+      error: internal
+        ? `Refused: ${raw} is managed by pi-openviking and cannot be deleted through memory tools.`
+        : `Refused: ${raw} is outside this session's memory namespace (${root}).`,
+    };
+  };
+
+  /** Search scope: invalid input is rejected; only a valid out-of-scope URI is clamped. */
+  const resolveSearchScope = (
+    tool: string, requested?: string, root = scoped(),
+  ): { targetUri: string | undefined; error: string | null } => {
+    const raw = String(requested ?? "").trim();
+    if (!raw) {
+      observe.emit("tool_scope", tool, "search_request", Boolean(root), "allow", 1, 0);
+      return { targetUri: root || undefined, error: null };
+    }
+    const uri = canonicalVikingUri(raw);
+    if (!uri) {
+      observe.emit("tool_scope", tool, "search_request", Boolean(root), "deny", 0, 1);
+      return { targetUri: undefined, error: `Refused: ${raw} is not a valid viking URI.` };
+    }
+    const allowed = insideCanonical(uri, root);
+    const branch = allowed ? "allow" : "clamp";
+    observe.emit("tool_scope", tool, "search_request", Boolean(root), branch, 1, 0);
+    return { targetUri: allowed ? uri : root, error: null };
   };
 
   // --- viking_search ---
@@ -87,11 +130,16 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
       // 请求范围与回读核验都做：范围表达意图，核验保证返回给模型的 URI 确实
       // 落在绑定命名空间内，不依赖服务端对 target_uri 的执行。
       const root = scoped();
+      const searchScope = resolveSearchScope("viking_search", params.scope, root);
+      if (searchScope.error) return { content: [{ type: "text", text: searchScope.error }] };
       const found = await client.find(params.query, {
-        targetUri: scopeSearch("viking_search", params.scope, root),
+        targetUri: searchScope.targetUri,
         topK: params.limit ?? 10,
       });
-      const results = found.filter((result) => inside(result.uri, root));
+      const results = found.flatMap((result) => {
+        const uri = canonicalVikingUri(result.uri);
+        return uri && insideCanonical(uri, root) ? [{ ...result, uri }] : [];
+      });
       observe.emit(
         "tool_scope",
         "viking_search",
@@ -135,16 +183,18 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
       if (unavailable("viking_read")) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
-      const readDenied = denyOutside(params.uri, "viking_read", "read");
-      if (readDenied) return { content: [{ type: "text", text: readDenied }] };
+      const root = scoped();
+      const read = authorizeUri(params.uri, "viking_read", "read", root);
+      if (read.error) return { content: [{ type: "text", text: read.error }] };
+      const uri = read.uri!;
       let content: string | null = null;
       switch (params.level) {
-        case "abstract": content = await client.abstract(params.uri); break;
-        case "overview": content = await client.overview(params.uri); break;
-        case "full":     content = await client.readContent(params.uri); break;
+        case "abstract": content = await client.abstract(uri); break;
+        case "overview": content = await client.overview(uri); break;
+        case "full":     content = await client.readContent(uri); break;
       }
       if (!content) {
-        return { content: [{ type: "text", text: `No content at ${params.uri}` }] };
+        return { content: [{ type: "text", text: `No content at ${uri}` }] };
       }
       return { content: [{ type: "text", text: content }] };
     },
@@ -170,9 +220,10 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
       // Browsing defaults to the namespace root so the model cannot enumerate
       // sibling sessions from `viking://`.
       const root = scoped();
-      const uri = params.uri ?? (root || "viking://");
-      const browseDenied = denyOutside(uri, "viking_browse", "browse", root);
-      if (browseDenied) return { content: [{ type: "text", text: browseDenied }] };
+      const requested = params.uri ?? (root || "viking://");
+      const browse = authorizeUri(requested, "viking_browse", "browse", root);
+      if (browse.error) return { content: [{ type: "text", text: browse.error }] };
+      const uri = browse.uri!;
       if (params.action === "stat") {
         const info = await client.stat(uri);
         if (!info) return { content: [{ type: "text", text: `Not found: ${uri}` }] };
@@ -245,23 +296,28 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
       if (params.uri) {
-        const forgetDenied = denyOutside(params.uri, "viking_forget", "delete");
-        if (forgetDenied) return { content: [{ type: "text", text: forgetDenied }] };
-        const ok = await client.delete(params.uri);
+        const root = scoped();
+        const deletion = authorizeDelete(params.uri, "viking_forget", root);
+        if (deletion.error) return { content: [{ type: "text", text: deletion.error }] };
+        const uri = deletion.uri!;
+        const ok = await client.delete(uri);
         return {
-          content: [{ type: "text", text: ok ? `Deleted: ${params.uri}` : `Failed to delete: ${params.uri}` }],
+          content: [{ type: "text", text: ok ? `Deleted: ${uri}` : `Failed to delete: ${uri}` }],
         };
       }
       if (params.query) {
         // 搜索限定在绑定命名空间内，命中结果在删除前仍逐条复核归属：
         // 删除不可逆，不能只依赖搜索范围。
-        const results = await client.find(params.query, { targetUri: scopeSearch("viking_forget"), topK: 1 });
+        const root = scoped();
+        const searchScope = resolveSearchScope("viking_forget", undefined, root);
+        const results = await client.find(params.query, { targetUri: searchScope.targetUri, topK: 1 });
         if (results.length > 0 && results[0].score > 0.8) {
-          const matchDenied = denyOutside(results[0].uri, "viking_forget", "delete");
-          if (matchDenied) return { content: [{ type: "text", text: matchDenied }] };
-          const ok = await client.delete(results[0].uri);
+          const deletion = authorizeDelete(results[0].uri, "viking_forget", root);
+          if (deletion.error) return { content: [{ type: "text", text: deletion.error }] };
+          const uri = deletion.uri!;
+          const ok = await client.delete(uri);
           return {
-            content: [{ type: "text", text: ok ? `Deleted: ${results[0].uri}` : `Failed: ${results[0].uri}` }],
+            content: [{ type: "text", text: ok ? `Deleted: ${uri}` : `Failed: ${uri}` }],
           };
         }
         return { content: [{ type: "text", text: "No strong match found (score > 0.8 required)." }] };
@@ -287,13 +343,23 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
       if (unavailable("viking_add_resource")) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
-      const result = await client.addResource(params.url);
+      const root = scoped();
+      if (root) {
+        observe.emit("tool_scope", "viking_add_resource", "resource_add", true, "deny", 0, 1);
+        return { content: [{ type: "text", text: "Refused: resource ingestion is unavailable while session-scoped memory is enabled." }] };
+      }
+      const result = await client.addResource(params.url, params.reason ? { reason: params.reason } : undefined);
       if (!result) {
         return { content: [{ type: "text", text: `Failed to ingest: ${params.url}` }] };
       }
+      const uri = canonicalVikingUri(result.root_uri);
+      observe.emit("tool_scope", "viking_add_resource", "resource_add", false, uri ? "allow" : "deny", uri ? 1 : 0, uri ? 0 : 1);
+      if (!uri) {
+        return { content: [{ type: "text", text: `Failed to ingest: ${params.url}` }] };
+      }
       return {
-        content: [{ type: "text", text: `Ingested: ${result.root_uri}` }],
-        details: result,
+        content: [{ type: "text", text: `Ingested: ${uri}` }],
+        details: { ...result, root_uri: uri },
       };
     },
   });

@@ -15,7 +15,7 @@ function config(endpoint) {
   };
 }
 
-test("OVClient 严格传输 batch-write、stat、mkdir 和 raw download", async () => {
+test("OVClient 严格传输 Content、filesystem 与 Resource API", async () => {
   const requests = [];
   let healthy = false;
   const server = createServer(async (request, response) => {
@@ -58,6 +58,11 @@ test("OVClient 严格传输 batch-write、stat、mkdir 和 raw download", async 
       }));
       return;
     }
+    if (request.url === "/api/v1/resources") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ status: "ok", result: { root_uri: "viking://resources/imported" } }));
+      return;
+    }
     if (request.url === "/slow") return;
     response.writeHead(500, { "content-type": "application/json" });
     response.end(JSON.stringify({ status: "error" }));
@@ -80,6 +85,14 @@ test("OVClient 严格传输 batch-write、stat、mkdir 和 raw download", async 
     assert.deepEqual(await client.statUri("missing"), { ok: true, exists: false, isDir: false, status: 404 });
     assert.equal((await client.mkdirUri("created")).ok, true);
     assert.deepEqual((await client.downloadBytes("binary")).bytes, Buffer.from([0, 1, 2, 255]));
+    assert.deepEqual(
+      await client.addResource("https://example.test", { reason: "current project source" }),
+      { root_uri: "viking://resources/imported" },
+    );
+    const resourceRequest = requests.find((request) => request.url === "/api/v1/resources");
+    assert.deepEqual(JSON.parse(resourceRequest.body), {
+      path: "https://example.test", reason: "current project source",
+    });
     const batchRequest = requests.find((request) => request.url === "/api/v1/content/batch-write");
     assert.equal(JSON.parse(batchRequest.body).wait, false);
 
