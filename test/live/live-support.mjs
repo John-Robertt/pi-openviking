@@ -8,7 +8,6 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -245,6 +244,7 @@ export async function runPi(ctx, {
     for (const action of actions) {
       const id = `a${++seq}`;
       const mark = events.length;
+      const actionStarted = Date.now();
       if (action.prompt !== undefined) {
         send({ id, type: "prompt", message: action.prompt });
         const resp = await waitFor((m) => m.type === "response" && m.id === id, 30000, `prompt response ${id}`);
@@ -274,6 +274,7 @@ export async function runPi(ctx, {
           mark,
         );
       }
+      action.ms = Date.now() - actionStarted;
     }
 
     child.stdin.end();
@@ -719,8 +720,8 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
   };
 
   // 本地清理先于最终 summary 输出：删除前逐 segment 重算 hash 与记录值比对（payload
-  // 写出后不可变）；passed 删除整个 run 目录；失败删除全部 segment（raw provider
-  // payload）与会话 JSONL，保留白名单脱敏诊断。cleanup.local 因此反映事实。
+  // 写出后不可变）；passed 删除整个 run 目录；失败删除 provider/观察/session、HOME 和凭证桥接等私有运行目录，
+  // 只保留 ownership marker 与下方写出的白名单 summary。cleanup.local 因此反映事实。
   let localCleanupOk = true;
   try {
     for (const seg of manifest.workloads.flatMap((wl) => (wl.summary?.runs ?? []))) {
@@ -741,21 +742,18 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
       rmSync(runDir, { recursive: true, force: true });
       if (existsSync(runDir)) throw new Error("run directory still exists after deletion");
     } else {
-      for (const f of readdirSync(join(runDir, "segments"))) rmSync(join(runDir, "segments", f), { force: true });
-      for (const f of readdirSync(join(runDir, "observations"))) rmSync(join(runDir, "observations", f), { force: true });
-      if (existsSync(join(runDir, "sessions"))) rmSync(join(runDir, "sessions"), { recursive: true, force: true });
-      const left = [
-        ...readdirSync(join(runDir, "segments")).map((file) => `segments/${file}`),
-        ...readdirSync(join(runDir, "observations")).map((file) => `observations/${file}`),
-      ];
-      if (left.length) throw new Error(`capture artifacts not fully deleted: ${left.join(",")}`);
-      if (existsSync(join(runDir, "sessions"))) throw new Error("session JSONL not deleted");
+      const privateDirs = ["segments", "observations", "sessions", "home", "pi", "work"];
+      for (const dir of privateDirs) rmSync(join(runDir, dir), { recursive: true, force: true });
+      const residualDirs = privateDirs.filter((dir) => existsSync(join(runDir, dir)));
+      if (residualDirs.length > 0) {
+        throw new Error(`private run artifacts not fully deleted: ${residualDirs.join(",")}`);
+      }
     }
   } catch (error) {
     localCleanupOk = false;
     process.stderr.write(`✗ 本地清理失败: ${error?.message || error}\n`);
   }
-  summary.cleanup.local = localCleanupOk ? (passed ? "run-dir removed" : "captures+sessions removed") : "failed";
+  summary.cleanup.local = localCleanupOk ? (passed ? "run-dir removed" : "private artifacts removed") : "failed";
   const finalPassed = passed && localCleanupOk;
   summary.passed = finalPassed;
   if (!passed) {

@@ -2,8 +2,8 @@
   "enabled": true,
   "syncTurns": true,
   "archive": {
-    "chunkTokenBudget": 20000,
-    "rawTailTokenBudget": 30000
+    "chunkTokenBudget": 50000,
+    "rawTailTokenBudget": 20000
   },
   "takeover": {
     "enabled": true,

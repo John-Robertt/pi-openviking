@@ -335,7 +335,8 @@ interface ActiveContext {
 
 `ActiveContext` 在下一次上下文高水位到达前保持固定，新产生的 assistant/tool 事件追加在该
 稳定前缀之后。下一次接管原子替换 checkpoint 和 raw-tail 起点。cache epoch 是
-`ActiveContext` 稳定期间的运行时视图。
+`ActiveContext` 稳定期间的运行时视图。旧候选因后续增长进入容量不匹配而当前分支已有更新 checkpoint 时，
+同一次 `context` hook 可以改用更新候选重新判定并原子推进；更新候选仍不适配时保持完整 Pi 上下文。
 
 因此，Archive 频率和接管频率相互独立：后台可以频繁归档，但 provider 上下文替换应有意
 保持低频。
@@ -382,8 +383,8 @@ VLM request 和明确失败是追加式 `RecordedEvent`。summary、索引、通
   "syncTurns": true,
 
   "archive": {
-    "chunkTokenBudget": 20000,
-    "rawTailTokenBudget": 30000,
+    "chunkTokenBudget": 50000,
+    "rawTailTokenBudget": 20000,
   },
 
   "takeover": {
@@ -417,8 +418,8 @@ VLM request 和明确失败是追加式 `RecordedEvent`。summary、索引、通
 - `takeover.checkpointTokenBudget` 控制接管时装载的 VLM checkpoint 上限；
 - `takeover.enabled` 控制任务模型上下文替换，事件记录和 Archive 独立持续运行。
 
-Archive 与 takeover 预算是端到端预算校准（见 [`docs/roadmap.md`](./roadmap.md)）的候选值。预算根据 Archive step 边界、raw-tail 完整性和
-接管后上下文大小验证。开发和真实验收使用 [`docs/development.md`](./development.md#开发模型身份与凭证桥接)
+Archive 与 takeover 发布默认预算由端到端预算校准（见 [`docs/roadmap.md`](./roadmap.md)）验证，根据 Archive step
+边界、raw-tail 完整性、真实 provider token 和接管后上下文大小确定。开发和真实验收使用 [`docs/development.md`](./development.md#开发模型身份与凭证桥接)
 定义的开发模型组合作为可重复的发布验收基线。对应 live gate manifest/summary 维护基线模型身份、实测阈值、
 结果及适用范围；扩展发布配置维护通过验收的通用预算默认值。VLM 运行时使用服务配置指定的身份，模型身份变更
 遵循 `docs/models.md` 的验证流程并建立对应证据。

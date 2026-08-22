@@ -2,8 +2,8 @@ export const EXTENSION_CONFIG_DEFAULTS = Object.freeze({
   enabled: true,
   syncTurns: true,
   archive: Object.freeze({
-    chunkTokenBudget: 20_000,
-    rawTailTokenBudget: 30_000,
+    chunkTokenBudget: 50_000,
+    rawTailTokenBudget: 20_000,
   }),
   takeover: Object.freeze({
     enabled: true,

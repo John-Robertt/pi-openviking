@@ -169,6 +169,7 @@ export default async function (pi: ExtensionAPI) {
       enabled: config.takeover.enabled,
       eligibility: status.eligibility,
       currentCheckpointId: status.checkpointId,
+      nextCheckpointId: sync.status.checkpoint.lastCheckpointId,
       appliedCheckpointId: appliedTakeoverCheckpointId,
       piUsageTokens: contextUsageTokens(ctx),
       payloadTokens: status.payloadTokens,

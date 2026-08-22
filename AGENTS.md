@@ -90,7 +90,7 @@ gate 共同证明；配置字段只表达其权威文档定义的策略。
 - Pi 独立控制 compaction；扩展通过生命周期钩子观察结果并提供上下文。
 - Archive 只在 manifest 自证成立且回读证明全部引用事件有效后存在；崩溃残留不是 Archive，同一范围只有一个逻辑对象。
 - Archive、Checkpoint 和 `ActiveContext` 依次消费前一阶段已经通过 deterministic checks 与 live gate 的状态。
-- `ActiveContext` 只固定当前分支上已消费 checkpoint 的边界；来源边界离开祖先链即失效，容量不匹配或事实不可读时保持 inactive 并继续使用完整 Pi 上下文。
+- `ActiveContext` 只固定当前分支上已消费 checkpoint 的边界；来源边界离开祖先链即失效，旧候选容量不匹配时只可推进到当前分支上可装入的更新 checkpoint，更新候选仍不适配或事实不可读时保持 inactive 并继续使用完整 Pi 上下文。
 - session-scoped 模式下，所有接收或返回 `viking://` URI 的工具执行绑定用户与会话边界校验。
 - 凭证只在已授权进程的内存和环境中传递，仓库、日志、状态文件、测试输入和 artifact 保持无凭证。
 - 删除和远端破坏性测试只作用于通过精确根路径、ownership marker 与随机 nonce 验证的所属资源。

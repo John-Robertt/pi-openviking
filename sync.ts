@@ -154,7 +154,8 @@ export class SyncManager {
 
   async takeoverMessages(sessionManager: any, taskModel: TaskModelContext | null = null, allowAdvance = true): Promise<any[] | null> {
     return this.serialize(async () => {
-      if (!this.piSessionId || !this.activeContext || this.activeContext.status.eligibility !== "eligible") return null;
+      if (!this.piSessionId || !this.activeContext) return null;
+      const nextCheckpointId = this.checkpoints?.status.lastCheckpointId ?? null;
       try {
         const { entries, branch } = await this.sessionSource(sessionManager);
         const events = projectPiEntries(this.piSessionId, entries);
@@ -162,7 +163,7 @@ export class SyncManager {
         const branchEvents = events.filter((event) => onBranch.has(event.source.entryId));
         return await this.activeContext.takeoverMessages(branchEvents, {
           archives: this.committedArchives,
-          lastCheckpointId: this.checkpoints?.status.lastCheckpointId ?? null,
+          lastCheckpointId: nextCheckpointId,
           capacity: taskModel?.capacity ?? null,
           factsAvailable: taskModel?.factsAvailable === true,
           allowAdvance,

@@ -103,6 +103,7 @@ export function evaluateTakeoverTrigger(input: {
   enabled: boolean;
   eligibility: ActiveContextEligibility;
   currentCheckpointId: string | null;
+  nextCheckpointId?: string | null;
   appliedCheckpointId: string | null;
   piUsageTokens: number | null;
   payloadTokens: number | null;

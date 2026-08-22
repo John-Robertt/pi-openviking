@@ -232,6 +232,34 @@ export function vikingActiveContext(run) {
   };
 }
 
+export function providerPayloads(run) {
+  const text = readFileSync(run.segmentPath, "utf8").trim();
+  return text ? text.split("\n").filter(Boolean).map(JSON.parse)
+    .filter((record) => record.kind === "providerPayload").map((record) => record.payload) : [];
+}
+
+export function providerInput(payload) {
+  if (Array.isArray(payload?.input)) return payload.input;
+  if (Array.isArray(payload?.messages)) return payload.messages;
+  return [];
+}
+
+function withoutRecallBlocks(value) {
+  if (typeof value === "string") {
+    return value.replace(/<openviking-context>[\s\S]*?<\/openviking-context>\n?/g, "");
+  }
+  if (Array.isArray(value)) return value.map(withoutRecallBlocks);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, withoutRecallBlocks(item)]));
+  }
+  return value;
+}
+
+export function providerVisibleInput(payload, checkpointId) {
+  const visible = providerInput(payload).filter((item) => !JSON.stringify(item).includes(checkpointId));
+  return JSON.stringify(withoutRecallBlocks(visible));
+}
+
 /**
  * 独立重算候选：从 Pi JSONL、Archive manifest 与已消费 checkpoint 事实推导应有的
  * ActiveContext，并与真实 Pi 进程持久化的文件逐字段比对。

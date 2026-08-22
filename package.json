@@ -21,7 +21,8 @@
     "verify:archive:live": "node test/live/archive-live.mjs",
     "verify:checkpoint:live": "node test/live/checkpoint-live.mjs",
     "verify:context:live": "node test/live/context-live.mjs",
-    "verify:takeover:live": "node test/live/takeover-live.mjs"
+    "verify:takeover:live": "node test/live/takeover-live.mjs",
+    "verify:budget:live": "node test/live/budget-live.mjs"
   },
   "pi": {
     "extensions": [

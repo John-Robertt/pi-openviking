@@ -239,9 +239,13 @@ export function evaluateEligibility({ capacity, takeover, payloadTokens }) {
   };
 }
 
-/** 当前 provider epoch 固定时始终渲染同一 ActiveContext；只有该 epoch 再次越过高水位才允许推进。 */
+/**
+ * 当前 provider epoch 固定时始终渲染同一 ActiveContext；活动 payload 再次越过高水位时允许推进。
+ * 旧候选已容量失配但存在更新 checkpoint 时，也允许尝试原子推进：新候选仍不适配则保持完整 Pi 上下文。
+ */
 export function evaluateTakeoverTrigger({
-  enabled, eligibility, currentCheckpointId, appliedCheckpointId, piUsageTokens, payloadTokens, highWaterTokens,
+  enabled, eligibility, currentCheckpointId, nextCheckpointId = null, appliedCheckpointId,
+  piUsageTokens, payloadTokens, highWaterTokens,
 }) {
   const epochActive = Boolean(
     currentCheckpointId && appliedCheckpointId && currentCheckpointId === appliedCheckpointId,
@@ -249,10 +253,15 @@ export function evaluateTakeoverTrigger({
   const usageTokens = epochActive ? payloadTokens : piUsageTokens;
   const aboveHighWater = Number.isFinite(usageTokens) && Number.isFinite(highWaterTokens) &&
     usageTokens >= highWaterTokens;
-  const eligible = enabled !== false && eligibility === "eligible";
+  const enabledForTakeover = enabled !== false;
+  const eligible = enabledForTakeover && eligibility === "eligible";
+  const recoverableMismatch = Boolean(
+    enabledForTakeover && eligibility === "capacity_mismatch" && currentCheckpointId &&
+    nextCheckpointId && nextCheckpointId !== currentCheckpointId,
+  );
   return {
-    render: eligible && (epochActive || aboveHighWater),
-    allowAdvance: eligible && aboveHighWater,
+    render: (eligible && (epochActive || aboveHighWater)) || recoverableMismatch,
+    allowAdvance: (eligible && aboveHighWater) || recoverableMismatch,
     epochActive,
     usageTokens: Number.isFinite(usageTokens) ? usageTokens : null,
     highWaterTokens: Number.isFinite(highWaterTokens) ? highWaterTokens : null,

@@ -59,6 +59,10 @@ provider、真实 Pi lifecycle、受管 OpenViking 与真实 VLM checkpoint 上�
 高水位后，下一请求、持久 ActiveContext、远端 checkpoint 事实与 compaction 共同推进到同一最新身份，compaction 期间
 ActiveContext 文件逐字节不变。常驻 `verify:observability:live` 通过 106/106。
 
+**发布基线端到端预算校准的出口已关闭。** 发布默认预算为 Archive chunk 50000、raw tail 20000、checkpoint 16000。
+`verify:budget:live` 对三类独立 100k+ workload 各重复三次并通过 739/739；accepted baseline、模型身份、实测阈值、
+结果及适用范围由 `test/live/budget.workloads.json` 及固定 hash 承载。
+
 ## 实施顺序
 
 可靠同步建立事件与同步事实；原子 Archive 建立原子对象；checkpoint 与上下文接管依次建立 checkpoint、
@@ -287,8 +291,7 @@ ActiveContext 文件逐字节不变。常驻 `verify:observability:live` 通过 
 
 ## 下一实施入口
 
-当前入口是发布基线端到端预算校准：建立 `verify:budget:live` manifest，用开发模型身份中的 task/VLM 组合作为
-可重复基线，对多个彼此独立的真实 100k+ workload 各重复至少三次，逐项核对源事件、Archive、checkpoint、
-raw tail 与实际 provider payload，并记录真实 token、吞吐、延迟和 eligibility 两侧余量。重复运行结论一致后，
-gate 证据维护模型身份、实测结果和适用范围，发布配置同步通过验收的通用预算默认值；运行时根据 Pi 当前任务
-模型报告的容量判定 eligibility。结果偏离时回到对应链路重新调查。
+当前入口是检索与诊断体验：建立 `verify:retrieval:live` manifest，消费同一 release run 的 budget summary，
+在本次随机 namespace 从已确认 events、Archive 与 checkpoint 重建检索派生物，验证 raw event/checkpoint 语义搜索、
+按 session/branch/Archive/event ID 的过滤、browse/expand，以及 event → Archive → checkpoint → `ActiveContext`
+来源链。gate 必须核对 budget summary/manifest hash、重启后索引就绪、隐藏 raw event 隔离和所属资源清理。

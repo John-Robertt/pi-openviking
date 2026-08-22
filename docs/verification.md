@@ -65,8 +65,8 @@ schema version、run、seq 范围、stage/kind/outcome 计数、accepted/dropped
 ## 真实验收门禁
 
 每条系统保证交付一个由 `package.json` 暴露的 live verifier，以所验证的保证命名：`verify:sync:live`、
-`verify:archive:live`、`verify:checkpoint:live`、`verify:context:live`、`verify:takeover:live`；尚未建立的保证按同一
-职责命名预留：`verify:budget:live`、`verify:retrieval:live`。横切能力使用常驻的
+`verify:archive:live`、`verify:checkpoint:live`、`verify:context:live`、`verify:takeover:live`、`verify:budget:live`；
+尚未建立的检索保证按同一职责命名预留为 `verify:retrieval:live`。横切能力使用常驻的
 `verify:observability:live`，其当前 manifest 覆盖 active stage 全集：会改变产品行为且可由真实边界稳定触发的 stage
 由 workload `expectedRecords` 验证，其余内部 failure stage 由 manifest 的 `deterministicStages` 指向实际记录测试；两者必须与
 registry 双向一致且一个 stage 只有一条权威验证路径。各阶段 gate 引用同一 registry，只增加本阶段 workload 的预期，
@@ -112,8 +112,9 @@ manifest 中的精确依赖、服务和模型身份是可重放的最近验证�
   取消的 task。不创建 task 的 gate 不枚举也不断言 task 状态；
 - 受管环境可执行中断/重启；远端破坏性测试需要显式 opt-in。清理前先生成脱敏测量与证据 hash，随后
   成功或失败都删除远端对象；清理失败使 gate 失败；
-- 完成测量后，成功时删除整个本地 run 目录；失败时删除全部 raw payload，只保留字段白名单式脱敏诊断。
-  任一本地删除失败同样使 gate 失败。仓库长期保留 verifier、workload manifest 和断言，不提交单次运行日志；
+- 完成测量后，成功时删除整个本地 run 目录；失败时删除 provider/观察/session、HOME、凭证桥接与工作目录，
+  只保留 ownership marker 和字段白名单式 summary。任一本地删除失败同样使 gate 失败。仓库长期保留 verifier、
+  workload manifest 和断言，不提交单次运行日志；
   需要跨阶段消费的 summary 作为同一 release run 的 CI artifact；
 - 任一必要断言、观察点或清理失败即保持对应出口未通过，并由 expected/actual/delta 重新定位主导约束。
   各出口先实现自己的入口；出现第二个真实消费者后才提取共享 verifier 代码。

@@ -31,8 +31,8 @@ const USER_CONFIG_TEMPLATE = `// pi-openviking 用户配置
   // "syncTurns": true,
 
   // "archive": {
-  //   "chunkTokenBudget": 20000,
-  //   "rawTailTokenBudget": 30000
+  //   "chunkTokenBudget": 50000,
+  //   "rawTailTokenBudget": 20000
   // },
 
   // "takeover": {

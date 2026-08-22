@@ -70,6 +70,7 @@ npm run dev -- status
 npm run verify:sync:live
 npm run verify:checkpoint:live
 npm run verify:takeover:live
+npm run verify:budget:live
 npm run verify:observability:live
 ```
 
@@ -214,6 +215,11 @@ ownership marker 契约删除全部临时对象和 checkpoint 事实。
 checkpoint，覆盖稳定 provider 前缀与 cache key、重启、根级 sibling 分支、断线、容量不匹配及 ActiveContext/native
 compaction。它同时采集一段完整 compaction 观察 run；原始 provider payload 和观察 JSONL 仅存在于 run 私有目录，
 通过后连同 session 一并删除。
+
+`npm run verify:budget:live` 使用发布默认 Archive/checkpoint 预算和显式高水位驱动，对长工具循环、单轮超长原子输入、
+sibling branch/重启/compaction 三类 100k+ 来源各独立重复三次。它采集真实 task/VLM token、墙钟、provider payload 与完整
+观察 run；性能结论只适用于 manifest 固定的模型组合，运行时 eligibility 仍读取 Pi 当前模型容量。成功后远端所属对象、
+provider payload、观察记录和本地 session 全部删除，summary 作为同一 release run 的后续 gate 输入。
 
 `npm run verify:observability:live` 是常驻横切 gate。它要求隔离服务已由 `dev up` 启动，并会使用开发模型、随机
 session namespace、受控 409 对象及 URI 拒绝 workload；执行前必须取得真实模型调用和所属测试 namespace 写入/删除

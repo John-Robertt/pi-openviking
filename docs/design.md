@@ -123,8 +123,8 @@ adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
 ### `shared/active-context.mjs`
 
 - 从当前分支上最后一个已消费 checkpoint 选择 `ActiveContext`，并以最小两字段对象原子替换写入本地文件；
-- 同步更新候选事实但保持当前两字段边界；只有来源边界离开当前分支时失效，或高水位接管确认新候选可渲染、
-  eligible 且持久化成功时原子推进到最新 checkpoint；
+- 同步更新候选事实但保持当前两字段边界；来源边界离开当前分支时失效，高水位接管时只在新候选可渲染、eligible
+  且持久化成功后原子推进；旧候选容量不匹配而更新 checkpoint 可用时，直接用更新候选重新判定以避免冻结在失配边界；
 - 从 raw tail 起点的 `turnId` 重算原始用户指令 anchor，因而 anchor 不是持久化字段；
 - materialize `system + checkpoint + anchor + raw tail` 四段候选 payload，段内直接引用不可变来源；checkpoint 正文
   受 `checkpointTokenBudget` 约束，其实际权重仍统一计入 payload；
@@ -247,7 +247,7 @@ recorded-event-adapter ───────────────────
 active-context ──► ~/.pi/openviking/active-context/<target-and-session>.json
         │ checkpoint + raw-tail 边界、候选 payload、takeover eligibility 与 provider messages 渲染
         ▼
-context hook ──► 首次完整上下文越过高水位时建立 epoch；随后复用 ActiveContext，下一高水位才推进
+context hook ──► 首次完整上下文越过高水位时建立 epoch；随后复用 ActiveContext，下一高水位或失配候选的更新 checkpoint 才推进
         │
         └──────► session_before_compact：提供自包含 checkpoint；不可用时由 Pi 原生 compaction 继续
         ▲
@@ -285,6 +285,7 @@ recall-core ───► OpenViking search API
 - `test/archive.test.mjs`：Archive 身份、manifest 自证、边界选择、提交/恢复/冲突与 expand；
 - `test/checkpoint.test.mjs`、`test/checkpoint-processor.test.mjs`：checkpoint 身份/事实链、结构化投影、并发首写、三次重试、恢复清理、媒体失败与 Session/Task 边界；
 - `test/active-context.test.mjs`：活动上下文身份与持久化、候选选择、分支复用与失效、anchor 重算、dry-run payload 与容量判定两侧；
+- `test/budget-live-verifier.test.mjs`：发布默认预算、三类 100k+ workload 的三次重复、manifest/hash 与 live 入口；
 - `test/client-content.test.mjs`：HTTP transport；
 - `test/openviking-api.test.mjs`：版本前缀与相对路径组合；
 - `test/sync-manager.test.mjs`：重启、ACK 丢失、分支和 fail-open；
@@ -296,7 +297,7 @@ recall-core ───► OpenViking search API
 - `test/viking-status.test.mjs`：运行诊断。
 
 真实边界由各 live gate 覆盖，各 gate 的断言范围见
-[`docs/verification.md`](./verification.md)。sync、archive、checkpoint、context 与 observability 五个 gate 共用
+[`docs/verification.md`](./verification.md)。sync、archive、checkpoint、context、takeover、budget 与 observability gate 共用
 `test/live/live-support.mjs` 的身份核对、ownership、清理与 summary 骨架；Pi 驱动由需要 lifecycle 的 gate 使用，
 observability gate 的 Pi 观察采集经骨架的 capture 选项接入，checkpoint gate 直接为 Archive/VLM 边界建立同一 schema 的完整 run；
 tool-uri-rejection 的 guard 触发由 `test/live/scripted-provider.mjs` 的确定性脚本 provider 承担。

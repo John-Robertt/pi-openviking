@@ -20,6 +20,9 @@ import {
   collectTaskResources,
   establishArchives,
   produceCheckpoint,
+  providerInput,
+  providerPayloads,
+  providerVisibleInput,
   recordWrittenObjects,
   vikingActiveContext,
   writeExtensionConfig,
@@ -44,19 +47,6 @@ function seededText(seed, length) {
     digest = createHash("sha256").update(digest).digest("base64url");
   }
   return text.slice(0, length);
-}
-function captureRecords(run) {
-  return readFileSync(run.segmentPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
-}
-
-function providerPayloads(run) {
-  return captureRecords(run).filter((record) => record.kind === "providerPayload").map((record) => record.payload);
-}
-
-function providerInput(payload) {
-  if (Array.isArray(payload?.input)) return payload.input;
-  if (Array.isArray(payload?.messages)) return payload.messages;
-  return null;
 }
 
 function stablePrefixLength(left, right) {
@@ -114,9 +104,7 @@ function assertPayloadUsesCheckpoint(log, ctx, payload, checkpointId, archivedMa
   const serialized = JSON.stringify(payload);
   log.check(ctx.workloadId, `${label}.checkpoint`, checkpointId,
     serialized.match(CHECKPOINT_ID)?.[0] ?? null, serialized.includes(checkpointId));
-  const input = providerInput(payload) ?? [];
-  const nonCheckpoint = input.filter((item) => !JSON.stringify(item).includes(checkpointId));
-  const visible = JSON.stringify(nonCheckpoint);
+  const visible = providerVisibleInput(payload, checkpointId);
   log.check(ctx.workloadId, `${label}.anchor-preserved`, true,
     visible.includes(anchorMarker), visible.includes(anchorMarker));
   log.check(ctx.workloadId, `${label}.archived-non-anchor-removed`, false,
