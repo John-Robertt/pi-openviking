@@ -246,26 +246,28 @@ ActiveContext 文件逐字节不变。常驻 `verify:observability:live` 通过 
 - Pi 是 compaction 的唯一触发方；`ActiveContext` 不可用时执行原生 split-turn compaction，扩展
   仅返回生命周期钩子结果并保持运行中的 agent 可用。
 
-### 固定模型端到端预算校准
+### 发布基线端到端预算校准
 
-- 在可靠同步、原子 Archive、checkpoint 与上下文接管逐段通过后，使用开发模型身份中的任务模型和
-  VLM 运行“验证策略”定义的多个独立 100k+ 工作负载，每个 workload 至少独立重复三次；token 数取自
-  Pi/provider 实际计量；
+- 在可靠同步、原子 Archive、checkpoint 与上下文接管逐段通过后，使用开发模型身份中的 task/VLM 组合
+  作为可重复的发布验收基线，运行“验证策略”定义的多个独立 100k+ 工作负载，每个 workload 至少独立重复
+  三次；token 数取自 Pi/provider 实际计量；
 - 对照原始事件检查 Archive 边界、raw tail、checkpoint 和接管上下文；
-- 使用 Pi 报告的固定任务模型容量验证高水位公式两侧的 fit 与 capacity mismatch 行为；
+- 使用 Pi 为基线任务模型报告的容量验证通用高水位公式两侧的 fit 与 capacity mismatch 行为；
 - 根据 step 原子性、raw-tail 完整性和上下文容量调整候选预算并重跑；
-- 确认固定 VLM 能在下一个 Archive 产生前完成前一个 checkpoint；
-- 固定模型身份、预算和 eligibility 规则通过端到端验证后写入发布配置。
+- 确认基线 VLM 能在下一个 Archive 产生前完成前一个 checkpoint；
+- `verify:budget:live` manifest/summary 维护基线模型身份、实测阈值、结果及适用范围；发布配置维护通过验收的
+  通用预算默认值，运行时 eligibility 按 Pi 当前任务模型报告的容量计算。
 
 **验收**：
 
 - 各真实 100k+ 工作负载中的 Archive、raw tail、checkpoint 和 provider payload 与各自源事件逐项对应，
   没有遗漏、重复或破坏 step 原子性；
 - 每个 workload 至少三次重复运行均保持身份、不变量和阈值结论一致；
-- 候选 Archive、checkpoint 和 raw-tail 预算满足完整性及固定任务模型的安全余量；
-- 固定 VLM 能在下一个 Archive 产生前完成前一个 checkpoint；
-- 固定任务模型容量在 eligibility 边界两侧分别得到 active 和 capacity mismatch 结果；
-- 通过上述验收的固定模型身份、预算和 eligibility 规则写入发布配置。
+- 候选 Archive、checkpoint 和 raw-tail 预算满足完整性及基线任务模型的安全余量；
+- 基线 VLM 能在下一个 Archive 产生前完成前一个 checkpoint；
+- Pi 报告的基线任务模型容量在 eligibility 边界两侧分别得到 active 和 capacity mismatch 结果；
+- gate manifest/summary 中的模型身份、实测证据和适用范围一致，发布配置中的通用预算默认值与验收结果一致；
+  每个运行时任务模型按自身容量获得独立 eligibility 判定。
 
 ### 检索与诊断体验
 
@@ -285,7 +287,8 @@ ActiveContext 文件逐字节不变。常驻 `verify:observability:live` 通过 
 
 ## 下一实施入口
 
-当前入口是固定模型端到端预算校准：先建立 `verify:budget:live` manifest，用开发模型身份中的 task/VLM 组合对多个
-彼此独立的真实 100k+ workload 各重复至少三次，逐项核对源事件、Archive、checkpoint、raw tail 与实际 provider
-payload，并记录真实 token、吞吐、延迟和 eligibility 两侧余量。基线完成前不修改发布预算；结果偏离时回到对应链路
-重新调查，全部重复运行结论一致后再把通过验收的模型身份、预算和 eligibility 规则写入发布配置。
+当前入口是发布基线端到端预算校准：建立 `verify:budget:live` manifest，用开发模型身份中的 task/VLM 组合作为
+可重复基线，对多个彼此独立的真实 100k+ workload 各重复至少三次，逐项核对源事件、Archive、checkpoint、
+raw tail 与实际 provider payload，并记录真实 token、吞吐、延迟和 eligibility 两侧余量。重复运行结论一致后，
+gate 证据维护模型身份、实测结果和适用范围，发布配置同步通过验收的通用预算默认值；运行时根据 Pi 当前任务
+模型报告的容量判定 eligibility。结果偏离时回到对应链路重新调查。

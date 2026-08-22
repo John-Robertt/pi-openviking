@@ -418,16 +418,17 @@ VLM request 和明确失败是追加式 `RecordedEvent`。summary、索引、通
 - `takeover.enabled` 控制任务模型上下文替换，事件记录和 Archive 独立持续运行。
 
 Archive 与 takeover 预算是端到端预算校准（见 [`docs/roadmap.md`](./roadmap.md)）的候选值。预算根据 Archive step 边界、raw-tail 完整性和
-接管后上下文大小验证。开发和真实验收统一使用 [`docs/development.md`](./development.md#开发模型身份与凭证桥接)
-定义的开发模型身份；凭证桥接和持续调用授权边界也以该处为准。
-VLM 消费能力必须针对该固定模型形成真实证据，不能在运行时静默选择其他模型。
+接管后上下文大小验证。开发和真实验收使用 [`docs/development.md`](./development.md#开发模型身份与凭证桥接)
+定义的开发模型组合作为可重复的发布验收基线。对应 live gate manifest/summary 维护基线模型身份、实测阈值、
+结果及适用范围；扩展发布配置维护通过验收的通用预算默认值。VLM 运行时使用服务配置指定的身份，模型身份变更
+遵循 `docs/models.md` 的验证流程并建立对应证据。
 
-`contextTokenThreshold=0` 使用“任务模型上下文容量减去 system、工具、provider 安全余量、
-checkpoint 和 raw tail”计算高水位。高水位必须为正且能够容纳目标上下文；容量不匹配时
-保持 takeover inactive，并由 `/viking` 报告。先调整候选预算并重新通过端到端预算校准；如果固定模型仍
-无法提供安全余量，则保持 inactive。改变 provider 或 model 属于新的战略决定，必须重新获得用户决定并重跑
-相关阶段。可外置的大型 payload 使用完整存储和可追溯引用；非外置原子输入的支持上限由固定任务模型的
-剩余容量决定，超出时拒绝接管或缩小源输入。
+Pi 负责选择当前任务模型，takeover eligibility 读取该模型报告的 `contextWindow` 和 `maxTokens`。
+`contextTokenThreshold=0` 使用“当前任务模型上下文容量减去 system、工具、provider 安全余量、checkpoint 和
+raw tail”计算高水位。高水位为正且容纳目标上下文时进入 eligible；容量未知或余量不足时保持 inactive，并由
+`/viking` 报告。每个任务模型按自身容量获得独立判定，发布基线的性能与吞吐保证适用于 manifest 记录的模型组合。
+发布验收基线的 task/VLM 组合由用户决定，变更后重跑相关阶段；Pi 中的任务模型切换直接进入当前容量判定。
+大型 payload 通过完整存储和可追溯引用外置；当前任务模型的剩余容量定义非外置原子输入的接管上限。
 Pi compaction 仍由 Pi 的运行时条件触发。
 
 上述对象是扩展配置的完整 schema。配置加载器对未知字段返回包含字段路径的校验错误；开发

@@ -31,10 +31,11 @@
 但事件对应、step 原子性、hash、容量和时序预算使用确定不变量验收。每个阶段只有在其四类适用证据共同通过
 后才完成；实践结果改变理解时，先更新当前约束与验收场景，再继续实施。
 
-端到端预算校准使用多个彼此独立的真实 100k+ 工作负载完成固定模型组合的端到端验收，至少覆盖：多轮长工具循环与
-并行成功/失败、单轮超长原子输入及大型 payload、分支/重启/Pi compaction。任务模型和 VLM 均使用
-开发模型身份，每个 workload 至少独立重复三次。各工作负载均走 Archive、checkpoint 和
-takeover 链路；固定 golden 回放只提供结果对照。
+端到端预算校准使用多个彼此独立的真实 100k+ 工作负载，对开发模型身份中的 task/VLM 组合建立可重复的发布
+验收基线，覆盖多轮长工具循环与并行成功/失败、单轮超长原子输入及大型 payload、分支/重启/Pi compaction。
+每个 workload 至少独立重复三次，各工作负载均走 Archive、checkpoint 和 takeover 链路；固定 golden 回放提供
+结果对照。gate manifest/summary 是基线模型身份、实测阈值、结果及适用范围的事实源；运行时 eligibility 以 Pi
+当前任务模型报告的容量为事实源，每个任务模型获得独立判定。
 
 ## 观察证据
 
@@ -127,5 +128,5 @@ manifest 中的精确依赖、服务和模型身份是可重放的最近验证�
 | checkpoint    | archive gate 的各真实 Archive 与开发模型身份中的 VLM                                                        | checkpoint 来源/hash/完整事实链、失败重试、并发与重启恢复、媒体摘要、积压和终态清理正确；实际 VLM 吞吐满足 manifest 阈值     |
 | context       | 真实 Pi session、候选 checkpoint/raw tail 和开发模型身份中的 task-model 元数据；请求保持在自动高水位以下 | 候选 payload 可由源事件逐项重算，entry/step/anchor 完整；容量来自 Pi，显式高水位不改变 payload/headroom/eligibility       |
 | takeover      | 真实 Pi `context`/compaction hook、开发 task provider、可控 OpenViking 降级与容量不匹配                   | provider payload/稳定前缀/cache 证据与候选一致；epoch 内固定且下一高水位推进；重启/分支/fail-open 与 compaction 正确 |
-| budget        | 固定 task/VLM 组合和多个彼此独立的真实 100k+ workload；每个 workload 至少重复三次                           | 源事件到实际 provider 请求全链一致；实际 token、吞吐、延迟和容量安全余量满足 manifest 阈值，重复运行结论一致                |
+| budget        | 发布基线 task/VLM 组合和多个彼此独立的真实 100k+ workload；每个 workload 至少重复三次                       | 全链一致且实际 token、吞吐、延迟和容量余量满足 manifest；基线身份留在 gate 证据，运行时 eligibility 继续消费 Pi 当前模型容量 |
 | retrieval     | 同一 release run 的 budget gate summary，以及在本次 namespace 重建的对应 events/Archive/checkpoint          | summary/manifest hash 匹配；索引就绪及重启后 search/browse/expand 返回预期身份和来源链；过滤、隐藏 raw event 隔离及清理成立 |

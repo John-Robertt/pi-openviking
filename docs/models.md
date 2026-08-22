@@ -155,9 +155,11 @@ npm run dev -- vlm-probe
 
 模型变更影响阶段结论时，运行该阶段对应的 live gate；阶段与 gate 的对应关系由 [`docs/roadmap.md`](./roadmap.md) 维护。
 
-模型身份改变会使既有 accepted baseline 失去适用性。先比较新实测与原阈值，再更新 live manifest/hash 和
-`docs/roadmap.md`；不能为了让新模型通过而先放宽门限。失败时恢复 `dev/model-profile.json`，执行 `down`/`up`，并再次
-核对 `status`。
+`dev/model-profile.json` 中的开发模型组合是 accepted baseline 的身份源，对应 live manifest/hash 维护该组合的
+实测阈值、结果和适用范围。用户在 Pi 中选择任务模型，takeover eligibility 使用当前模型报告的容量；通过 live gate
+的模型组合获得其证据记录的性能与吞吐保证。发布验收基线变更时，以原成功标准测量新组合，再更新 live
+manifest/hash 和 `docs/roadmap.md`。阈值调整以实测结果和原成功标准为依据；回退使用原 `dev/model-profile.json`，
+随后执行 `down`/`up` 并核对 `status`。
 
 ## Pi 模型配置参考
 

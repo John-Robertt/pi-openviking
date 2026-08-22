@@ -22,9 +22,10 @@ thinking、tool call/result、真实错误和 aborted 状态、未知 part、cus
 已确认事件按 `archive` 预算归入 Archive：一段事件与一份 manifest 原子绑定，可按 `archiveId`
 确定性展开回原始事件。每个已提交 Archive 由受管 OpenViking 的 VLM 异步生成结构化 checkpoint；request、
 明确 failure 与 checkpoint 都是可重放的追加事件；failure 只保存稳定分类、错误码和通用消息，有效 checkpoint 必须有连续且匹配的 request/failure parent 链。VLM 或网络失败不改变 raw event、ACK 或 Archive。
-首个已消费的 checkpoint 会固定一个 `ActiveContext`：它记录接管时使用的 checkpoint 与最近原始上下文的起点，
-并按 Pi 报告的模型容量判断这段上下文是否装得下。该边界一经形成即保持不变，只有它离开当前分支的祖先链才重新
-选择。当前阶段仍不替换 Pi 上下文：任务模型始终看到完整 Pi 上下文，Pi 是 compaction 唯一触发方。
+已消费的 checkpoint 与当前分支上的 raw-tail 起点形成 `ActiveContext` 候选，并按 Pi 当前任务模型报告的容量计算
+eligibility。当前上下文到达高水位且候选 eligible 时，`context` hook 用 checkpoint、原始用户指令 anchor 与 raw tail
+替换 provider messages；同一 provider epoch 保持该边界，下一次高水位可推进到最新有效 checkpoint。候选不可用、
+容量不足或来源事实不可读时继续使用完整 Pi 上下文。Pi 是 compaction 的唯一触发方。
 
 ## 2. 前置条件
 
