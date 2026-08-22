@@ -316,7 +316,7 @@ export class OVClient {
   /** Basic vector search. */
   async find(
     query: string,
-    opts?: { targetUri?: string; topK?: number; scoreThreshold?: number },
+    opts?: { targetUri?: string; topK?: number; scoreThreshold?: number; timeoutMs?: number },
   ): Promise<OVSearchResult[]> {
     const body: Record<string, unknown> = { query };
     if (opts?.targetUri) body.target_uri = opts.targetUri;
@@ -325,7 +325,7 @@ export class OVClient {
 
     const res = await this.fetchJSON<any>(openVikingApiPath("/search/find"), {
       method: "POST", body: JSON.stringify(body),
-    }, 10000);
+    }, opts?.timeoutMs ?? 10000);
     if (!res.ok || !res.result) return [];
 
     // OV returns { memories: [...], resources: [...], skills: [...], total }

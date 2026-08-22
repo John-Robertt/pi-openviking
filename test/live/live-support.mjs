@@ -250,6 +250,19 @@ export async function runPi(ctx, {
         const resp = await waitFor((m) => m.type === "response" && m.id === id, 30000, `prompt response ${id}`);
         if (resp.success !== true) throw new PiRunError(`prompt rejected: ${JSON.stringify(resp).slice(0, 200)}`);
         await waitFor((m) => m.type === "agent_settled", ctx.manifest.thresholds.agentSettledMs, "agent_settled", mark);
+      } else if (action.rpc && typeof action.rpc === "object") {
+        send({ id, ...action.rpc });
+        const timeoutMs = Number.isFinite(action.timeoutMs) ? action.timeoutMs : 30000;
+        const command = String(action.rpc.type ?? "rpc");
+        const resp = await waitFor((m) => m.type === "response" && m.id === id, timeoutMs, `${command} response ${id}`);
+        if (resp.success !== true) throw new PiRunError(`${command} rejected: ${JSON.stringify(resp).slice(0, 200)}`);
+        action.response = resp;
+      } else if (action.delayMs !== undefined) {
+        const delayMs = Number(action.delayMs);
+        if (!Number.isFinite(delayMs) || delayMs < 0 || Date.now() + delayMs >= deadline) {
+          throw new PiRunError(`invalid delay ${action.delayMs}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       } else if (action.command !== undefined) {
         send({ id, type: "prompt", message: action.command });
         const resp = await waitFor((m) => m.type === "response" && m.id === id, 30000, `command response ${id}`);
@@ -287,7 +300,7 @@ export async function runPi(ctx, {
 }
 
 /** 单次运行的通用断言：退出码、retry、extension_error、RPC 可解析与 segment 结构。 */
-export function assertRunHealthy(log, ctx, run, { requireCapture = true } = {}) {
+export function assertRunHealthy(log, ctx, run, { requireCapture = true, expectedCaptureCount = null } = {}) {
   const w = ctx.workloadId;
   log.check(w, `run${run.turn}.exit`, 0, run.exitCode, run.exitCode === 0);
   const assistantStarts = run.events.filter((e) => e.type === "message_start" && e.message?.role === "assistant").length;
@@ -315,8 +328,11 @@ export function assertRunHealthy(log, ctx, run, { requireCapture = true } = {}) 
     const payloads = records.filter((r) => r.kind === "providerPayload");
     const indexOk = payloads.every((p, i) => p.turn === run.turn && p.index === i + 1);
     log.check(w, `run${run.turn}.segment-sequence`, "turn/index 递增", indexOk, indexOk);
-    log.check(w, `run${run.turn}.capture-count`, assistantStarts, payloads.length, payloads.length === assistantStarts,
-      "providerCaptureRule: 捕获数必须等于 assistant message_start 数");
+    const expectedCaptures = expectedCaptureCount ?? assistantStarts;
+    log.check(w, `run${run.turn}.capture-count`, expectedCaptures, payloads.length, payloads.length === expectedCaptures,
+      expectedCaptureCount === null
+        ? "providerCaptureRule: 捕获数必须等于 assistant message_start 数"
+        : "providerCaptureRule: compaction 等无 assistant message_start 的真实请求使用显式期望数");
     run.captures = payloads.length;
   }
 
@@ -463,20 +479,19 @@ export async function cleanupRemote(log, ctx, objectUris, taskResources = null) 
           tasks.residuals.slice(0, 3).join(" | "));
         if (tasks.residuals.length > 0) cleanup.residuals.push(`${tasks.residuals.length} owned tasks unresolved`);
       }
-      // OpenViking 拒绝删除自身用户根（403）；删除动作使用服务级基础用户身份。
-      for (const uri of [`${ctx.userRoot}/resources/.pi-openviking`, `${ctx.userRoot}/resources`, ctx.userRoot]) {
-        let ok = false;
-        let gone = false;
-        // 语义刷新期间 DELETE 返回可重试的 path_busy 冲突；重试直到删除成功或超时。
-        for (let attempt = 0; attempt < 20 && !gone; attempt++) {
-          ok = await ctx.cleanupClient.delete(uri, true);
-          const after = await ctx.cleanupClient.statUri(uri);
-          gone = ok && after.ok && !after.exists;
-          if (!gone) await new Promise((r) => setTimeout(r, 500));
-        }
-        if (gone) cleanup.deleted.push(uri);
-        else cleanup.residuals.push(`${uri} (delete=${ok})`);
-      }
+      // 只删除 marker 所证明的产品根。OpenViking 会重新物化 resources/用户根以及空的
+      // .pi-openviking 骨架；这些目录外观不承载产品对象，持久清理由下方逐对象 404 证明。
+      const productRoot = `${ctx.userRoot}/resources/.pi-openviking`;
+      let deleted = false;
+      const deleteDeadline = Date.now() + Math.max(10000, Number(ctx.manifest?.thresholds?.cleanupSettleMs) || 60000);
+      do {
+        const accepted = await ctx.cleanupClient.delete(productRoot, true);
+        const after = await ctx.cleanupClient.statUri(productRoot);
+        deleted = accepted && after.ok && !after.exists;
+        if (!deleted && Date.now() < deleteDeadline) await new Promise((resolve) => setTimeout(resolve, 500));
+      } while (!deleted && Date.now() < deleteDeadline);
+      if (deleted) cleanup.deleted.push(productRoot);
+      else cleanup.residuals.push(`${productRoot} was not deleted`);
     } else if (ctx.markerUri) {
       cleanup.residuals.push("marker recheck failed; remote namespace left untouched");
     }
@@ -575,7 +590,7 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
   const nonce = randomBytes(16).toString("hex");
   const ctx = { runId, runDir, nonce, manifest, manifestSha256, endpoint: manifest.identities.openviking.endpoint };
 
-  for (const d of ["home", "pi", "work", "sessions", "segments"]) mkdirSync(join(runDir, d), { recursive: true });
+  for (const d of ["home", "pi", "work", "sessions", "segments", "observations"]) mkdirSync(join(runDir, d), { recursive: true });
   const localMarker = join(runDir, "owner.marker");
   const markerText = `pi-openviking-live\n${runId}\n${manifestSha256}\n${nonce}\n`;
   try {
@@ -709,25 +724,38 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
   let localCleanupOk = true;
   try {
     for (const seg of manifest.workloads.flatMap((wl) => (wl.summary?.runs ?? []))) {
-      if (!seg?.segmentPath || !existsSync(seg.segmentPath)) continue;
-      const actual = sha256Hex(readFileSync(seg.segmentPath));
-      if (`sha256:${actual}` !== seg.segmentSha256) throw new Error(`segment payload mutated after capture: ${seg.segmentPath}`);
+      if (seg?.segmentPath && existsSync(seg.segmentPath)) {
+        const actual = sha256Hex(readFileSync(seg.segmentPath));
+        if (`sha256:${actual}` !== seg.segmentSha256) {
+          throw new Error(`segment payload mutated after capture: ${seg.segmentPath}`);
+        }
+      }
+      if (seg?.observationPath && existsSync(seg.observationPath)) {
+        const observed = `sha256:${sha256Hex(readFileSync(seg.observationPath))}`;
+        if (observed !== seg.observation?.evidenceSha256) {
+          throw new Error(`observation payload mutated after capture: ${seg.observationPath}`);
+        }
+      }
     }
     if (passed) {
       rmSync(runDir, { recursive: true, force: true });
       if (existsSync(runDir)) throw new Error("run directory still exists after deletion");
     } else {
       for (const f of readdirSync(join(runDir, "segments"))) rmSync(join(runDir, "segments", f), { force: true });
+      for (const f of readdirSync(join(runDir, "observations"))) rmSync(join(runDir, "observations", f), { force: true });
       if (existsSync(join(runDir, "sessions"))) rmSync(join(runDir, "sessions"), { recursive: true, force: true });
-      const left = readdirSync(join(runDir, "segments"));
-      if (left.length) throw new Error(`segments not fully deleted: ${left.join(",")}`);
+      const left = [
+        ...readdirSync(join(runDir, "segments")).map((file) => `segments/${file}`),
+        ...readdirSync(join(runDir, "observations")).map((file) => `observations/${file}`),
+      ];
+      if (left.length) throw new Error(`capture artifacts not fully deleted: ${left.join(",")}`);
       if (existsSync(join(runDir, "sessions"))) throw new Error("session JSONL not deleted");
     }
   } catch (error) {
     localCleanupOk = false;
     process.stderr.write(`✗ 本地清理失败: ${error?.message || error}\n`);
   }
-  summary.cleanup.local = localCleanupOk ? (passed ? "run-dir removed" : "segments+sessions removed") : "failed";
+  summary.cleanup.local = localCleanupOk ? (passed ? "run-dir removed" : "captures+sessions removed") : "failed";
   const finalPassed = passed && localCleanupOk;
   summary.passed = finalPassed;
   if (!passed) {

@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -85,18 +86,54 @@ function recordRun(ctx, run) {
   });
 }
 
-async function createObject(client, rootUri, uri, bytes, wait = false, timeoutMs = 30000) {
+async function createObject(client, rootUri, uri, bytes) {
   const request = {
     root_uri: rootUri,
     operations: [{ uri, content_base64: Buffer.from(bytes).toString("base64"), precondition: { kind: "create_if_absent" } }],
-    wait,
+    wait: false,
   };
-  const response = wait
-    ? await client.fetchJSON("/api/v1/content/batch-write", { method: "POST", body: JSON.stringify(request) }, timeoutMs)
-    : await client.batchWrite(request);
+  const response = await client.batchWrite(request);
   if (!response.ok || !response.result?.created?.includes(uri)) {
     throw new FixtureError(response.ok ? "OBJECT_NOT_CREATED" : `OBJECT_HTTP_${response.status || 0}`);
   }
+}
+
+export async function waitForRecallFixture(client, { query, targetUri, expectedUri, timeoutMs, pollMs }) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(pollMs) || pollMs <= 0) {
+    throw new TypeError("recall fixture requires positive timeoutMs and pollMs");
+  }
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  const diagnosticBudgetMs = Math.min(2000, Math.max(1, Math.floor(timeoutMs / 10)));
+  const searchDeadline = deadline - diagnosticBudgetMs;
+  let attempts = 0;
+  while (Date.now() < searchDeadline) {
+    const remaining = searchDeadline - Date.now();
+    attempts++;
+    const results = await client.find(query, { targetUri, topK: 10, timeoutMs: Math.max(1, remaining) });
+    const match = results.find((result) => result.uri === expectedUri && result.context_type === "resource");
+    if (match && Date.now() <= searchDeadline) {
+      return { ready: true, attempts, elapsedMs: Date.now() - startedAt, match: { uri: match.uri, score: match.score } };
+    }
+    const nextRemaining = searchDeadline - Date.now();
+    if (nextRemaining <= 0) break;
+    await delay(Math.min(pollMs, nextRemaining));
+  }
+
+  const diagnosticTimeoutMs = Math.max(1, deadline - Date.now());
+  const [queue, models] = await Promise.all([
+    client.fetchJSON("/api/v1/observer/queue", undefined, diagnosticTimeoutMs),
+    client.fetchJSON("/api/v1/observer/models", undefined, diagnosticTimeoutMs),
+  ]);
+  return {
+    ready: false,
+    attempts,
+    elapsedMs: Date.now() - startedAt,
+    diagnostics: {
+      queue: queue.ok ? queue.result?.status ?? "unavailable" : `HTTP ${queue.status || 0}`,
+      models: models.ok ? models.result?.status ?? "unavailable" : `HTTP ${models.status || 0}`,
+    },
+  };
 }
 
 function ackPath(ctx, endpoint) {
@@ -130,9 +167,12 @@ function preflightObservability(log, ctx) {
     "observe_run_start",
     "observe_run_end",
     ...ctx.manifest.workloads.flatMap((workload) => workload.expectedRecords.map((expected) => expected.stage)),
+    ...(ctx.manifest.deterministicStages ?? []),
   ]);
   const unknown = [...expectedStages].filter((stage) => !OBSERVATION_STAGE_REGISTRY[stage]);
   log.check(g, "expected-stages-known", 0, unknown.length, unknown.length === 0, unknown.join(","));
+  const missing = Object.keys(OBSERVATION_STAGE_REGISTRY).filter((stage) => !expectedStages.has(stage));
+  log.check(g, "all-stages-covered", 0, missing.length, missing.length === 0, missing.join(","));
 }
 
 // ---------------------------------------------------------------------------
@@ -142,9 +182,24 @@ function preflightObservability(log, ctx) {
 async function wSuccessRecallSync(log, ctx) {
   const ownerRoot = `${ctx.userRoot}/resources/.pi-openviking`;
   const recallUri = `${ownerRoot}/recall-fixture.md`;
-  await createObject(ctx.client, ownerRoot, recallUri, Buffer.from(ctx.workload.prompt, "utf8"), true,
-    ctx.manifest.thresholds.fixtureMs);
+  await createObject(ctx.client, ownerRoot, recallUri, Buffer.from(ctx.workload.prompt, "utf8"));
   (ctx.extraUris ??= []).push(recallUri);
+  const fixture = await waitForRecallFixture(ctx.client, {
+    query: ctx.workload.prompt,
+    targetUri: ownerRoot,
+    expectedUri: recallUri,
+    timeoutMs: ctx.manifest.thresholds.fixtureMs,
+    pollMs: ctx.manifest.thresholds.fixturePollMs,
+  });
+  ctx.runs.push({
+    label: "recall-fixture",
+    ready: fixture.ready,
+    attempts: fixture.attempts,
+    elapsedMs: fixture.elapsedMs,
+    score: fixture.match?.score ?? null,
+    diagnostics: fixture.diagnostics ?? null,
+  });
+  if (!fixture.ready) throw new FixtureError("FIXTURE_RECALL_TIMEOUT");
   const run = await runPi(ctx, {
     workloadId: ctx.workloadId,
     turn: "success",
@@ -341,6 +396,13 @@ async function wToolUriRejection(log, ctx) {
 // 全局断言与 summary 附加字段
 // ---------------------------------------------------------------------------
 
+export function collectObservedRuns(workloads) {
+  return workloads.flatMap((workload) =>
+    (Array.isArray(workload.summary?.runs) ? workload.summary.runs : [])
+      .filter((run) => run.observation)
+      .map((run) => ({ workload: workload.id, run })));
+}
+
 function assertBaseline(log, ctx) {
   const baseline = ctx.manifest.thresholds.baseline;
   const ready = Boolean(
@@ -352,13 +414,12 @@ function assertBaseline(log, ctx) {
   );
   log.check("global", "baseline-fixed", true, ready, ready);
   if (!ready) return;
-  const actual = ctx.manifest.workloads.flatMap((workload) =>
-    (Array.isArray(workload.summary?.runs) ? workload.summary.runs : []).map((run) => ({
-      workload: workload.id,
-      label: run.label,
-      ms: run.ms,
-      records: run.observation?.seq?.last ?? 0,
-    })));
+  const actual = collectObservedRuns(ctx.manifest.workloads).map(({ workload, run }) => ({
+    workload,
+    label: run.label,
+    ms: run.ms,
+    records: run.observation.seq.last,
+  }));
   const keyOf = (item) => `${item.workload}/${item.label}`;
   const actualKeys = actual.map(keyOf).sort();
   const baselineKeys = baseline.runs.map(keyOf).sort();
@@ -381,10 +442,8 @@ function assertBaseline(log, ctx) {
 function observabilitySummaryExtra(ctx) {
   return {
     registrySha256: observationRegistrySha256(),
-    observationRuns: ctx.manifest.workloads.flatMap((workload) =>
-      (Array.isArray(workload.summary?.runs) ? workload.summary.runs : [])
-        .filter((run) => run.observation)
-        .map((run) => ({ workload: workload.id, label: run.label, ...run.observation }))),
+    observationRuns: collectObservedRuns(ctx.manifest.workloads)
+      .map(({ workload, run }) => ({ workload, label: run.label, ...run.observation })),
   };
 }
 

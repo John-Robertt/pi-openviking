@@ -246,13 +246,13 @@ Archive 的原子性不依赖服务端写入语义，而由三条规则共同提
 同一 event 范围重复提交得到同一 `archiveId` 与同一字节，不产生第二个逻辑对象。完整性冲突只排除对应
 Archive；暂时性传输失败保留上一 checkpoint 消费范围并等待重试。两类失败都不改变已经持久化的事件和 ACK。
 
-Archive 创建由 token/step 压力驱动，支持单个超长用户轮次，并保持
-assistant/tool call/result step 边界完整。压力轴是分支事件自身的上下文权重之和——度量对象是事件进入
+Archive 创建由 token 压力驱动，支持单个超长用户轮次，并保持 Pi entry 与 assistant/tool call/result step
+边界完整。压力轴是分支事件自身的上下文权重之和——度量对象是事件进入
 上下文的内容，不是一次 provider 请求的累计 usage（后者含 system prompt 与工具定义，与事件范围不同
 尺度）。首次 Archive 的目标压力为
 `archive.rawTailTokenBudget + archive.chunkTokenBudget`，之后每累计一个
 `archive.chunkTokenBudget` 形成下一 Archive，同时保留 `archive.rawTailTokenBudget`。边界落在压力轴的
-绝对位置上，因而后续事件不会移动已固定的边界；候选边界若会拆开一个 step，则退回该 step 起点之前。
+绝对位置上，因而后续事件不会移动已固定的边界；候选边界若会拆开一个 entry 或 step，则退回该原子范围起点之前。
 
 ### 4. Checkpoint 生成与消费状态
 

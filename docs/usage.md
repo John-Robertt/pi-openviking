@@ -127,9 +127,14 @@ npx pi-openviking@latest credentials
 ```
 
 `archive.chunkTokenBudget` 控制每次 Archive 的目标增量，`archive.rawTailTokenBudget` 控制归档后保留
-最近原始上下文。`takeover.enabled` 与 `takeover.contextTokenThreshold` 已参与活动上下文的容量判定：
-阈值为 `0` 时按 Pi 报告的模型容量自动确定可用窗口，大于 `0` 时只把可用窗口压得更低。当前阶段的判定结果
-只用于诊断，provider 仍使用完整 Pi 上下文，不执行上下文替换。`recallTokenBudget` 直接限制服务端为一次检索装配的上下文 token 预算。
+最近原始上下文。`takeover.enabled` 控制是否允许 OpenViking 在 Pi `context` hook 中替换 provider 可见上下文；
+`takeover.contextTokenThreshold` 控制触发接管的任务模型上下文高水位，`0` 时使用 Pi 报告容量与当前候选余量自动确定；
+`takeover.checkpointTokenBudget` 限制接管和 ActiveContext compaction 装载的 checkpoint 正文。
+
+只有存在 eligible `ActiveContext` 且当前 context usage 到达高水位时，provider messages 才会被替换为 checkpoint、
+原始用户指令 anchor 与 raw tail；否则继续使用完整 Pi 上下文。Pi 触发 compaction 时，扩展只在同一 ActiveContext
+可读时提供自包含 checkpoint，不可用时保留 Pi 原生 compaction。`recallTokenBudget` 直接限制服务端为一次检索装配的
+上下文 token 预算。
 
 ### 受管服务代理
 

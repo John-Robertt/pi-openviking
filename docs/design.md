@@ -15,15 +15,20 @@
 ### `index.ts`
 
 - 绑定 Pi 生命周期；
-- 在 `session_start` 初始化会话来源和 ACK；
+- 在 `session_start` 初始化会话来源和 ACK，并启动一次会话同步；首个 `context` 或 `session_before_compact` hook 在消费
+  ActiveContext 前等待该同步收敛，普通 UI 启动不等待；
 - 在 `turn_end`、`session_compact`、`session_tree`、`session_info_changed`、`model_select`、`thinking_level_select` 非阻塞调度会话来源检查或同步；
-- `session_shutdown` 给予同步 500ms grace 后取消 transport，未确认内容留在 Pi 来源；观察已启用时只用该期限的
-  剩余时间完成独立记录；
-- `before_agent_start` 把 profile block 注入 system prompt 并排队 recall，`context` hook 等待检索结果并注入消息；recall 实际注入时追加 `ov-observation` custom entry，再由同一事件链同步；
+- `session_shutdown` 仅在 Pi leaf 尚未被最近同步观察时调度最终 snapshot；随后给予既有同步 500ms grace 并取消
+  transport，未确认内容留在 Pi 来源；观察已启用时只用同一期限的剩余时间完成独立记录；
+- `before_agent_start` 把 profile block 注入 system prompt 并排队 recall；`context` hook 首次用完整 Pi context usage 判定高水位，
+  provider epoch 建立后始终渲染同一 ActiveContext，并只在该 ActiveContext payload 再次越过高水位时原子推进 checkpoint；
+  recall 在最终 messages 上注入；profile/recall 的实际注入追加 `ov-observation` custom entry，再由同一事件链同步；takeover 本身只进入私有观察记录，不追加 Pi entry；
 - `tool_call` 阻止通用文件与 shell 工具直接处理 `viking://` URI，并引导使用对应 `viking_*` 工具；
-- 在调度同步时提供 Pi 报告的任务模型容量、输出预留、system prompt 与活动工具定义，供活动上下文判定容量；
-- OpenViking 不可用时只更新待重放诊断，不阻塞 Pi 主任务；
-- 不触发 Pi compaction，不构造 Archive，不替换 provider 上下文。
+- 在调度同步和接管判定时提供 Pi 报告的任务模型容量、输出预留、system prompt、活动工具定义与当前 context usage；
+- OpenViking 不可用、无有效 `ActiveContext`、容量不匹配、来源事实不可读或未达到高水位时只更新诊断，保持完整 Pi 上下文并不阻塞 Pi 主任务；
+- `session_before_compact` 在 eligible ActiveContext 可读时提供 checkpoint 正文与其 hash、Archive 身份、raw-tail
+  边界；不可用时不返回结果，让 Pi 使用原生 compaction；
+- 不触发 Pi compaction，不构造 Archive。
 
 ### `shared/observe.mjs`
 
@@ -43,7 +48,7 @@
 ### `shared/recorded-event.mjs`
 
 - 将 Pi entry/content part 投影为 `RecordedEventV1`；
-- 保留 message envelope、原始 part、错误和终止状态；
+- 保留 message envelope、原始 part、错误和终止状态，并从一个 entry 的完整有序事件重建原始 Pi entry；
 - 生成 Pi event/turn/step identity，以及自产 request/failure/checkpoint event identity、parent 关系和内容 hash；
 - 以独立常量维护事件 schema 与 identity 版本，普通依赖升级不改变协议身份；
 - 不清洗、过滤、截断或解释 payload。
@@ -80,7 +85,7 @@ adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
 
 - 生成 `archiveId`、聚合 `contentHash` 与 manifest 规范字节；
 - 从字节复原 manifest 并要求其自证（复算 `archiveId`、拒绝未知字段与非规范编码）；
-- 按事件自身的上下文权重确定 Archive 边界，并把候选边界退回 step 起点之前；
+- 按事件自身的上下文权重确定 Archive 边界，并把候选边界退回完整 Pi entry 与 step 之前；
 - 从边界统一构造 manifest、tokenCount 与索引范围，供提交和分支候选链共同使用；
 - 不接触传输，也不持久化任何状态。
 
@@ -118,11 +123,21 @@ adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
 ### `shared/active-context.mjs`
 
 - 从当前分支上最后一个已消费 checkpoint 选择 `ActiveContext`，并以最小两字段对象原子替换写入本地文件；
-- 一经形成即保持固定，只有 raw tail 起点离开当前分支祖先链才失效并重新选择；推进到更新的 checkpoint 属于接管时的原子替换；
+- 同步更新候选事实但保持当前两字段边界；只有来源边界离开当前分支时失效，或高水位接管确认新候选可渲染、
+  eligible 且持久化成功时原子推进到最新 checkpoint；
 - 从 raw tail 起点的 `turnId` 重算原始用户指令 anchor，因而 anchor 不是持久化字段；
-- dry-run materialize `system + checkpoint + anchor + raw tail` 四段候选 payload，段内直接引用不可变来源；
-- 用 Pi 报告的任务模型容量与输出预留计算 takeover eligibility，容量不匹配时保持 inactive；
-- 不改变 provider 可见上下文，不触发接管；来源事实不可读时保留既有边界并只降级诊断。
+- materialize `system + checkpoint + anchor + raw tail` 四段候选 payload，段内直接引用不可变来源；checkpoint 正文
+  受 `checkpointTokenBudget` 约束，其实际权重仍统一计入 payload；
+- 用 Pi 报告的任务模型容量与输出预留计算 takeover eligibility，高水位配置不改变容量判定；
+- 用 recorded-event 的逆投影重建原始 entry，并调用 Pi 的 `sessionEntryToContextMessages` 生成 provider messages；
+  ActiveContext 不复制 Pi message 语义，事件不完整或事实不可读时返回空并保持完整 Pi 上下文；
+- 从同一 ActiveContext 生成 Pi compaction summary、first-kept entry 与自证 details，不触发 compaction。
+
+### `shared/task-model-context.mjs`
+
+- 从 Pi lifecycle 读取模型容量、system prompt 和当前活动工具定义；
+- system/tools API 任一缺失或抛错时显式返回 `factsAvailable=false`，空字符串不代表读取成功；
+- 只向 lifecycle 协调层提供事实，不拥有 takeover 策略或状态。
 
 ### `shared/state-file.mjs`
 
@@ -230,10 +245,13 @@ recorded-event-adapter ───────────────────
         │ derived checkpoint/backlog state
         ▼
 active-context ──► ~/.pi/openviking/active-context/<target-and-session>.json
-        │ checkpoint + raw-tail 边界、dry-run 候选 payload、takeover eligibility
+        │ checkpoint + raw-tail 边界、候选 payload、takeover eligibility 与 provider messages 渲染
         ▼
-/viking diagnostics
-
+context hook ──► 首次完整上下文越过高水位时建立 epoch；随后复用 ActiveContext，下一高水位才推进
+        │
+        └──────► session_before_compact：提供自包含 checkpoint；不可用时由 Pi 原生 compaction 继续
+        ▲
+        │
 user prompt
         │
         ▼
@@ -242,10 +260,8 @@ before_agent_start: profile-inject（system prompt）+ recall.queueSearch
         ▼
 recall-core ───► OpenViking search API
         │ recall block（失败时为空，不阻塞 prompt）
-        ▼
-context hook: recall.injectRecall ───► provider-visible messages
+        └────────► context hook: recall.injectRecall（作用于接管或完整上下文的最终 messages）
 ```
-
 观察链与上述产品链正交：各责任模块在实际 boundary、decision、state 或 failure 处调用固定 no-op/observer，统一写入
 私有 JSONL；该 JSONL 没有返回产品链的依赖边。
 

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildLivePiInvocation,
   checkManifestHash,
+  cleanupRemote,
   conflictBytesOf,
   createRpcLineParser,
   derivePassed,
@@ -72,6 +73,32 @@ test("passed 只由非空且全部通过的断言派生", () => {
   assert.equal(derivePassed([]), false);
   assert.equal(derivePassed([{ pass: true }]), true);
   assert.equal(derivePassed([{ pass: true }, { pass: false }]), false);
+});
+
+test("远端清理只删除 marker 证明的产品根，目录骨架留给持久对象验证", async () => {
+  const userRoot = "viking://user/dev--pi-session";
+  const markerBytes = Buffer.from("owner");
+  const deleted = [];
+  const checks = [];
+  const cleanup = await cleanupRemote({
+    check: (...args) => checks.push(args),
+  }, {
+    workloadId: "cleanup-fixture",
+    workload: {},
+    userRoot,
+    markerUri: `${userRoot}/resources/.pi-openviking/.live-owner.json`,
+    markerBytes,
+    client: { downloadBytes: async () => ({ ok: true, bytes: Buffer.from(markerBytes), status: 200 }) },
+    cleanupClient: {
+      delete: async (uri) => { deleted.push(uri); return true; },
+      statUri: async () => ({ ok: true, exists: false, isDir: false, status: 404 }),
+    },
+  }, ["written-object"], null);
+
+  assert.deepEqual(deleted, [`${userRoot}/resources/.pi-openviking`]);
+  assert.deepEqual(cleanup.residuals, []);
+  assert.equal(checks.at(-1)[1], "cleanup.remote");
+  assert.equal(checks.at(-1)[4], true);
 });
 
 test("冲突 fixture 确定性改变一个字节且不修改输入", () => {

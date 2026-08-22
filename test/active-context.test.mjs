@@ -10,13 +10,16 @@ import {
   anchorEvents,
   clearActiveContext,
   evaluateEligibility,
+  evaluateTakeoverTrigger,
   materializeActiveContext,
+  renderActiveContextMessages,
   normalizeActiveContext,
   payloadSegment,
   readActiveContext,
   selectActiveContext,
   writeActiveContext,
 } from "../shared/active-context.mjs";
+import { readTaskModelContext } from "../shared/task-model-context.mjs";
 import { describeArchives } from "../shared/archive.mjs";
 import {
   buildCheckpointEvent,
@@ -25,7 +28,7 @@ import {
   checkpointId,
 } from "../shared/checkpoint.mjs";
 import { eventTokenWeight } from "../shared/context-weight.mjs";
-import { recordedEventBytes } from "../shared/recorded-event.mjs";
+import { projectPiEntries, recordedEventBytes } from "../shared/recorded-event.mjs";
 import { ARCHIVE_LINEAR_CHAIN, archiveEvents } from "./fixtures/archive-fixtures.mjs";
 
 const SESSION = "active-context-session";
@@ -40,7 +43,7 @@ function fixture(specs = ARCHIVE_LINEAR_CHAIN) {
   return { events, archives };
 }
 
-function checkpointEventFor(manifest, previousCheckpointId = null) {
+function checkpointEventFor(manifest, previousCheckpointId = null, overview = OVERVIEW) {
   const requestEvent = buildCheckpointRequestEvent({
     manifest,
     previousCheckpointId,
@@ -50,7 +53,7 @@ function checkpointEventFor(manifest, previousCheckpointId = null) {
   return buildCheckpointEvent({
     manifest,
     requestEvent,
-    overview: OVERVIEW,
+    overview,
     completedAt: "2026-08-21T00:00:10.000Z",
   });
 }
@@ -196,7 +199,110 @@ test("dry-run payload 的每一段都能由源事件逐项重算，且不拆开 
   assert.equal(payloadSegment(payload, "anchor").events.length, 1);
 });
 
-test("eligibility 使用 Pi 报告的容量与安全余量，阈值只能压低可用窗口", () => {
+test("takeover messages 渲染 checkpoint、anchor 和完整 raw tail，且不保留已归档前缀", async () => {
+  const { events, archives } = fixture();
+  const consumed = archives[1];
+  const context = selectActiveContext(events, archives, checkpointId(consumed.manifest));
+  const checkpoint = checkpointEventFor(consumed.manifest).payload.checkpoint;
+  const payload = materializeActiveContext({ context, checkpoint, branchEvents: events });
+  assert.deepEqual(renderActiveContextMessages(payload).slice(2).map((message) => message.role), ["assistant", "assistant"]);
+
+  const takeover = new ActiveContextManager({
+    path: null,
+    adapter: adapterFor([checkpointEventFor(consumed.manifest)]),
+    takeover: TAKEOVER,
+  });
+  await takeover.update(SESSION, { branchEvents: events, archives, lastCheckpointId: checkpointId(consumed.manifest), capacity: CAPACITY });
+  const rendered = await takeover.takeoverMessages(events, { capacity: CAPACITY });
+  assert.equal(rendered[0].role, "custom");
+  assert.equal(rendered[0].customType, "openviking-checkpoint");
+  assert.match(rendered[0].content, /<openviking-checkpoint/);
+  assert.match(rendered[0].content, /archive prefix is replaced/);
+  assert.equal(rendered.some((message) => JSON.stringify(message).includes(events[0].payload.part.value)), true, "anchor 保留原始用户指令");
+  assert.equal(rendered.some((message) => JSON.stringify(message).includes(events[1].payload.part.value)), false, "已归档前缀不进入接管消息");
+});
+
+test("takeover 渲染遇到不完整 entry 时 fail-open", () => {
+  const [first] = projectPiEntries(SESSION, [{
+    id: "multi-user",
+    parentId: null,
+    timestamp: "2026-08-21T00:00:00.000Z",
+    type: "message",
+    message: { role: "user", content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] },
+  }]);
+  assert.throws(() => renderActiveContextMessages({
+    segments: [
+      { kind: "system", text: "" },
+      { kind: "checkpoint", text: "checkpoint" },
+      { kind: "anchor", events: [] },
+      { kind: "raw-tail", events: [first] },
+    ],
+    tokens: { system: 0, tools: 0, checkpoint: 1, anchor: 0, rawTail: 1, payload: 2 },
+  }), /split outside/);
+});
+
+test("takeover 复用 Pi 的 entry→message 语义并跳过 custom 状态 entry", () => {
+  const events = projectPiEntries(SESSION, [
+    {
+      id: "observation-entry", parentId: null, timestamp: "2026-08-21T00:00:00.000Z",
+      type: "custom", customType: "ov-observation", data: { kind: "recall-injection" },
+    },
+    {
+      id: "custom-message", parentId: "observation-entry", timestamp: "2026-08-21T00:00:01.000Z",
+      type: "custom_message", customType: "fixture", content: "visible", display: false, details: { kept: true },
+    },
+    {
+      id: "null-user", parentId: "custom-message", timestamp: "2026-08-21T00:00:02.000Z",
+      type: "message", message: { role: "user", content: null },
+    },
+  ]);
+  const rendered = renderActiveContextMessages({
+    segments: [
+      { kind: "system", text: "" },
+      { kind: "checkpoint", text: "checkpoint" },
+      { kind: "anchor", events: [] },
+      { kind: "raw-tail", events },
+    ],
+    tokens: { system: 0, tools: 0, checkpoint: 1, anchor: 0, rawTail: 1, payload: 2 },
+  });
+  assert.deepEqual(rendered.map((message) => message.customType), ["openviking-checkpoint", "fixture", undefined]);
+  assert.deepEqual(rendered[1].details, { kept: true });
+  assert.deepEqual(rendered[2].content, []);
+});
+
+test("checkpoint 预算与 Pi compaction 使用同一活动上下文事实", async () => {
+  const { events, archives } = fixture();
+  const consumed = archives[1];
+  const checkpointEvent = checkpointEventFor(consumed.manifest, null, `${OVERVIEW}\n${"长期事实".repeat(2000)}`);
+  const manager = new ActiveContextManager({
+    path: null,
+    adapter: adapterFor([checkpointEvent]),
+    takeover: { ...TAKEOVER, checkpointTokenBudget: 100 },
+  });
+  const status = await manager.update(SESSION, {
+    branchEvents: events,
+    archives,
+    lastCheckpointId: checkpointId(consumed.manifest),
+    capacity: CAPACITY,
+  });
+  assert.equal(status.eligibility, "eligible");
+  const payload = await manager.materialize(events);
+  assert.ok(payload.tokens.checkpoint <= 100);
+  assert.match(payloadSegment(payload, "checkpoint").text, /checkpoint truncated to configured budget/);
+
+  const compaction = await manager.compaction(events, 12345);
+  const start = events.find((event) => event.eventId === status.rawTailStartEventId);
+  assert.equal(compaction.firstKeptEntryId, start.source.entryId);
+  assert.equal(compaction.tokensBefore, 12345);
+  assert.equal(compaction.details.type, "openviking-active-context");
+  assert.equal(compaction.details.checkpointId, status.checkpointId);
+  assert.equal(compaction.details.checkpointHash, checkpointEvent.contentHash);
+  assert.equal(compaction.details.sourceArchiveId, consumed.manifest.archiveId);
+  assert.equal(compaction.details.sourceArchiveHash, consumed.manifest.contentHash);
+  assert.equal(compaction.details.rawTailStartEventId, status.rawTailStartEventId);
+});
+
+test("eligibility 使用 Pi 报告的容量与安全余量，接管高水位不改变容量判定", () => {
   const fit = evaluateEligibility({ capacity: CAPACITY, takeover: TAKEOVER, payloadTokens: 10481 });
   assert.equal(fit.eligibility, "eligible");
   
@@ -205,23 +311,14 @@ test("eligibility 使用 Pi 报告的容量与安全余量，阈值只能压低�
   assert.equal(fit.usableTokens, CAPACITY.contextWindow - CAPACITY.maxTokens);
   assert.equal(fit.headroomTokens, fit.usableTokens - 10481);
 
-  const capped = evaluateEligibility({
+  const thresholded = evaluateEligibility({
     capacity: CAPACITY,
     takeover: { enabled: true, contextTokenThreshold: 1000 },
     payloadTokens: 10481,
   });
-  assert.equal(capped.eligibility, "capacity_mismatch");
-  
-  assert.equal(capped.usableTokens, 1000);
-  assert.equal(capped.headroomTokens, 1000 - 10481);
-
-  const raised = evaluateEligibility({
-    capacity: CAPACITY,
-    takeover: { enabled: true, contextTokenThreshold: 1_000_000 },
-    payloadTokens: 10481,
-  });
-  assert.equal(raised.usableTokens, CAPACITY.contextWindow - CAPACITY.maxTokens, "阈值不得超过模型实际容量");
-
+  assert.equal(thresholded.eligibility, "eligible");
+  assert.equal(thresholded.usableTokens, CAPACITY.contextWindow - CAPACITY.maxTokens);
+  assert.equal(thresholded.headroomTokens, thresholded.usableTokens - 10481);
   const exact = evaluateEligibility({
     capacity: { contextWindow: 200, maxTokens: 100 },
     takeover: TAKEOVER,
@@ -244,6 +341,73 @@ test("eligibility 使用 Pi 报告的容量与安全余量，阈值只能压低�
     evaluateEligibility({ capacity: CAPACITY, takeover: { enabled: false, contextTokenThreshold: 0 }, payloadTokens: 1 }).eligibility,
     "takeover_disabled",
   );
+});
+
+test("provider epoch 建立后持续复用，只有活动 payload 再越过高水位才允许推进", () => {
+  const initial = evaluateTakeoverTrigger({
+    enabled: true, eligibility: "eligible", currentCheckpointId: "chk_a", appliedCheckpointId: null,
+    piUsageTokens: 120, payloadTokens: 20, highWaterTokens: 100,
+  });
+  assert.deepEqual(initial, { render: true, allowAdvance: true, epochActive: false, usageTokens: 120, highWaterTokens: 100 });
+
+  const stable = evaluateTakeoverTrigger({
+    enabled: true, eligibility: "eligible", currentCheckpointId: "chk_a", appliedCheckpointId: "chk_a",
+    piUsageTokens: 1000, payloadTokens: 20, highWaterTokens: 100,
+  });
+  assert.deepEqual(stable, { render: true, allowAdvance: false, epochActive: true, usageTokens: 20, highWaterTokens: 100 });
+
+  const nextEpoch = evaluateTakeoverTrigger({
+    enabled: true, eligibility: "eligible", currentCheckpointId: "chk_a", appliedCheckpointId: "chk_a",
+    piUsageTokens: 1000, payloadTokens: 100, highWaterTokens: 100,
+  });
+  assert.equal(nextEpoch.allowAdvance, true);
+});
+
+test("Pi system/tools API 任一不可读时显式标记任务模型事实不可用", () => {
+  const ctx = {
+    model: CAPACITY,
+    getSystemPrompt: () => "system",
+  };
+  const pi = {
+    getActiveTools: () => ["a"],
+    getAllTools: () => [{ name: "a", description: "tool" }, { name: "b" }],
+  };
+  assert.deepEqual(readTaskModelContext(pi, ctx), {
+    capacity: CAPACITY, factsAvailable: true, systemPrompt: "system",
+    toolDefinitions: JSON.stringify([{ name: "a", description: "tool" }]),
+  });
+
+  for (const [brokenPi, brokenCtx] of [
+    [pi, { ...ctx, getSystemPrompt: () => { throw new Error("system unavailable"); } }],
+    [{ ...pi, getActiveTools: () => { throw new Error("active unavailable"); } }, ctx],
+    [{ ...pi, getAllTools: () => { throw new Error("tools unavailable"); } }, ctx],
+    [pi, { model: CAPACITY }],
+  ]) {
+    const errors = [];
+    const result = readTaskModelContext(brokenPi, brokenCtx, (error) => errors.push(error));
+    assert.equal(result.factsAvailable, false);
+    assert.equal(result.systemPrompt, "");
+    assert.equal(result.toolDefinitions, "");
+    assert.equal(errors.length, 1);
+  }
+});
+
+test("system/tools 事实不可用时拒绝渲染且不推进 ActiveContext", async () => {
+  const { events, archives } = fixture();
+  const consumed = archives[1];
+  const manager = new ActiveContextManager({
+    path: null, adapter: adapterFor([checkpointEventFor(consumed.manifest)]), takeover: TAKEOVER,
+  });
+  await manager.update(SESSION, {
+    branchEvents: events, archives, lastCheckpointId: checkpointId(consumed.manifest), capacity: CAPACITY,
+  });
+  const before = manager.current;
+  const messages = await manager.takeoverMessages(events, {
+    archives, lastCheckpointId: checkpointId(consumed.manifest), capacity: CAPACITY, factsAvailable: false,
+  });
+  assert.equal(messages, null);
+  assert.deepEqual(manager.current, before);
+  assert.equal(manager.status.eligibility, "facts_unavailable");
 });
 
 test("活动上下文形成后跨重启复用同一边界，并保持固定直到来源边界离开分支", async (t) => {
@@ -271,7 +435,7 @@ test("活动上下文形成后跨重启复用同一边界，并保持固定直�
     rawTailStartEventId: first.rawTailStartEventId,
   });
 
-  // 更新的 checkpoint 不会推进已固定的活动上下文：替换是接管时的原子动作。
+  // 同步只更新候选事实；已固定边界直到高水位接管才原子推进。
   const frozen = await manager.update(SESSION, {
     branchEvents: events,
     archives,
@@ -281,17 +445,36 @@ test("活动上下文形成后跨重启复用同一边界，并保持固定直�
   assert.equal(frozen.checkpointId, first.checkpointId);
   assert.deepEqual(await readActiveContext(path), persisted);
 
-  // 新进程从文件恢复同一边界。
+  const stableMessages = await manager.takeoverMessages(events, {
+    archives,
+    lastCheckpointId: checkpointId(later.manifest),
+    capacity: CAPACITY,
+    allowAdvance: false,
+  });
+  assert.ok(stableMessages);
+  assert.deepEqual(manager.current, persisted, "当前 epoch 未越过高水位时不得消费后台新 checkpoint");
+
+  const advancedMessages = await manager.takeoverMessages(events, {
+    archives,
+    lastCheckpointId: checkpointId(later.manifest),
+    capacity: CAPACITY,
+  });
+  const advanced = selectActiveContext(events, archives, checkpointId(later.manifest));
+  assert.ok(advancedMessages);
+  assert.deepEqual(manager.current, advanced);
+  assert.deepEqual(await readActiveContext(path), advanced);
+
+  // 新进程从文件恢复已经完成原子替换的边界。
   const restarted = new ActiveContextManager({ path, adapter, takeover: TAKEOVER });
   const recovered = await restarted.update(SESSION, {
     branchEvents: events,
     archives,
-    lastCheckpointId: checkpointId(consumed.manifest),
+    lastCheckpointId: checkpointId(later.manifest),
     capacity: CAPACITY,
   });
-  assert.equal(recovered.checkpointId, first.checkpointId);
-  assert.equal(recovered.rawTailStartEventId, first.rawTailStartEventId);
-  assert.deepEqual(restarted.current, persisted);
+  assert.equal(recovered.checkpointId, advanced.checkpointId);
+  assert.equal(recovered.rawTailStartEventId, advanced.rawTailStartEventId);
+  assert.deepEqual(restarted.current, advanced);
 });
 
 test("来源边界离开当前分支后不再复用，且没有可用 checkpoint 时清除持久化选择", async (t) => {

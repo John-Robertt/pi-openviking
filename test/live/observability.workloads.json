@@ -22,7 +22,7 @@
     },
     "registry": {
       "schemaVersion": 1,
-      "sha256": "6ab00c707ac4a0b1757553bea0584b20ae13c6e884173259969268ed920e6628"
+      "sha256": "fc7df5a04166218e1e9a3601909815e49d6034c59280760b579d01c868a8913d"
     },
     "extensionLoadOrder": ["index.ts"]
   },
@@ -34,7 +34,7 @@
   "workloads": [
     {
       "id": "success-recall-sync",
-      "summary": "随机 session namespace 写入所属 marker 与 wait=true 的可检索 resource；真实 Pi prompt 触发 recall 产品 entry，再由 /viking sync 证明 Content 写入和 ACK 推进。",
+      "summary": "随机 session namespace 异步写入所属 marker 与 resource，并在统一 deadline 内轮询真实 search 直到目标 URI 可检索；真实 Pi prompt 触发 recall 产品 entry，再由 /viking sync 证明 Content 写入和 ACK 推进。",
       "prompt": "请只回复 OK 两个字母，不要调用任何工具。",
       "expectedRecords": [
         { "stage": "pi_lifecycle", "data": { "phase": "end", "hook": "session_shutdown", "outcome": "success" } },
@@ -56,17 +56,21 @@
         { "stage": "active_context_select", "data": { "branch": "unavailable" } },
         { "stage": "active_context_eligibility", "data": { "branch": "no_context" } },
         { "stage": "active_context_state", "data": { "mode": "snapshot", "status": "no_context", "checkpoint": null } },
+        { "stage": "active_context_takeover", "data": { "branch": "keep_full_context" } },
+        { "stage": "checkpoint_state", "data": { "mode": "snapshot", "status": "caught_up" } },
         { "stage": "recall_request", "data": { "branch": "search" } },
         { "stage": "recall_source", "data": { "branch": "context_face" } },
         { "stage": "recall_result", "data": { "operation": "inject", "branch": "injected" } }
       ],
       "successCriteria": [
+        "异步 fixture 只有在真实 search 返回同一 resource URI 后才就绪；文件存在、错误类型或其他 URI 均不能通过",
         "Pi exitCode=0、extension_error=0、/viking sync notify=info",
         "observation run 完整、seq 连续、boundary op 全部配对、accepted=end.seq、dropped=0",
         "recall 注入通过 pi_entry_append 记录且观察 artifact 不含 recall 内容、prompt、session/user/URI、凭证",
         "ACK frontier 推进且观察记录未进入 Pi JSONL 或 OpenViking event namespace"
       ],
       "falsification": [
+        "fixture 在 deadline 内未被真实 search 命中，或命中来源不是目标 resource URI",
         "任一 expected stage 缺失或出现未配对 boundary",
         "观察 sink 改变 Pi 返回、ACK、HTTP 顺序或 shutdown 结果",
         "原始敏感值出现在观察 artifact、summary 或错误诊断"
@@ -89,7 +93,8 @@
         { "stage": "sync_source", "data": { "branch": "persistent_jsonl" } },
         { "stage": "shutdown_grace", "data": { "branch": "drained" } },
         { "stage": "sync_capability", "data": { "mode": "snapshot", "current": "unknown" } },
-        { "stage": "sync_ack", "data": { "mode": "snapshot" } }
+        { "stage": "sync_ack", "data": { "mode": "snapshot" } },
+        { "stage": "active_context_takeover", "data": { "branch": "keep_full_context" } }
       ],
       "successCriteria": [
         "Pi exitCode=0 且 agent_settled 到达，观察 run 完整",
@@ -139,7 +144,8 @@
         { "stage": "pi_lifecycle", "data": { "phase": "end", "hook": "session_shutdown", "outcome": "success" } },
         { "stage": "tool_uri_guard", "data": { "tool": "read", "branch": "block" } },
         { "stage": "tool_scope", "data": { "tool": "viking_forget", "operation": "delete", "scoped": true, "branch": "deny", "accepted": 0, "rejected": 1 } },
-        { "stage": "tool_scope", "data": { "tool": "viking_add_resource", "operation": "resource_add", "scoped": true, "branch": "deny", "accepted": 0, "rejected": 1 } }
+        { "stage": "tool_scope", "data": { "tool": "viking_add_resource", "operation": "resource_add", "scoped": true, "branch": "deny", "accepted": 0, "rejected": 1 } },
+        { "stage": "tool_availability", "data": { "branch": "proceed" } }
       ],
       "successCriteria": [
         "真实 Pi tool_execution_end 证明 read、viking_forget 与会话隔离下的 viking_add_resource 均被拒绝",
@@ -153,6 +159,17 @@
       ]
     }
   ],
+  "deterministicStages": [
+    "index_failure",
+    "archive_commit",
+    "archive_failure",
+    "checkpoint_request",
+    "checkpoint_process",
+    "checkpoint_failure",
+    "active_context_compaction",
+    "active_context_failure",
+    "recall_failure"
+  ],
   "globalAssertions": [
     "manifest hash、registry hash/active stage 全集、Pi/OpenViking/model profile 身份以及运行中 ov.conf/状态指纹/profile 生成配置全部匹配后才运行 workload",
     "每个观察 artifact 由父进程 fsync/close 后读取；完整性、原始 hash、stage/outcome 计数写入白名单 summary",
@@ -164,8 +181,8 @@
     "piRunWallMs": 120000,
     "agentSettledMs": 90000,
     "syncNotifyMs": 90000,
-    "fixtureMs": 90000,
-    "cleanupMs": 30000,
+    "fixtureMs": 360000,
+    "fixturePollMs": 1000,
     "cleanupSettleMs": 60000,
     "baseline": {
       "measuredAt": "2026-08-21T00:55:00.000Z",

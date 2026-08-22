@@ -456,19 +456,25 @@ test("活动上下文的选择、容量判定与降级只记录枚举、计数�
   assert.equal((await manager.update(sessionId, input)).eligibility, "eligible");
   assert.equal((await manager.update(sessionId, { ...input, branchEvents: events.slice(0, 1), archives: [], lastCheckpointId: null })).eligibility, "no_context");
 
-  // 持久化失败与来源事实不可读都只降级诊断，产品继续使用完整 Pi 上下文。
+  // 容量不匹配、持久化失败与来源事实不可读分别降级，产品继续使用完整 Pi 上下文。
+  const mismatch = new ActiveContextManager({
+    path: null, adapter, observation, takeover: { enabled: true, contextTokenThreshold: 0 },
+  });
+  const capped = await mismatch.update(sessionId, { ...input, capacity: { contextWindow: 10000, maxTokens: 9000 } });
+  assert.equal(capped.eligibility, "capacity_mismatch");
   const blocked = new ActiveContextManager({
     path: `${ROOT}/active-context/blocker/context.json`, adapter, observation,
-    takeover: { enabled: true, contextTokenThreshold: 1000 },
+    takeover: { enabled: true, contextTokenThreshold: 0 },
   });
-  const capped = await blocked.update(sessionId, input);
-  assert.equal(capped.eligibility, "capacity_mismatch");
+  assert.equal((await blocked.update(sessionId, input)).eligibility, "facts_unavailable");
   available = false;
   const cold = new ActiveContextManager({
     path: null, adapter, observation, takeover: { enabled: true, contextTokenThreshold: 0 },
   });
   const degraded = await cold.update(sessionId, input);
   assert.equal(degraded.eligibility, "facts_unavailable");
+  observation.emit("active_context_takeover", "replace_context", "eligible", 2000, 1000, 3);
+  observation.emit("active_context_compaction", "provide_context", "eligible");
   manager.observeFinalState();
   await observation.finish();
 
@@ -482,6 +488,7 @@ test("活动上下文的选择、容量判定与降级只记录枚举、计数�
   assert.ok(records.some((record) => record.stage === "active_context_state" && record.data.mode === "change"));
   assert.ok(records.some((record) => record.stage === "active_context_failure" && record.data.errorCode === "persist"));
   assert.ok(records.some((record) => record.stage === "active_context_failure" && record.data.errorCode === "materialize"));
+  assert.ok(records.some((record) => record.stage === "active_context_takeover" && record.data.branch === "replace_context"));
   const headroom = records.find((record) => record.stage === "active_context_eligibility" && record.data.branch === "capacity_mismatch");
   assert.ok(headroom.data.headroom < 0, "容量不匹配的余量必须可读为负值");
 });
@@ -496,6 +503,11 @@ test.after(() => {
     ]);
     const requiredDeterministicStages = Object.keys(OBSERVATION_STAGE_REGISTRY)
       .filter((stage) => !liveStages.has(stage));
+    assert.deepEqual(
+      [...manifest.deterministicStages].sort(),
+      [...requiredDeterministicStages].sort(),
+      "manifest 必须显式登记所有非 live stage",
+    );
     assert.deepEqual(
       requiredDeterministicStages.filter((stage) => !coveredStages.has(stage)),
       [],

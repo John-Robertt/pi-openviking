@@ -128,8 +128,9 @@ session 结束或 shutdown 再记录最终 `snapshot`。`turn_end` 只有在当�
    已存在的行为及其责任模块，`AGENTS.md` 只提供导航，不作为观察契约来源；
 2. `shared/observe.mjs` 的 stage registry 是现行点位的唯一机器可读清单；每个 stage 只声明一个 owner、kind、必需/允许
    字段与有限 outcome，调用点和 verifier 都引用该清单，不另写一份 schema；
-3. `verify:observability:live` 的当前 manifest 引用 registry 中全部现行 stage，并为成功与受控失败 workload 声明预期
-   branch/outcome；阶段 manifest 只增加该阶段 workload 的预期，不拥有完整点位清单；
+3. `verify:observability:live` 的当前 manifest 引用 registry 中全部现行 stage：稳定经过真实产品边界的 stage 由 workload
+   `expectedRecords` 声明 branch/outcome，其余内部 failure stage 登记在 `deterministicStages` 并由实际记录测试覆盖；两类
+   集合与 registry 双向一致且互不重叠。阶段 manifest 只增加该阶段 workload 的预期，不拥有完整点位清单；
 4. 产品责任新增、改变、替换或删除时同步更新 registry 与当前 observability manifest；旧定义只留在版本历史和既有
    artifact，不得继续约束现行点位；
 5. 新增或改变运行时路径时，同时观察成功结果和每条会改变产品行为的失败结果；

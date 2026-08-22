@@ -127,6 +127,40 @@ test("边界退回 step 起点之前，tool call/result 不被拆开", () => {
   }
 });
 
+test("边界退回完整 Pi entry，未带 step 的多 part user message 不被拆开", () => {
+  const entries = [
+    {
+      id: "multi-user", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", type: "message",
+      message: { role: "user", content: [
+        { type: "text", text: "a".repeat(4000) },
+        { type: "text", text: "b".repeat(4000) },
+      ] },
+    },
+    {
+      id: "assistant", parentId: "multi-user", timestamp: "2026-01-01T00:00:01.000Z", type: "message",
+      message: {
+        role: "assistant", content: [{ type: "text", text: "c".repeat(4000) }],
+        api: "test", provider: "test", model: "test",
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: "stop",
+      },
+    },
+    {
+      id: "tail", parentId: "assistant", timestamp: "2026-01-01T00:00:02.000Z", type: "message",
+      message: { role: "user", content: "d".repeat(4000) },
+    },
+  ];
+  const events = projectPiEntries(SESSION, entries);
+  const plans = planArchives(events, { chunkTokenBudget: 1100, rawTailTokenBudget: 1000 });
+  assert.equal(plans[0].endIndex, 1, "第一个 Archive 必须包含 multi-user 的全部 parts");
+  for (const plan of plans) {
+    const boundary = events[plan.endIndex];
+    const next = events[plan.endIndex + 1];
+    assert.notEqual(boundary.source.entryId, next?.source?.entryId, "Archive 边界拆开了一个 Pi entry");
+  }
+});
+
 test("提交建立唯一 manifest 对象，重复提交幂等且不产生第二个逻辑对象", async () => {
   const events = eventsOf();
   const { transport, manager } = await storedManager(events);

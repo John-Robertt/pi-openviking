@@ -69,6 +69,7 @@ npm run dev -- status
 # 5. 重跑受影响保证的 live gate
 npm run verify:sync:live
 npm run verify:checkpoint:live
+npm run verify:takeover:live
 npm run verify:observability:live
 ```
 
@@ -208,6 +209,11 @@ VLM 重试、request/task 恢复与双 Archive 积压；配套 deterministic che
 三次 attempt、媒体失败、外部错误脱敏和终态清理恢复。受管服务必须已启动且 VLM credential 为 ready。gate 只写
 随机所属 namespace；生产协调器先从终态事实清理所属 Session/媒体根，gate 最后再取消仍在途的测试 task，并按
 ownership marker 契约删除全部临时对象和 checkpoint 事实。
+
+`npm run verify:takeover:live` 使用真实 Pi context/compaction hook、开发 task provider、受管 OpenViking 与真实 VLM
+checkpoint，覆盖稳定 provider 前缀与 cache key、重启、根级 sibling 分支、断线、容量不匹配及 ActiveContext/native
+compaction。它同时采集一段完整 compaction 观察 run；原始 provider payload 和观察 JSONL 仅存在于 run 私有目录，
+通过后连同 session 一并删除。
 
 `npm run verify:observability:live` 是常驻横切 gate。它要求隔离服务已由 `dev up` 启动，并会使用开发模型、随机
 session namespace、受控 409 对象及 URI 拒绝 workload；执行前必须取得真实模型调用和所属测试 namespace 写入/删除

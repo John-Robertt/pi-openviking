@@ -589,7 +589,7 @@ test("旧 checkpoint consumption 完成后不得用旧分支快照覆盖新活�
     return { consumption: useSibling ? Promise.resolve() : oldConsumption };
   };
 
-  const taskModel = { capacity: { contextWindow: 272000, maxTokens: 128000 }, systemPrompt: "", toolDefinitions: "" };
+  const taskModel = { capacity: { contextWindow: 272000, maxTokens: 128000 }, factsAvailable: true, systemPrompt: "", toolDefinitions: "" };
   await sync.advanceDerivedState(main, new Map(), allEvents, taskModel);
   assert.equal(sync.status.activeContext.checkpointId, checkpointId(mainConsumed.manifest));
 
@@ -644,7 +644,7 @@ test("活动上下文的 raw tail 覆盖当前分支尚未确认的最新事件"
   };
   const result = await sync.syncSession(
     { isPersisted: () => false, getEntries: () => branch, getBranch: () => branch },
-    { capacity: { contextWindow: 272000, maxTokens: 128000 }, systemPrompt: "", toolDefinitions: "" },
+    { capacity: { contextWindow: 272000, maxTokens: 128000 }, factsAvailable: true, systemPrompt: "", toolDefinitions: "" },
   );
 
   assert.equal(result.allDelivered, false, "冲突 entry 必须停止 ACK 推进");
@@ -656,6 +656,20 @@ test("活动上下文的 raw tail 覆盖当前分支尚未确认的最新事件"
     "raw tail 必须包含分支上尚未确认的最新事件");
   assert.equal(context.eligibility, "eligible");
   assert.equal(context.headroomTokens, context.usableTokens - context.payloadTokens);
+  const replacement = await sync.takeoverMessages(
+    { isPersisted: () => false, getEntries: () => branch, getBranch: () => branch },
+    { capacity: { contextWindow: 272000, maxTokens: 128000 }, factsAvailable: true, systemPrompt: "", toolDefinitions: "" },
+  );
+  assert.equal(replacement[0].customType, "openviking-checkpoint");
+  assert.match(replacement[0].content, /keep the raw tail complete/);
+  assert.equal(replacement.some((message) => JSON.stringify(message).includes(blockedEvent.payload.part.value)), true,
+    "接管消息必须包含尚未确认但仍在当前分支上的 raw tail 事件");
+  const mismatch = await sync.takeoverMessages(
+    { isPersisted: () => false, getEntries: () => branch, getBranch: () => branch },
+    { capacity: { contextWindow: 10000, maxTokens: 9000 }, factsAvailable: true, systemPrompt: "", toolDefinitions: "" },
+  );
+  assert.equal(mismatch, null, "当前 Pi 容量不足时必须保持完整上下文");
+  assert.equal(sync.status.activeContext.eligibility, "capacity_mismatch");
 });
 
 test("某个 entry 永久无法同步时，已确认前缀仍然形成 Archive", async () => {

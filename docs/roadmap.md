@@ -20,12 +20,12 @@ workload、身份与阈值由 `test/live/sync.workloads.json` 及其固定 hash 
 
 **可观测性基线出口已关闭。** `shared/observe.mjs` 的 active stage registry 是现行点位唯一清单；关闭零工作、
 sink/schema fail-open、字节一致性和职责模块接点由 deterministic checks 证明，`verify:observability:live` 在固定
-manifest/hash 下覆盖成功 recall/同步、断线、409 冲突、URI 拒绝和持久清理。该 gate 此后作为每个阶段的常驻出口条件。
+manifest/hash 下覆盖成功 recall/同步、断线、409 冲突、URI 拒绝和持久清理，当前通过 106/106。该 gate 此后作为每个阶段的常驻出口条件。
 
 **原子 Archive 的出口已关闭。** Archive 的原子机制由真实 0.4.15 上的基线调查选定，机制、实测证据与
 被证伪的候选记录在 `test/live/archive.workloads.json` 的 `mechanism`。`npm test` 提供 deterministic 证据，
-`verify:archive:live` 在真实 Pi lifecycle 与受管 OpenViking 上覆盖 Archive 形成、崩溃残留恢复、受管重启
-幂等和完整性冲突 fail-open；常驻 `verify:observability:live` 全量通过。
+`verify:archive:live` 在真实 Pi lifecycle 与受管 OpenViking 上通过 118/118，覆盖 Archive 形成、完整 Pi entry/step
+边界、崩溃残留恢复、受管重启幂等和完整性冲突 fail-open；常驻 `verify:observability:live` 全量通过。
 
 **checkpoint 生产的出口已关闭。** checkpoint request、代码拥有的明确 failure 与结构化 checkpoint 作为自产
 `RecordedEventV1` 进入既有 immutable event namespace；消费状态、完整 parent/attempt 链、积压和终态清理
@@ -41,14 +41,23 @@ manifest/hash 下覆盖成功 recall/同步、断线、409 冲突、URI 拒绝�
 已消费的 checkpoint；anchor 由 raw tail 起点的 turn 身份重算，因而不进入持久状态。deterministic checks 证明候选
 选择、跨重启复用、来源边界离开祖先链后的失效、anchor 重算、dry-run payload 与容量判定两侧。
 
-`verify:context:live` 在真实 Pi lifecycle、真实已提交 Archive 与真实 VLM checkpoint 上通过 140/140：持久化边界等于
-从 Pi JSONL 与 Archive manifest 独立重算的候选，raw tail 逐字节等于源事件且覆盖全部未归档事件、不拆开 step，
-Pi 报告的 272000/128000 容量在 eligibility 两侧分别得到 132831 与 -10169 的实测余量（manifest baseline 记录的是
-实现前一次性探针的预期值，两者各自承担门禁结果与证伪基线）；同一次运行的真实 provider
-payload 仍包含归档前缀原文且不含 checkpoint 正文，证明接管保持 inactive。常驻 `verify:observability:live` 覆盖
-现行 registry。
+`verify:context:live` 在真实 Pi lifecycle、真实已提交 Archive 与真实 VLM checkpoint 上通过 139/139：持久化边界等于
+从 Pi JSONL 与 Archive manifest 独立重算的候选，raw tail 逐字节等于源事件且覆盖全部未归档事件、不拆开 entry/step；
+Pi 报告的 272000/128000 容量得到 11386 tokens 候选与 132614 tokens 余量，显式高水位配置不改变容量、候选或
+eligibility；低于自动高水位的真实 provider payload 保持完整 Pi 上下文。常驻 observability manifest 与现行 registry
+双向覆盖，`verify:observability:live` 通过 106/106。
 
-**当前工作是上下文切换与 fail-open：用 `context` hook 原子替换 provider 可见上下文，并在降级与容量不匹配时保持完整 Pi 上下文。**
+**上下文切换与 fail-open 的出口已关闭。** `context` hook 在 eligible `ActiveContext` 到达高水位时原子替换 provider
+messages；session 启动同步在首个 provider 请求前收敛，接管时才推进到最新可用 checkpoint。连续真实请求保留同一
+`prompt_cache_key` 与稳定 provider 前缀，第二次请求产生 cache read；重启复用同一两字段边界，根级 sibling 分支、
+OpenViking 断线、来源事实不可读和容量不匹配均使用完整 Pi 上下文。
+
+`session_before_compact` 只在 ActiveContext eligible 且事实可读时向 Pi 提供带 checkpoint hash、Archive 身份和
+raw-tail 边界的自包含 compaction；否则不返回结果，由 Pi 原生 compaction 继续。`verify:takeover:live` 在真实 task
+provider、真实 Pi lifecycle、受管 OpenViking 与真实 VLM checkpoint 上通过 201/201：后台 checkpoint B 已生成时，
+同一 provider epoch 的第二个请求仍使用 checkpoint A，稳定前缀保持且第二次 `cacheRead=87552`；A payload 再次越过
+高水位后，下一请求、持久 ActiveContext、远端 checkpoint 事实与 compaction 共同推进到同一最新身份，compaction 期间
+ActiveContext 文件逐字节不变。常驻 `verify:observability:live` 通过 106/106。
 
 ## 实施顺序
 
@@ -153,7 +162,7 @@ payload 仍包含归档前缀原文且不含 checkpoint 正文，证明接管保
 ### 原子 Archive
 
 - 调查 OpenViking 可用于 Archive 原子绑定的公开操作及崩溃语义，以实践结果选择最小机制；
-- 从已经确认的 immutable event 对象选择完整 event/step 范围，生成确定性 `archiveId`；
+- 从已经确认的 immutable event 对象选择完整 event 范围，且边界不拆开 Pi entry 或 step，生成确定性 `archiveId`；
 - 回读事件并重算 event identity、顺序和内容 hash，manifest 记录 event/step 边界、数量和聚合
   hash；
 - 固定所选原子机制的数据结构、接受证明、冲突和恢复规则；事件对象的 commit marker 不得代替
@@ -162,18 +171,17 @@ payload 仍包含归档前缀原文且不含 checkpoint 正文，证明接管保
 - 根据单个用户轮次内的 token/step 压力生成有效 Archive；
 - 跨重启恢复未完成的 Archive，复用相同 `archiveId`，不产生第二个逻辑对象；
 - 用 golden 基线验证确定结果；用独立生成的 Archive 边界、长工具循环、单轮超长输入和重启场景验证
-  manifest/step 不变量；
-- 用多个真实 Pi workload 形成 Archive，回读并验证各自事件顺序、step 边界、manifest 和 expand；
+  manifest/entry/step 不变量；
+- 用多个真实 Pi workload 形成 Archive，回读并验证各自事件顺序、entry/step 边界、manifest 和 expand；
 - `/viking` 展示 Archive 身份、提交状态、处理状态和边界诊断。
 
 **验收**：
 
-- 所选机制的接受证明、manifest hash、event/step 边界、数量和引用事件全部一致时 Archive 才可见；
+- 所选机制的接受证明、manifest hash、event 范围、entry/step 边界、数量和引用事件全部一致时 Archive 才可见；
 - 响应丢失、部分落盘和进程重启后复用相同 `archiveId`，不会产生重复或半可见 Archive；
 - 按 `archiveId` 回读和 expand 得到确定且完整的源事件序列；
-- tool call/result 在 Archive 边界保持原子，单个用户轮次内的 token/step 压力能够生成有效
-  Archive；
-- 各真实 Pi workload 的 Archive 均满足 manifest、event/step 边界、hash 和 expand 完整性。
+- Pi entry 与 tool call/result step 在 Archive 边界保持原子，单个用户轮次内的 token 压力能够生成有效 Archive；
+- 各真实 Pi workload 的 Archive 均满足 manifest、event 范围、entry/step 边界、hash 和 expand 完整性。
 
 ### checkpoint 与上下文接管
 
@@ -217,9 +225,8 @@ payload 仍包含归档前缀原文且不含 checkpoint 正文，证明接管保
 - 分支变化时，仅复用来源 Archive 边界仍在当前祖先链上的 `ActiveContext`；
 - dry-run payload 完整包含 system、checkpoint、原始用户指令 anchor、raw tail 和全部未归档事件；
 - tool call/result 在 raw-tail 边界保持原子；
-- 高水位公式结果为正时，任务模型能够在安全余量内完整装载 dry-run payload；
-- 高水位公式结果非正时 takeover eligibility 为 inactive，`/viking` 给出 capacity mismatch 和
-  fallback 诊断。
+- Pi 报告的 `contextWindow-maxTokens` 能在安全余量内完整装载候选 payload；
+- 显式高水位配置不改变模型容量、候选 payload、headroom 或 eligibility。
 
 #### 上下文切换与 fail-open
 
@@ -278,8 +285,7 @@ payload 仍包含归档前缀原文且不含 checkpoint 正文，证明接管保
 
 ## 下一实施入口
 
-当前入口是建立上下文切换基线：先固定"何时到达高水位、每次高水位只替换一次、替换后追加在稳定前缀之后"的
-成功标准与证伪条件，再用开发模型身份的 task provider 调查真实请求 payload 与 cache epoch 的可观察形状，
-建立 `test/live/takeover.workloads.json` 并固定 hash。基线成立后用 `context` hook 消费已就绪的 `ActiveContext`
-执行原子替换，并保证无有效上下文、OpenViking/VLM 降级或容量不匹配时继续使用完整 Pi 上下文；Pi 仍是
-compaction 的唯一触发方。
+当前入口是固定模型端到端预算校准：先建立 `verify:budget:live` manifest，用开发模型身份中的 task/VLM 组合对多个
+彼此独立的真实 100k+ workload 各重复至少三次，逐项核对源事件、Archive、checkpoint、raw tail 与实际 provider
+payload，并记录真实 token、吞吐、延迟和 eligibility 两侧余量。基线完成前不修改发布预算；结果偏离时回到对应链路
+重新调查，全部重复运行结论一致后再把通过验收的模型身份、预算和 eligibility 规则写入发布配置。

@@ -17,10 +17,13 @@ import { clearVikingFooter, formatVikingCommand, setVikingFooter } from "./share
 import { guardVikingUriToolCall } from "./lib/uri-guard-adapter.mjs";
 import { registerTools, VIKING_TOOL_NAMES } from "./tools.js";
 import { snapshotSessionSource } from "./shared/pi-session-source.mjs";
+import { evaluateTakeoverTrigger } from "./shared/active-context.mjs";
+import { readTaskModelContext } from "./shared/task-model-context.mjs";
 
 const HEALTH_REFRESH_INTERVAL_MS = 5000;
 const OBSERVATION_ENTRY_TYPE = "ov-observation";
 const OBSERVATION_ENTRY_SCHEMA_VERSION = 1;
+
 
 export default async function (pi: ExtensionAPI) {
   // --- Load config ---
@@ -53,7 +56,8 @@ export default async function (pi: ExtensionAPI) {
   let started = false;
   let startPromise: Promise<void> | null = null;
   let startupWarningShown = false;
-
+  let appliedTakeoverCheckpointId: string | null = null;
+  let sessionReady: Promise<unknown> = Promise.resolve();
   const beginHook = (hook: string, reason = "none"): number => observation.begin("pi_lifecycle", hook, reason);
   const endHook = (op: number, hook: string, reason = "none", outcome = "success"): void =>
     observation.end("pi_lifecycle", op, hook, reason, outcome);
@@ -105,7 +109,14 @@ export default async function (pi: ExtensionAPI) {
       startupWarningShown = false;
       profileBlock = await buildSessionProfileBlock(client, config);
       observation.emit("profile_result", profileBlock);
-      scheduleSync(ctx, "session_start");
+      observation.emit("sync_schedule", "session_start", client.connected);
+      sessionReady = sync.syncSession(snapshotSessionSource(ctx.sessionManager), taskModelContext(ctx))
+        .catch((error: unknown) => {
+          observation.emit("index_failure", error, "sync_schedule", "degrade", "continue_pi");
+        });
+      void sessionReady.then(() => {
+        if (statusContext === ctx) renderStatus(ctx);
+      });
       started = true;
       if (config.logLevel === "info") {
         ctx.ui.notify(`OpenViking connected (${piSessionId.slice(0, 8)}...)`, "info");
@@ -128,21 +139,41 @@ export default async function (pi: ExtensionAPI) {
    * 容量、system prompt 与活动工具定义都只有 Pi 拥有，takeover eligibility 必须以这些
    * 报告值为准而不是自行估算。任一项不可用时返回空值，由下游降级为 inactive。
    */
-  const taskModelContext = (ctx: any): TaskModelContext => {
-    const model = ctx?.model;
-    const capacity = Number.isFinite(model?.contextWindow) && Number.isFinite(model?.maxTokens)
-      ? { contextWindow: model.contextWindow, maxTokens: model.maxTokens }
-      : null;
-    let systemPrompt = "";
-    let toolDefinitions = "";
+  const taskModelContext = (ctx: any): TaskModelContext => readTaskModelContext(pi, ctx, (error) => {
+    observation.emit("index_failure", error, "task_model_context", "degrade", "continue_pi");
+  });
+
+  const contextUsageTokens = (ctx: any): number | null => {
     try {
-      systemPrompt = typeof ctx?.getSystemPrompt === "function" ? String(ctx.getSystemPrompt() ?? "") : "";
-      const active = new Set(pi.getActiveTools());
-      toolDefinitions = JSON.stringify(pi.getAllTools().filter((tool: any) => active.has(tool?.name)));
+      const usage = typeof ctx?.getContextUsage === "function" ? ctx.getContextUsage() : null;
+      const tokens = usage?.tokens;
+      return typeof tokens === "number" && Number.isFinite(tokens) && tokens >= 0 ? tokens : null;
     } catch (error: unknown) {
       observation.emit("index_failure", error, "task_model_context", "degrade", "continue_pi");
+      return null;
     }
-    return { capacity, systemPrompt, toolDefinitions };
+  };
+
+  const takeoverHighWaterTokens = (): number | null => {
+    const status = sync.status.activeContext;
+    if (status.eligibility !== "eligible") return null;
+    const configured = Number(config.takeover.contextTokenThreshold) || 0;
+    if (configured > 0) return configured;
+    const automatic = Number(status.headroomTokens);
+    return Number.isFinite(automatic) && automatic > 0 ? automatic : null;
+  };
+
+  const takeoverDecision = (ctx: any) => {
+    const status = sync.status.activeContext;
+    return evaluateTakeoverTrigger({
+      enabled: config.takeover.enabled,
+      eligibility: status.eligibility,
+      currentCheckpointId: status.checkpointId,
+      appliedCheckpointId: appliedTakeoverCheckpointId,
+      piUsageTokens: contextUsageTokens(ctx),
+      payloadTokens: status.payloadTokens,
+      highWaterTokens: takeoverHighWaterTokens(),
+    });
   };
 
   const scheduleSync = (ctx: any, trigger: string): void => {
@@ -206,6 +237,7 @@ export default async function (pi: ExtensionAPI) {
   // --- session_start ---
   pi.on("session_start", async (event, ctx) => {
     const reason = event?.reason ?? "none";
+    appliedTakeoverCheckpointId = null;
     observation.bindSession(ctx.sessionManager.getSessionId());
     const op = beginHook("session_start", reason);
     try {
@@ -263,6 +295,12 @@ export default async function (pi: ExtensionAPI) {
     const op = beginHook("context");
     try {
       if (!client.connected || bypassed) {
+        if (!bypassed) {
+          observation.emit(
+            "active_context_takeover", "keep_full_context", sync.status.activeContext.eligibility,
+            contextUsageTokens(ctx), takeoverHighWaterTokens(), Array.isArray(event.messages) ? event.messages.length : 0,
+          );
+        }
         endHook(op, "context", "none", "skipped");
         return;
       }
@@ -270,13 +308,45 @@ export default async function (pi: ExtensionAPI) {
       // Keep recall synchronous with the provider request so the current prompt
       // still receives current-query memory, without blocking user-message UI.
       await recall.searchPending();
+      await sessionReady;
+      const taskModel = taskModelContext(ctx);
+      const takeover = takeoverDecision(ctx);
+      let messages = event.messages;
+      let takeoverBranch = "keep_full_context";
+      if (!takeover.render && sync.status.activeContext.eligibility === "eligible" &&
+          takeover.usageTokens !== null && takeover.highWaterTokens !== null &&
+          takeover.usageTokens < takeover.highWaterTokens) {
+        takeoverBranch = "below_high_water";
+      }
+      if (takeover.render || (!taskModel.factsAvailable && sync.status.activeContext.checkpointId)) {
+        const checkpointBefore = sync.status.activeContext.checkpointId;
+        const replacement = await sync.takeoverMessages(
+          snapshotSessionSource(ctx.sessionManager), taskModel, takeover.allowAdvance,
+        );
+        if (replacement) {
+          messages = replacement;
+          const checkpointAfter = sync.status.activeContext.checkpointId;
+          takeoverBranch = takeover.epochActive && checkpointBefore === checkpointAfter
+            ? "reuse_context"
+            : "replace_context";
+          appliedTakeoverCheckpointId = checkpointAfter;
+        }
+      }
+      observation.emit(
+        "active_context_takeover",
+        takeoverBranch,
+        sync.status.activeContext.eligibility,
+        takeover.usageTokens,
+        takeover.highWaterTokens,
+        Array.isArray(messages) ? messages.length : 0,
+      );
 
-      const { messages, injectedBlock } = recall.injectRecall(event.messages);
+      const { messages: injectedMessages, injectedBlock } = recall.injectRecall(messages);
       if (injectedBlock) {
         recordObservation("recall-injection", injectedBlock, ctx.sessionManager.getLeafId());
       }
       endHook(op, "context");
-      return { messages };
+      return { messages: injectedMessages };
     } catch (error) {
       endHook(op, "context", "none", "error");
       throw error;
@@ -316,8 +386,37 @@ export default async function (pi: ExtensionAPI) {
     }
   });
 
-  // Pi remains the sole compaction trigger. After it appends the compaction entry,
-  // record that new source fact without altering the compaction lifecycle.
+  // Pi remains the sole compaction trigger. When an eligible ActiveContext is readable,
+  // provide it as Pi's compaction checkpoint; otherwise Pi keeps its native split-turn path.
+  pi.on("session_before_compact", async (event, ctx) => {
+    const reason = event?.reason ?? "none";
+    const op = beginHook("session_before_compact", reason);
+    try {
+      if (!client.connected || bypassed || !config.takeover.enabled) {
+        observation.emit("active_context_compaction", "native_compaction", sync.status.activeContext.eligibility);
+        endHook(op, "session_before_compact", reason, "skipped");
+        return;
+      }
+      await sessionReady;
+      const compaction = await sync.activeContextCompaction(
+        snapshotSessionSource(ctx.sessionManager),
+        Number(event?.preparation?.tokensBefore) || 0,
+      );
+      observation.emit(
+        "active_context_compaction",
+        compaction ? "provide_context" : "native_compaction",
+        sync.status.activeContext.eligibility,
+      );
+      endHook(op, "session_before_compact", reason, compaction ? "success" : "skipped");
+      return compaction ? { compaction } : undefined;
+    } catch (error) {
+      observation.emit("active_context_compaction", "native_compaction", sync.status.activeContext.eligibility);
+      endHook(op, "session_before_compact", reason, "error");
+      return;
+    }
+  });
+
+  // After Pi appends the compaction entry, record that new source fact without altering the lifecycle.
   pi.on("session_compact", (event, ctx) => {
     const reason = event?.reason ?? "none";
     const op = beginHook("session_compact", reason);
@@ -402,7 +501,11 @@ export default async function (pi: ExtensionAPI) {
     try {
       await stopHealthPolling(ctx);
       observationDeadline = observation.beginDrainDeadline(500);
-      scheduleSync(ctx, "session_shutdown");
+      if (sync.sourceIsCurrent(ctx.sessionManager)) {
+        observation.emit("sync_schedule", "session_shutdown", client.connected, "skip_current");
+      } else {
+        scheduleSync(ctx, "session_shutdown");
+      }
       const drained = await sync.waitForIdle(500);
       if (!drained) observation.abandon();
       await client.close(true);

@@ -94,6 +94,60 @@ function projectableParts(entry) {
   }];
 }
 
+function setContainerValue(target, container, value) {
+  const path = String(container || "").split(".");
+  let cursor = target;
+  for (let index = 0; index < path.length - 1; index++) {
+    if (!cursor || typeof cursor !== "object") throw new Error("RecordedEvent part container is not reconstructable");
+    cursor = cursor[path[index]];
+  }
+  if (!cursor || typeof cursor !== "object" || !path.at(-1)) {
+    throw new Error("RecordedEvent part container is not reconstructable");
+  }
+  cursor[path.at(-1)] = value;
+}
+
+/** Reconstruct one original Pi entry from its complete, ordered RecordedEvent projection. */
+export function reconstructPiEntry(events) {
+  if (!Array.isArray(events) || events.length === 0) throw new Error("Pi entry reconstruction requires events");
+  const first = events[0];
+  const entryId = first?.source?.entryId;
+  if (!entryId || !events.every((event) => event?.source?.entryId === entryId)) {
+    throw new Error("Pi entry reconstruction requires one source entry");
+  }
+
+  const parts = events.map((event) => event?.payload?.part).filter(Boolean);
+  if (parts.length === 0) {
+    if (events.length !== 1 || !first?.payload?.entry) throw new Error("opaque Pi entry is not reconstructable");
+    return jsonClone(first.payload.entry);
+  }
+  if (parts.length !== events.length) throw new Error("mixed RecordedEvent part group is not reconstructable");
+
+  const { container, form, count } = parts[0];
+  if (typeof container !== "string" || !["array", "string"].includes(form) ||
+      !Number.isSafeInteger(count) || count < 1) {
+    throw new Error("RecordedEvent part metadata is not reconstructable");
+  }
+  if (!parts.every((part) => part.container === container && part.form === form && part.count === count)) {
+    throw new Error("RecordedEvent part metadata is inconsistent");
+  }
+  if (parts.length !== count) throw new Error("RecordedEvent entry is split outside the reconstruction range");
+
+  const values = new Array(count);
+  for (const event of events) {
+    const index = event?.source?.partIndex;
+    if (!Number.isSafeInteger(index) || index < 0 || index >= count || values[index] !== undefined) {
+      throw new Error("RecordedEvent part index is not reconstructable");
+    }
+    values[index] = jsonClone(event.payload.part.value);
+  }
+  if (values.some((value) => value === undefined)) throw new Error("RecordedEvent entry is missing a content part");
+
+  const entry = jsonClone(first.payload.entry);
+  setContainerValue(entry, container, form === "string" ? values[0] : values);
+  return entry;
+}
+
 function entryRole(entry) {
   return entry?.type === "message" && typeof entry.message?.role === "string"
     ? entry.message.role

@@ -64,14 +64,18 @@ schema version、run、seq 范围、stage/kind/outcome 计数、accepted/dropped
 ## 真实验收门禁
 
 每条系统保证交付一个由 `package.json` 暴露的 live verifier，以所验证的保证命名：`verify:sync:live`、
-`verify:archive:live`、`verify:checkpoint:live`、`verify:context:live`；尚未建立的保证按同一职责命名预留：
-`verify:takeover:live`、`verify:budget:live`、`verify:retrieval:live`。横切能力使用常驻的
-`verify:observability:live`，其当前 manifest 覆盖 active stage 全集。各 gate 引用同一 registry，只增加本 gate
-workload 的预期，不复制观察 schema；产品责任变化时更新当前 observability manifest，已关闭出口的 gate 仍验证其现行产品保证，但不得要求已被替换或删除的观察点。一个入口可以组合多个聚焦脚本，但每个出口只
+`verify:archive:live`、`verify:checkpoint:live`、`verify:context:live`、`verify:takeover:live`；尚未建立的保证按同一
+职责命名预留：`verify:budget:live`、`verify:retrieval:live`。横切能力使用常驻的
+`verify:observability:live`，其当前 manifest 覆盖 active stage 全集：会改变产品行为且可由真实边界稳定触发的 stage
+由 workload `expectedRecords` 验证，其余内部 failure stage 由 manifest 的 `deterministicStages` 指向实际记录测试；两者必须与
+registry 双向一致且一个 stage 只有一条权威验证路径。各阶段 gate 引用同一 registry，只增加本阶段 workload 的预期，
+不复制观察 schema；产品责任变化时同步更新当前 observability manifest。已关闭出口的 gate 仍验证现行产品保证，但不得要求已被替换或删除的观察点。一个入口可以组合多个聚焦脚本，但每个出口只
 引用自己的入口。live verifier 是相应实现的一部分，mock、内存 transport、合成模型输出和人工检查不构成门禁替代品。
 workload 内部允许以确定性脚本输入驱动被测行为（例如由脚本化 provider 固定触发一次工具调用），前提是被测
 行为经过的真实边界——Pi lifecycle、hook 接线、OpenViking 与观察链路——不因此被替换，且驱动方式在 manifest
-中声明。
+中声明。`success-recall-sync` 的 fixture 以生产一致的异步 Content 写入建立，并在统一 deadline 内轮询真实 search；
+只有同一随机 namespace 内的目标 resource URI 可检索才进入 workload。文件存在或其他命中不能替代语义可见性；超时
+artifact 记录队列与模型状态。OpenViking `wait=true` 的阻塞时延属于底层 capability 诊断，不作为观察门禁的成功代理。
 
 所有 live verifier 使用同一契约：
 
@@ -119,9 +123,9 @@ manifest 中的精确依赖、服务和模型身份是可重放的最近验证�
 | ------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | observability | 当前 Pi lifecycle、真实同步、受支持 OpenViking，以及受控断线、拒绝和冲突                                     | run 完整、op 配对、分支/状态/失败可还原、无敏感值和丢弃、记录不进入事实源且清理成立                                         |
 | sync          | 当前 Pi CLI/lifecycle、真实 `SessionManager`、受支持 OpenViking Content API；涉及模型调用时使用开发模型身份 | Pi JSONL → 全部 `RecordedEvent` → direct/chunked 对象 → entry ACK 逐项对应；重放、409、断线、shutdown 和清理成立            |
-| archive       | 受管 OpenViking 的 Archive 发布中断/客户端重启，以及多个真实 Pi workload 形成的 Archive                     | 原子可见、幂等恢复、确定 expand、event/step 边界和每种真实样本的 Archive 完整性成立                                         |
+| archive       | 受管 OpenViking 的 Archive 发布中断/客户端重启，以及多个真实 Pi workload 形成的 Archive                     | 原子可见、幂等恢复、确定 expand、event 范围、entry/step 边界和每种真实样本的 Archive 完整性成立                           |
 | checkpoint    | archive gate 的各真实 Archive 与开发模型身份中的 VLM                                                        | checkpoint 来源/hash/完整事实链、失败重试、并发与重启恢复、媒体摘要、积压和终态清理正确；实际 VLM 吞吐满足 manifest 阈值     |
-| context       | 真实 Pi session、候选 checkpoint/raw tail 和开发模型身份中的 task-model 元数据；takeover 保持 inactive      | 候选 payload 可由源事件逐项重算，step/anchor 完整；Pi 报告容量在边界两侧分别 fit/mismatch                                   |
-| takeover      | 真实 Pi `context` hook、开发模型身份中的 task provider、可控 OpenViking/VLM 降级及 Pi compaction            | 实际 provider 请求与 context gate 验证的候选 payload 一致；每个高水位只切换一次；分支/重启成立；降级时使用完整 Pi 上下文              |
+| context       | 真实 Pi session、候选 checkpoint/raw tail 和开发模型身份中的 task-model 元数据；请求保持在自动高水位以下 | 候选 payload 可由源事件逐项重算，entry/step/anchor 完整；容量来自 Pi，显式高水位不改变 payload/headroom/eligibility       |
+| takeover      | 真实 Pi `context`/compaction hook、开发 task provider、可控 OpenViking 降级与容量不匹配                   | provider payload/稳定前缀/cache 证据与候选一致；epoch 内固定且下一高水位推进；重启/分支/fail-open 与 compaction 正确 |
 | budget        | 固定 task/VLM 组合和多个彼此独立的真实 100k+ workload；每个 workload 至少重复三次                           | 源事件到实际 provider 请求全链一致；实际 token、吞吐、延迟和容量安全余量满足 manifest 阈值，重复运行结论一致                |
 | retrieval     | 同一 release run 的 budget gate summary，以及在本次 namespace 重建的对应 events/Archive/checkpoint          | summary/manifest hash 匹配；索引就绪及重启后 search/browse/expand 返回预期身份和来源链；过滤、隐藏 raw event 隔离及清理成立 |

@@ -7,7 +7,6 @@ import {
   ActiveContextManager,
   activeContextFileKey,
   type ActiveContextStatus,
-  type TaskModelCapacity,
 } from "./shared/active-context.mjs";
 import { describeArchives, type ArchiveDescriptor } from "./shared/archive.mjs";
 import { ArchiveManager } from "./shared/archive-store.mjs";
@@ -18,6 +17,7 @@ import { RecordedEventAdapter } from "./shared/recorded-event-adapter.mjs";
 import type { PiRecordedEventV1 } from "./shared/recorded-event.mjs";
 import { projectPiEntries } from "./shared/recorded-event.mjs";
 import { deriveHarnessSessionId } from "./shared/session-model.mjs";
+import type { PiTaskModelContextFacts } from "./shared/task-model-context.mjs";
 import {
   advanceSyncAck,
   isEntryAcknowledged,
@@ -52,12 +52,8 @@ export interface SyncStatus {
   activeContext: ActiveContextStatus;
 }
 
-/** Pi 报告的任务模型上下文事实；只有 Pi 拥有这些值，因此由生命周期层传入。 */
-export interface TaskModelContext {
-  capacity: TaskModelCapacity | null;
-  systemPrompt: string;
-  toolDefinitions: string;
-}
+/** Pi 生命周期读取并传入的任务模型上下文事实。 */
+export type TaskModelContext = PiTaskModelContextFacts;
 
 interface SyncManagerOptions {
   ackPathForSession?: (sessionId: string) => string | null;
@@ -149,6 +145,51 @@ export class SyncManager {
       checkpoint: this.checkpoints ? this.checkpoints.status : { ...this.syncStatus.checkpoint },
       activeContext: this.activeContext ? this.activeContext.status : { ...this.syncStatus.activeContext },
     };
+  }
+
+  sourceIsCurrent(sessionManager: any): boolean {
+    if (!this.piSessionId || typeof sessionManager?.getLeafId !== "function") return false;
+    return sessionManager.getLeafId() === this.checkpointBranchLeafId;
+  }
+
+  async takeoverMessages(sessionManager: any, taskModel: TaskModelContext | null = null, allowAdvance = true): Promise<any[] | null> {
+    return this.serialize(async () => {
+      if (!this.piSessionId || !this.activeContext || this.activeContext.status.eligibility !== "eligible") return null;
+      try {
+        const { entries, branch } = await this.sessionSource(sessionManager);
+        const events = projectPiEntries(this.piSessionId, entries);
+        const onBranch = new Set(branch.map((entry) => entry.id));
+        const branchEvents = events.filter((event) => onBranch.has(event.source.entryId));
+        return await this.activeContext.takeoverMessages(branchEvents, {
+          archives: this.committedArchives,
+          lastCheckpointId: this.checkpoints?.status.lastCheckpointId ?? null,
+          capacity: taskModel?.capacity ?? null,
+          factsAvailable: taskModel?.factsAvailable === true,
+          allowAdvance,
+          systemPrompt: taskModel?.systemPrompt ?? "",
+          toolDefinitions: taskModel?.toolDefinitions ?? "",
+        });
+      } catch (error: any) {
+        this.observe.emit("active_context_failure", error, "materialize", "degrade", "keep_full_context");
+        return null;
+      }
+    });
+  }
+
+  async activeContextCompaction(sessionManager: any, tokensBefore: number): Promise<any | null> {
+    return this.serialize(async () => {
+      if (!this.piSessionId || !this.activeContext) return null;
+      try {
+        const { entries, branch } = await this.sessionSource(sessionManager);
+        const events = projectPiEntries(this.piSessionId, entries);
+        const onBranch = new Set(branch.map((entry) => entry.id));
+        const branchEvents = events.filter((event) => onBranch.has(event.source.entryId));
+        return await this.activeContext.compaction(branchEvents, tokensBefore);
+      } catch (error: any) {
+        this.observe.emit("active_context_failure", error, "compaction", "degrade", "native_compaction");
+        return null;
+      }
+    });
   }
 
   observeFinalState(): void {
@@ -514,6 +555,7 @@ export class SyncManager {
         archives: this.committedArchives,
         lastCheckpointId: this.checkpoints?.status.lastCheckpointId ?? null,
         capacity: taskModel?.capacity ?? null,
+        factsAvailable: taskModel?.factsAvailable === true,
         systemPrompt: taskModel?.systemPrompt ?? "",
         toolDefinitions: taskModel?.toolDefinitions ?? "",
       });

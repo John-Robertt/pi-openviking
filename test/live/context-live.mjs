@@ -54,7 +54,7 @@ import {
 // ---------------------------------------------------------------------------
 
 /** 归档与接管预算是用户策略：只写进 run 私有 HOME，不触碰用户环境。 */
-function writeExtensionConfig(ctx, content = ctx.manifest.environment.extensionConfig.content) {
+export function writeExtensionConfig(ctx, content = ctx.manifest.environment.extensionConfig.content) {
   const path = join(ctx.runDir, "home", ".pi", "pi-openviking.jsonc");
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(content, null, 2)}\n`, { mode: 0o600 });
@@ -99,7 +99,7 @@ function seedPressure(ctx, sessionFile) {
   }
 }
 
-async function branchSource(ctx, sessionFile) {
+export async function branchSource(ctx, sessionFile) {
   const parsed = parsePiSessionJsonl(await readFile(sessionFile, "utf8"), { sessionId: ctx.sessionId });
   const events = projectPiEntries(ctx.sessionId, parsed.entries);
   const onBranch = new Set(parsed.branch.map((entry) => entry.id));
@@ -112,7 +112,7 @@ function ackPathFor(ctx) {
     `${ackFileKey(ctx.endpoint, ov.account, ctx.storageUser, ctx.sessionId)}.json`);
 }
 
-function activeContextPathFor(ctx) {
+export function activeContextPathFor(ctx) {
   const ov = ctx.manifest.identities.openviking;
   const key = activeContextFileKey(
     { endpoint: ctx.endpoint, account: ov.account, user: ctx.storageUser },
@@ -130,7 +130,7 @@ function productClient(ctx) {
 }
 
 /** 记录本 workload 已写入远端的对象，供持久删除核验。 */
-function recordWrittenObjects(ctx, branch, archives) {
+export function recordWrittenObjects(ctx, branch, archives) {
   ctx.knownEventIds = [...new Set([...(ctx.knownEventIds ?? []), ...branch.map((event) => event.eventId)])];
   ctx.knownArchiveManifests = [...new Map([
     ...(ctx.knownArchiveManifests ?? []).map((manifest) => [manifest.archiveId, manifest]),
@@ -144,7 +144,7 @@ function recordWrittenObjects(ctx, branch, archives) {
  * 返回当前分支事件与从 Pi JSONL 独立重算的 Archive descriptor：ActiveContext 的候选必须与
  * 这份独立重算一致，而不是与被测实现自己的中间状态一致。
  */
-async function establishArchives(log, ctx, inputs) {
+export async function establishArchives(log, ctx, inputs) {
   const runA = await runPi(ctx, {
     workloadId: ctx.workloadId, turn: 0, endpoint: ctx.endpoint,
     actions: [{ prompt: inputs.P1 }, { command: "/viking sync" }],
@@ -182,7 +182,7 @@ async function establishArchives(log, ctx, inputs) {
 }
 
 /** 由生产 CheckpointManager 与受管 OpenViking VLM 真实消费第一个 Archive。 */
-async function produceCheckpoint(log, ctx, descriptor) {
+export async function produceCheckpoint(log, ctx, descriptor) {
   const client = productClient(ctx);
   const adapter = new RecordedEventAdapter(client, { userRoot: ctx.userRoot });
   const archives = new ArchiveManager(client, { userRoot: ctx.userRoot, adapter, budgets: budgets(ctx) });
@@ -214,7 +214,7 @@ async function produceCheckpoint(log, ctx, descriptor) {
 const VIKING_CONTEXT = /活动上下文：([^\n]*)/;
 const VIKING_CAPACITY = /上下文容量：Pi 报告 (\d+)，输出预留 (\d+)，可用 (\d+)，候选需要 (\d+)/;
 
-function vikingActiveContext(run) {
+export function vikingActiveContext(run) {
   const message = String(run.actions.at(-1)?.notifyEvent?.message ?? "");
   const line = message.match(VIKING_CONTEXT)?.[1] ?? "";
   const capacity = message.match(VIKING_CAPACITY);
@@ -502,44 +502,45 @@ async function w3(log, ctx) {
   log.check(ctx.workloadId, "fit.usable-from-pi-capacity", fit.capacityTokens - fit.reserveTokens, fit.usableTokens,
     Number.isInteger(fit.capacityTokens) && Number.isInteger(fit.reserveTokens) &&
       fit.usableTokens === fit.capacityTokens - fit.reserveTokens,
-    "自动高水位必须等于 Pi 报告容量减去输出预留");
+    "可用容量必须等于 Pi 报告容量减去输出预留");
   log.check(ctx.workloadId, "fit.headroom-positive", ">0", fit.usableTokens - fit.payloadTokens,
     fit.usableTokens - fit.payloadTokens > 0);
 
-  writeExtensionConfig(ctx, ctx.manifest.environment.extensionConfig.capacityMismatchOverride);
-  const mismatchRun = await runPi(ctx, {
+  writeExtensionConfig(ctx, ctx.manifest.environment.extensionConfig.highWaterOverride);
+  const thresholdRun = await runPi(ctx, {
     workloadId: ctx.workloadId, turn: 3, endpoint: ctx.endpoint,
     actions: [{ command: "/viking sync" }, { command: "/viking sync" }, { command: "/viking" }],
   });
-  assertRunHealthy(log, ctx, mismatchRun, { requireCapture: false });
-  const mismatch = vikingActiveContext(mismatchRun);
-  const threshold = ctx.manifest.environment.extensionConfig.capacityMismatchOverride.takeover.contextTokenThreshold;
-  log.check(ctx.workloadId, "mismatch.reason", "容量不匹配", mismatch.reason, mismatch.reason === "容量不匹配",
-    mismatch.message.slice(0, 300));
-  log.check(ctx.workloadId, "mismatch.capacity-source", `${fit.capacityTokens}/${fit.reserveTokens}`,
-    `${mismatch.capacityTokens}/${mismatch.reserveTokens}`,
-    mismatch.capacityTokens === fit.capacityTokens && mismatch.reserveTokens === fit.reserveTokens,
-    "两侧的容量与安全余量都必须来自同一 Pi 报告值");
-  log.check(ctx.workloadId, "mismatch.usable-capped", threshold, mismatch.usableTokens,
-    mismatch.usableTokens === Math.min(threshold, mismatch.capacityTokens - mismatch.reserveTokens));
-  log.check(ctx.workloadId, "mismatch.headroom-non-positive", "<=0", mismatch.usableTokens - mismatch.payloadTokens,
-    mismatch.usableTokens - mismatch.payloadTokens <= 0);
-  log.check(ctx.workloadId, "mismatch.identity-stable", context.checkpointId, mismatch.checkpointId,
-    mismatch.checkpointId === context.checkpointId && mismatch.rawTailStartEventId === context.rawTailStartEventId,
-    "容量结果不得改变已固定的活动上下文身份");
+  assertRunHealthy(log, ctx, thresholdRun, { requireCapture: false });
+  const thresholded = vikingActiveContext(thresholdRun);
+  log.check(ctx.workloadId, "threshold.eligible", true, thresholded.eligible, thresholded.eligible,
+    thresholded.message.slice(0, 300));
+  log.check(ctx.workloadId, "threshold.capacity-stable",
+    `${fit.capacityTokens}/${fit.reserveTokens}/${fit.usableTokens}`,
+    `${thresholded.capacityTokens}/${thresholded.reserveTokens}/${thresholded.usableTokens}`,
+    thresholded.capacityTokens === fit.capacityTokens &&
+      thresholded.reserveTokens === fit.reserveTokens && thresholded.usableTokens === fit.usableTokens,
+    "高水位不得改变 Pi 报告容量或输出预留");
+  log.check(ctx.workloadId, "threshold.payload-stable", `${fit.payloadTokens}/${fit.usableTokens - fit.payloadTokens}`,
+    `${thresholded.payloadTokens}/${thresholded.usableTokens - thresholded.payloadTokens}`,
+    thresholded.payloadTokens === fit.payloadTokens &&
+      thresholded.usableTokens - thresholded.payloadTokens === fit.usableTokens - fit.payloadTokens);
+  log.check(ctx.workloadId, "threshold.identity-stable", context.checkpointId, thresholded.checkpointId,
+    thresholded.checkpointId === context.checkpointId && thresholded.rawTailStartEventId === context.rawTailStartEventId,
+    "高水位策略不得改变已固定的活动上下文身份");
   const persisted = await readActiveContext(activeContextPathFor(ctx));
-  log.check(ctx.workloadId, "mismatch.context-retained", context.checkpointId, persisted?.checkpointId,
+  log.check(ctx.workloadId, "threshold.context-retained", context.checkpointId, persisted?.checkpointId,
     persisted?.checkpointId === context.checkpointId);
-  ctx.runs.push(summarizeRun(fitRun), summarizeRun(mismatchRun), {
+  ctx.runs.push(summarizeRun(fitRun), summarizeRun(thresholdRun), {
     label: "eligibility",
     checkpointWallMs: ctx.checkpointWallMs,
-    fit: {
+    automatic: {
       capacity: fit.capacityTokens, reserve: fit.reserveTokens, usable: fit.usableTokens,
       payload: fit.payloadTokens, headroom: fit.usableTokens - fit.payloadTokens,
     },
-    mismatch: {
-      capacity: mismatch.capacityTokens, reserve: mismatch.reserveTokens, usable: mismatch.usableTokens,
-      payload: mismatch.payloadTokens, headroom: mismatch.usableTokens - mismatch.payloadTokens,
+    explicitHighWater: {
+      capacity: thresholded.capacityTokens, reserve: thresholded.reserveTokens, usable: thresholded.usableTokens,
+      payload: thresholded.payloadTokens, headroom: thresholded.usableTokens - thresholded.payloadTokens,
     },
   });
 }
@@ -548,7 +549,7 @@ async function w3(log, ctx) {
 // Main
 // ---------------------------------------------------------------------------
 
-async function collectObjectUris(ctx) {
+export async function collectObjectUris(ctx) {
   const uris = ctx.markerUri ? [ctx.markerUri] : [];
   for (const eventId of ctx.knownEventIds ?? []) {
     uris.push(recordedEventStorageLocation(ctx.userRoot, ctx.sessionId, eventId).directUri);
@@ -570,7 +571,7 @@ async function collectObjectUris(ctx) {
 }
 
 /** 本 workload 可能创建的 VLM task 身份：由 Archive manifest 与 attempt 链确定性派生。 */
-function collectTaskResources(ctx) {
+export function collectTaskResources(ctx) {
   return (ctx.knownArchiveManifests ?? []).flatMap((manifest) =>
     Array.from({ length: CHECKPOINT_MAX_ATTEMPTS }, (_, index) => checkpointTaskId(manifest, null, index + 1)));
 }

@@ -149,14 +149,26 @@ function lastIndexAtOrBelow(series, target) {
   return found;
 }
 
-/** 把候选边界退回到 step 起点之前，使 assistant/tool step 不被拆开。 */
-function snapToStepBoundary(events, endIndex) {
-  const stepId = events[endIndex]?.stepId;
-  if (typeof stepId !== "string") return endIndex;
-  const next = events[endIndex + 1];
-  if (!next || next.stepId !== stepId) return endIndex;
+/** 把候选边界退回到完整 entry/step 之前，使 Pi message 与 assistant/tool step 都不被拆开。 */
+function snapToAtomicBoundary(events, endIndex) {
   let index = endIndex;
-  while (index >= 0 && events[index].stepId === stepId) index--;
+  while (index >= 0) {
+    const current = events[index];
+    const next = events[index + 1];
+    if (!next) return index;
+    const splitEntry = typeof current?.source?.entryId === "string"
+      && current.source.entryId === next?.source?.entryId;
+    const splitStep = typeof current?.stepId === "string" && current.stepId === next?.stepId;
+    if (!splitEntry && !splitStep) return index;
+    const entryId = splitEntry ? current.source.entryId : null;
+    const stepId = splitStep ? current.stepId : null;
+    do {
+      index--;
+    } while (index >= 0 && (
+      (entryId !== null && events[index]?.source?.entryId === entryId)
+      || (stepId !== null && events[index]?.stepId === stepId)
+    ));
+  }
   return index;
 }
 
@@ -179,7 +191,7 @@ export function planArchives(events, { chunkTokenBudget, rawTailTokenBudget }) {
   for (let index = 1; rawTailTokenBudget + index * chunkTokenBudget <= total; index++) {
     const candidate = lastIndexAtOrBelow(series, index * chunkTokenBudget);
     if (candidate < start) continue;
-    const end = snapToStepBoundary(events, candidate);
+    const end = snapToAtomicBoundary(events, candidate);
     if (end < start) continue;
     plans.push({ startIndex: start, endIndex: end });
     start = end + 1;

@@ -9,7 +9,7 @@ import {
   planArchives,
 } from "../shared/archive.mjs";
 import { parsePiSessionJsonl } from "../shared/pi-session-source.mjs";
-import { contentHash, projectPiEntries, recordedEventBytes, recordedEventId } from "../shared/recorded-event.mjs";
+import { contentHash, projectPiEntries, reconstructPiEntry, recordedEventBytes, recordedEventId } from "../shared/recorded-event.mjs";
 import { advanceSyncAck, isAncestorEntry, isEntryAcknowledged } from "../shared/sync-ack.mjs";
 import {
   buildGeneratedPiSession,
@@ -39,31 +39,6 @@ function groupEvents(events) {
   return byEntry;
 }
 
-function setContainer(entry, container, value) {
-  const path = container.split(".");
-  let target = entry;
-  for (const segment of path.slice(0, -1)) target = target[segment];
-  target[path.at(-1)] = value;
-}
-
-function reconstructEntry(entryEvents) {
-  if (entryEvents.length === 1 && entryEvents[0].source.partType === "opaque") {
-    return entryEvents[0].payload.entry;
-  }
-
-  const entry = jsonClone(entryEvents[0].payload.entry);
-  const metadata = entryEvents[0].payload.part;
-  assert.equal(metadata.count, entryEvents.length);
-  assert.deepEqual(entryEvents.map((event) => event.source.partIndex), entryEvents.map((_, index) => index));
-  for (const event of entryEvents) {
-    assert.equal(event.payload.part.container, metadata.container);
-    assert.equal(event.payload.part.form, metadata.form);
-    assert.equal(event.payload.part.count, metadata.count);
-  }
-  const values = entryEvents.map((event) => event.payload.part.value);
-  setContainer(entry, metadata.container, metadata.form === "array" ? values : values[0]);
-  return entry;
-}
 
 function manualBranch(leafId, byId) {
   const branch = [];
@@ -129,7 +104,7 @@ test("生成的 Pi session 对完整投影、树恢复和上下文关系保持�
     for (const entry of sample.entries) {
       const entryEvents = eventsByEntry.get(entry.id);
       assert.ok(entryEvents?.length > 0, `seed=${seed} entry=${entry.id}`);
-      assert.deepEqual(reconstructEntry(entryEvents), jsonClone(entry), `seed=${seed} entry=${entry.id}`);
+      assert.deepEqual(reconstructPiEntry(entryEvents), jsonClone(entry), `seed=${seed} entry=${entry.id}`);
 
       const inherited = entry.parentId === null ? {} : contextByEntry.get(entry.parentId);
       const role = entry.type === "message" ? entry.message.role : "";
@@ -183,7 +158,7 @@ test("多个生成的长工具循环保持 call/result step 原子性", () => {
         const resultEvents = byEntry.get(result.id);
         assert.equal(result.message.role, "toolResult");
         assert.ok(resultEvents.every((event) => event.turnId === rootTurnId && event.stepId === stepId));
-        assert.deepEqual(reconstructEntry(resultEvents), result);
+        assert.deepEqual(reconstructPiEntry(resultEvents), result);
         if (result.message.isError) errorResults++;
       }
       previousStepId = stepId;
@@ -244,6 +219,10 @@ test("生成的长工具循环在单个用户轮次内形成连续、原子且�
       assert.ok(
         !next || !boundary.stepId || next.stepId !== boundary.stepId,
         `seed=${seed} Archive 边界拆开了一个 step`,
+      );
+      assert.notEqual(
+        boundary.source.entryId, next?.source?.entryId,
+        `seed=${seed} Archive 边界拆开了一个 Pi entry`,
       );
 
       const range = events.slice(plan.startIndex, plan.endIndex + 1);

@@ -1,10 +1,12 @@
 // 活动上下文：任务模型当前使用的 checkpoint 与 raw-tail 起点。
 //
-// 目标机制见 docs/spec.md 的“活动上下文与 prompt cache 稳定性”。本模块只回答两个问题：
-// 当前分支上应当固定哪一段上下文，以及这段上下文在 Pi 报告的任务模型容量内是否装得下。
-// 它不触发接管，也不改变 provider 可见上下文——真实切换由上下文切换阶段承担。
+// 目标机制见 docs/spec.md 的“活动上下文与 prompt cache 稳定性”。本模块回答三个问题：
+// 当前分支上应当固定哪一段上下文，这段上下文在 Pi 报告的任务模型容量内是否装得下，
+// 以及接管阶段如何把该段上下文渲染为 Pi context hook 可返回的 provider messages。
 
 import { readFile, rm } from "node:fs/promises";
+
+import { sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 
 import {
   checkpointEventIdFor,
@@ -14,6 +16,7 @@ import {
 } from "./checkpoint.mjs";
 import { contextTokenWeight, eventTokenWeight } from "./context-weight.mjs";
 import { observation as processObservation } from "./observe.mjs";
+import { reconstructPiEntry } from "./recorded-event.mjs";
 import { stateFileKey, writeStateFile } from "./state-file.mjs";
 
 const ACTIVE_CONTEXT_IDENTITY_VERSION = 1;
@@ -115,12 +118,36 @@ function sumWeight(events) {
  * 每一段都由不可变来源重算——checkpoint 由自身身份自证，anchor 与 raw tail 直接引用源事件
  * 对象——因此可以逐项对照源事件校验，而不需要另存一份副本。
  */
-export function materializeActiveContext({ context, checkpoint, branchEvents, systemPrompt = "", toolDefinitions = "" }) {
+function renderBoundedCheckpointBlock(checkpoint, tokenBudget) {
+  const full = renderCheckpointBlock(checkpoint);
+  if (!Number.isSafeInteger(tokenBudget) || tokenBudget <= 0 || contextTokenWeight(full) <= tokenBudget) return full;
+
+  const open = `<openviking-checkpoint id="${checkpoint.checkpointId}" archive="${checkpoint.sourceArchiveId}">`;
+  const close = "</openviking-checkpoint>";
+  const marker = "\n[checkpoint truncated to configured budget]\n";
+  const fixedBytes = Buffer.byteLength(open + marker + close, "utf8");
+  const availableBytes = tokenBudget * 4 - fixedBytes;
+  if (availableBytes < 0) throw new Error("checkpointTokenBudget cannot fit checkpoint identity");
+
+  let narrative = "";
+  let used = 0;
+  for (const character of checkpoint.narrative) {
+    const bytes = Buffer.byteLength(character, "utf8");
+    if (used + bytes > availableBytes) break;
+    narrative += character;
+    used += bytes;
+  }
+  const block = `${open}\n${narrative}${marker}${close}`;
+  if (contextTokenWeight(block) > tokenBudget) throw new Error("checkpoint block exceeds checkpointTokenBudget");
+  return block;
+}
+
+export function materializeActiveContext({ context, checkpoint, branchEvents, systemPrompt = "", toolDefinitions = "", checkpointTokenBudget = null }) {
   const start = branchEvents.findIndex((event) => event.eventId === context?.rawTailStartEventId);
   if (start < 0) throw new Error("raw tail start is not on the current branch");
   const rawTail = branchEvents.slice(start);
   const anchor = anchorEvents(branchEvents, context.rawTailStartEventId);
-  const checkpointBlock = renderCheckpointBlock(checkpoint);
+  const checkpointBlock = renderBoundedCheckpointBlock(checkpoint, checkpointTokenBudget);
   const tokens = {
     system: contextTokenWeight(systemPrompt),
     tools: contextTokenWeight(toolDefinitions),
@@ -144,12 +171,48 @@ export function payloadSegment(payload, kind) {
   return payload?.segments.find((segment) => segment.kind === kind) ?? null;
 }
 
+function messagesFromEvents(events) {
+  const groups = [];
+  for (const event of events ?? []) {
+    const previous = groups.at(-1);
+    if (previous && previous[0]?.source?.entryId === event?.source?.entryId) previous.push(event);
+    else groups.push([event]);
+  }
+  return groups.flatMap((group) => {
+    const entry = reconstructPiEntry(group);
+    if (entry?.type === "compaction" && entry.details?.type === "openviking-active-context") return [];
+    return sessionEntryToContextMessages(entry);
+  });
+}
+
+export function renderActiveContextMessages(payload) {
+  const checkpoint = payloadSegment(payload, "checkpoint");
+  const anchor = payloadSegment(payload, "anchor");
+  const rawTail = payloadSegment(payload, "raw-tail");
+  if (!checkpoint || typeof checkpoint.text !== "string" || !rawTail || !Array.isArray(rawTail.events)) {
+    throw new Error("ActiveContext payload is not renderable");
+  }
+  const firstEvent = anchor?.events?.[0] ?? rawTail.events[0];
+  const timestamp = Number.isFinite(Date.parse(firstEvent?.occurredAt)) ? Date.parse(firstEvent.occurredAt) : 0;
+  return [
+    {
+      role: "custom",
+      customType: "openviking-checkpoint",
+      content: checkpoint.text,
+      display: false,
+      timestamp,
+    },
+    ...messagesFromEvents(anchor?.events ?? []),
+    ...messagesFromEvents(rawTail.events),
+  ];
+}
+
 /**
  * takeover eligibility。
  *
  * 容量与安全余量都取自 Pi 报告的任务模型元数据：`contextWindow` 是可用窗口，`maxTokens` 是
- * 必须为模型输出保留的容量，任何请求都不能占用它。`contextTokenThreshold` 只能把可用窗口
- * 压得更低，不能超过模型实际容量。余量为正表示候选上下文能在安全余量内完整装载。
+ * 必须为模型输出保留的容量，任何接管后的请求都不能占用它。`contextTokenThreshold` 是
+ * context hook 的触发高水位，不改变候选 payload 是否装得下；余量为正表示候选上下文能在安全余量内完整装载。
  */
 export function evaluateEligibility({ capacity, takeover, payloadTokens }) {
   const inactive = (eligibility) => ({
@@ -164,9 +227,7 @@ export function evaluateEligibility({ capacity, takeover, payloadTokens }) {
   if (!Number.isFinite(capacity?.contextWindow) || !Number.isFinite(capacity?.maxTokens)) return inactive("capacity_unknown");
   if (!Number.isFinite(payloadTokens)) return inactive("no_context");
 
-  const threshold = Number(takeover?.contextTokenThreshold) || 0;
-  const automatic = Math.max(0, capacity.contextWindow - capacity.maxTokens);
-  const usableTokens = threshold > 0 ? Math.min(automatic, threshold) : automatic;
+  const usableTokens = Math.max(0, capacity.contextWindow - capacity.maxTokens);
   const headroomTokens = usableTokens - payloadTokens;
   return {
     eligibility: headroomTokens > 0 ? "eligible" : "capacity_mismatch",
@@ -175,6 +236,26 @@ export function evaluateEligibility({ capacity, takeover, payloadTokens }) {
     usableTokens,
     payloadTokens,
     headroomTokens,
+  };
+}
+
+/** 当前 provider epoch 固定时始终渲染同一 ActiveContext；只有该 epoch 再次越过高水位才允许推进。 */
+export function evaluateTakeoverTrigger({
+  enabled, eligibility, currentCheckpointId, appliedCheckpointId, piUsageTokens, payloadTokens, highWaterTokens,
+}) {
+  const epochActive = Boolean(
+    currentCheckpointId && appliedCheckpointId && currentCheckpointId === appliedCheckpointId,
+  );
+  const usageTokens = epochActive ? payloadTokens : piUsageTokens;
+  const aboveHighWater = Number.isFinite(usageTokens) && Number.isFinite(highWaterTokens) &&
+    usageTokens >= highWaterTokens;
+  const eligible = enabled !== false && eligibility === "eligible";
+  return {
+    render: eligible && (epochActive || aboveHighWater),
+    allowAdvance: eligible && aboveHighWater,
+    epochActive,
+    usageTokens: Number.isFinite(usageTokens) ? usageTokens : null,
+    highWaterTokens: Number.isFinite(highWaterTokens) ? highWaterTokens : null,
   };
 }
 
@@ -196,8 +277,8 @@ const errorMessage = (error) => `${error?.name || "Error"}: ${error?.message || 
 /**
  * 活动上下文的选择、持久化与状态。
  *
- * 一经形成即保持固定，直到来源边界离开当前分支祖先链：推进到更新的 checkpoint 是接管时的
- * 原子替换（见 `docs/spec.md`），不属于本阶段，否则系统会出现第二条替换路径。
+ * 一经形成即保持固定，直到来源边界离开当前分支祖先链，或 lifecycle 层确认当前 provider epoch
+ * 再次越过高水位并显式允许原子推进。
  */
 export class ActiveContextManager {
   constructor({ path, adapter, takeover, observation = processObservation }) {
@@ -226,7 +307,7 @@ export class ActiveContextManager {
     this.observe.emit("active_context_state", "snapshot", this.state, null);
   }
 
-  async update(sessionId, { branchEvents = [], archives = [], lastCheckpointId = null, capacity = null, systemPrompt = "", toolDefinitions = null } = {}) {
+  async update(sessionId, { branchEvents = [], archives = [], lastCheckpointId = null, capacity = null, systemPrompt = "", toolDefinitions = null, factsAvailable = true } = {}) {
     if (this.sessionId !== sessionId) {
       this.sessionId = sessionId;
       this.context = null;
@@ -241,7 +322,7 @@ export class ActiveContextManager {
 
     const branch = await this.resolveContext(branchEvents, archives, lastCheckpointId);
     this.observe.emit("active_context_select", branch, archives.length, branchEvents.length);
-    await this.publish({ branchEvents, capacity, systemPrompt, toolDefinitions });
+    await this.publish({ branchEvents, capacity, systemPrompt, toolDefinitions, factsAvailable });
     return this.status;
   }
 
@@ -250,24 +331,26 @@ export class ActiveContextManager {
     if (activeContextOnBranch(this.context, branchEvents)) return "reused";
     const candidate = selectActiveContext(branchEvents, archives, lastCheckpointId);
     const invalidated = this.context !== null;
-    this.context = candidate;
     this.checkpointCache = null;
     try {
       if (this.path) {
         if (candidate) await writeActiveContext(this.path, candidate);
         else if (invalidated) await clearActiveContext(this.path);
       }
+      this.context = candidate;
     } catch (error) {
       this.recordFailure(error, "persist", "degrade");
+      if (!candidate) this.context = null;
+      return candidate ? "unavailable" : invalidated ? "invalidated" : "unavailable";
     }
     return candidate ? "selected" : invalidated ? "invalidated" : "unavailable";
   }
 
-  async publish({ branchEvents, capacity, systemPrompt, toolDefinitions }) {
+  async publish({ branchEvents, capacity, systemPrompt, toolDefinitions, factsAvailable }) {
     const previous = this.state;
     let candidate = null;
-    let missing = "no_context";
-    if (this.context) {
+    let missing = !factsAvailable || this.roundFailure ? "facts_unavailable" : "no_context";
+    if (this.context && factsAvailable) {
       try {
         candidate = await this.materialize(branchEvents, { systemPrompt, toolDefinitions });
       } catch (error) {
@@ -282,7 +365,7 @@ export class ActiveContextManager {
       payloadTokens: candidate ? candidate.tokens.payload : null,
     });
     // 没有候选时，"为什么没有"比"没有"本身更有诊断价值：区分尚未形成与来源事实不可读。
-    if (!candidate && verdict.eligibility === "no_context") verdict.eligibility = missing;
+    if (!factsAvailable || (!candidate && verdict.eligibility === "no_context")) verdict.eligibility = missing;
     this.state = {
       checkpointId: this.context?.checkpointId ?? null,
       rawTailStartEventId: this.context?.rawTailStartEventId ?? null,
@@ -300,31 +383,132 @@ export class ActiveContextManager {
   }
 
   /** checkpoint 正文不可变：同一身份只读取一次。 */
-  async loadCheckpoint() {
-    const checkpointId = this.context.checkpointId;
+  async loadCheckpoint(context = this.context) {
+    const checkpointId = context?.checkpointId;
+    if (!checkpointId) throw new Error("ActiveContext checkpoint is unavailable");
     if (this.checkpointCache?.checkpointId === checkpointId) return this.checkpointCache.checkpoint;
     const stored = await this.adapter.readEvent(this.sessionId, checkpointEventIdFor(checkpointId));
     const checkpoint = parseCheckpointEventById(stored.event, checkpointId);
-    this.checkpointCache = { checkpointId, checkpoint };
+    this.checkpointCache = { checkpointId, checkpoint, contentHash: stored.event?.contentHash ?? null };
     return checkpoint;
   }
 
-  /** dry-run：materialize 候选 payload，不改变任何产品状态。 */
-  async materialize(branchEvents, { systemPrompt = "", toolDefinitions = null } = {}) {
-    if (!this.context) return null;
+  async materializeFor(context, branchEvents, { systemPrompt = "", toolDefinitions = null } = {}) {
+    if (!context) return null;
     return materializeActiveContext({
-      context: this.context,
-      checkpoint: await this.loadCheckpoint(),
+      context,
+      checkpoint: await this.loadCheckpoint(context),
       branchEvents,
       systemPrompt,
       toolDefinitions,
+      checkpointTokenBudget: this.takeover.checkpointTokenBudget,
     });
   }
 
+  /** dry-run：materialize 候选 payload，不改变任何产品状态。 */
+  async materialize(branchEvents, options = {}) {
+    return this.materializeFor(this.context, branchEvents, options);
+  }
+
+  /** 接管渲染：用当前任务模型事实重新判定 eligible 后，给 Pi context hook 提供替换消息。 */
+  async takeoverMessages(branchEvents, {
+    archives = [], lastCheckpointId = null, systemPrompt = "", toolDefinitions = null, capacity = null,
+    factsAvailable = true, allowAdvance = true,
+  } = {}) {
+    if (!factsAvailable) {
+      const previous = this.state;
+      this.state = { ...this.state, eligibility: "facts_unavailable", lastFailure: "Pi task model context facts unavailable" };
+      this.observe.emit(
+        "active_context_eligibility", this.state.eligibility,
+        this.state.capacityTokens, this.state.usableTokens, this.state.payloadTokens, this.state.headroomTokens,
+      );
+      if (JSON.stringify(previous) !== JSON.stringify(this.state)) {
+        this.observe.emit("active_context_state", "change", previous, this.state);
+      }
+      return null;
+    }
+    try {
+      const latest = allowAdvance ? selectActiveContext(branchEvents, archives, lastCheckpointId) : null;
+      const candidate = latest ?? this.context;
+      if (!activeContextOnBranch(candidate, branchEvents)) return null;
+
+      const payload = await this.materializeFor(candidate, branchEvents, { systemPrompt, toolDefinitions });
+      if (!payload) return null;
+      const verdict = evaluateEligibility({
+        capacity,
+        takeover: this.takeover,
+        payloadTokens: payload.tokens.payload,
+      });
+
+      let rendered = null;
+      if (verdict.eligibility === "eligible") {
+        rendered = renderActiveContextMessages(payload);
+        if (latest && JSON.stringify(latest) !== JSON.stringify(this.context)) {
+          if (this.path) await writeActiveContext(this.path, latest);
+          this.context = latest;
+        }
+      }
+
+      const statusContext = verdict.eligibility === "eligible" ? candidate : (this.context ?? candidate);
+      const previous = this.state;
+      this.state = {
+        checkpointId: statusContext.checkpointId,
+        rawTailStartEventId: statusContext.rawTailStartEventId,
+        rawTailEvents: payloadSegment(payload, "raw-tail")?.events?.length ?? 0,
+        ...verdict,
+        lastFailure: null,
+      };
+      this.observe.emit(
+        "active_context_eligibility", this.state.eligibility,
+        this.state.capacityTokens, this.state.usableTokens, this.state.payloadTokens, this.state.headroomTokens,
+      );
+      if (JSON.stringify(previous) !== JSON.stringify(this.state)) {
+        this.observe.emit("active_context_state", "change", previous, this.state);
+      }
+      return rendered;
+    } catch (error) {
+      this.recordFailure(error, "materialize", "degrade");
+      this.state = { ...this.state, eligibility: "facts_unavailable", lastFailure: this.roundFailure };
+      this.observe.emit(
+        "active_context_eligibility", this.state.eligibility,
+        this.state.capacityTokens, this.state.usableTokens, this.state.payloadTokens, this.state.headroomTokens,
+      );
+      return null;
+    }
+  }
+
+  /** Pi compaction 的自包含 checkpoint；事实不可读时返回 null，由 Pi 使用原生 compaction。 */
+  async compaction(branchEvents, tokensBefore) {
+    try {
+      if (this.state.eligibility !== "eligible" || !activeContextOnBranch(this.context, branchEvents)) return null;
+      const checkpoint = await this.loadCheckpoint();
+      const start = branchEvents.find((event) => event.eventId === this.context.rawTailStartEventId);
+      if (!start?.source?.entryId) return null;
+      const summary = renderBoundedCheckpointBlock(checkpoint, this.takeover.checkpointTokenBudget);
+      return {
+        summary,
+        firstKeptEntryId: start.source.entryId,
+        tokensBefore,
+        details: {
+          schemaVersion: 1,
+          type: "openviking-active-context",
+          checkpointId: checkpoint.checkpointId,
+          checkpointHash: this.checkpointCache?.contentHash ?? null,
+          sourceArchiveId: checkpoint.sourceArchiveId,
+          sourceArchiveHash: checkpoint.sourceArchiveHash,
+          rawTailStartEventId: this.context.rawTailStartEventId,
+        },
+      };
+    } catch (error) {
+      this.recordFailure(error, "compaction", "degrade", "native_compaction");
+      return null;
+    }
+  }
+
   /** 活动上下文失败只影响诊断与 eligibility：事件、Archive 与 checkpoint 保持不变。 */
-  recordFailure(error, errorCode, disposition) {
-    // `publish` 是 state 的唯一写者：本轮失败在那里统一进入状态，两条降级路径因此产生同样的记录。
+  recordFailure(error, errorCode, disposition, branch = "keep_full_context") {
+    // `publish` 是 state 的唯一写者；调用方只声明当前产品降级分支。
     this.roundFailure = errorMessage(error);
-    this.observe.emit("active_context_failure", error, errorCode, disposition, "keep_full_context");
+    this.observe.emit("active_context_failure", error, errorCode, disposition, branch);
   }
 }

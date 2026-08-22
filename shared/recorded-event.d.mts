@@ -51,4 +51,5 @@ export function buildProducedRecordedEvent(input: {
   occurredAt: string;
   payload: JsonValue;
 }): ProducedRecordedEventV1;
+export function reconstructPiEntry(events: PiRecordedEventV1[]): JsonValue;
 export function projectPiEntries(sessionId: string, entries: JsonValue[]): PiRecordedEventV1[];

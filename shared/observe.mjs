@@ -40,6 +40,7 @@ const HOOKS = [
   "context",
   "tool_call",
   "turn_end",
+  "session_before_compact",
   "session_compact",
   "session_tree",
   "session_info_changed",
@@ -166,7 +167,7 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
   sync_schedule: stage("index.ts", "decision", schema({
     trigger: ENUM(SYNC_TRIGGERS),
     connected: BOOLEAN,
-    branch: ENUM(["sync", "observe", "skip_bypassed", "skip_disabled"]),
+    branch: ENUM(["sync", "observe", "skip_bypassed", "skip_current", "skip_disabled"]),
   })),
   profile_result: stage("index.ts", "decision", schema({
     branch: ENUM(["inject", "omit"]),
@@ -337,6 +338,17 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
     payload: NULLABLE_INTEGER,
     headroom: NULLABLE_SIGNED_INTEGER,
   })),
+  active_context_takeover: stage("index.ts", "decision", schema({
+    branch: ENUM(["replace_context", "reuse_context", "below_high_water", "keep_full_context"]),
+    eligibility: ENUM(ACTIVE_CONTEXT_STATES),
+    usageTokens: NULLABLE_INTEGER,
+    highWaterTokens: NULLABLE_INTEGER,
+    messages: INTEGER(),
+  })),
+  active_context_compaction: stage("index.ts", "decision", schema({
+    branch: ENUM(["provide_context", "native_compaction"]),
+    eligibility: ENUM(ACTIVE_CONTEXT_STATES),
+  })),
   active_context_state: stage("shared/active-context.mjs", "state", variants("mode", {
     snapshot: schema({
       mode: MODE_SNAPSHOT,
@@ -362,8 +374,8 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
   })),
   active_context_failure: stage("shared/active-context.mjs", "failure", schema({
     ...FAILURE_BASE,
-    errorCode: ENUM(["materialize", "persist"]),
-    branch: ENUM(["keep_full_context"]),
+    errorCode: ENUM(["compaction", "materialize", "persist"]),
+    branch: ENUM(["keep_full_context", "native_compaction"]),
   }, FAILURE_OPTIONAL)),
   recall_request: stage("recall.ts", "decision", schema({
     queryChars: INTEGER(),
@@ -573,6 +585,17 @@ const ENCODERS = Object.freeze({
     usable: nullableInteger(usable),
     payload: nullableInteger(payload),
     headroom: nullableInteger(headroom),
+  }),
+  active_context_takeover: (branch, eligibility, usageTokens, highWaterTokens, messages) => ({
+    branch,
+    eligibility: ACTIVE_CONTEXT_STATES.includes(eligibility) ? eligibility : "no_context",
+    usageTokens: nullableInteger(usageTokens),
+    highWaterTokens: nullableInteger(highWaterTokens),
+    messages: safeInteger(messages),
+  }),
+  active_context_compaction: (branch, eligibility) => ({
+    branch,
+    eligibility: ACTIVE_CONTEXT_STATES.includes(eligibility) ? eligibility : "no_context",
   }),
   active_context_state: (mode, from, to) => mode === "snapshot"
     ? {

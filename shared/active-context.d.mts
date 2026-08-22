@@ -16,6 +16,7 @@ export interface TaskModelCapacity {
 export interface TakeoverPolicy {
   enabled: boolean;
   contextTokenThreshold: number;
+  checkpointTokenBudget?: number;
 }
 
 /** 单一判定结果：可接管，或说明为什么还不能接管。 */
@@ -65,6 +66,7 @@ export interface ActiveContextUpdateInput {
   capacity?: TaskModelCapacity | null;
   systemPrompt?: string;
   toolDefinitions?: string;
+  factsAvailable?: boolean;
 }
 
 export function activeContextFileKey(
@@ -88,13 +90,30 @@ export function materializeActiveContext(input: {
   branchEvents: PiRecordedEventV1[];
   systemPrompt?: string;
   toolDefinitions?: string;
+  checkpointTokenBudget?: number | null;
 }): ActiveContextPayload;
 export function payloadSegment(payload: ActiveContextPayload | null, kind: string): ActiveContextSegment | null;
+export function renderActiveContextMessages(payload: ActiveContextPayload): any[];
 export function evaluateEligibility(input: {
   capacity: TaskModelCapacity | null;
   takeover: TakeoverPolicy;
   payloadTokens: number | null;
 }): EligibilityVerdict;
+export function evaluateTakeoverTrigger(input: {
+  enabled: boolean;
+  eligibility: ActiveContextEligibility;
+  currentCheckpointId: string | null;
+  appliedCheckpointId: string | null;
+  piUsageTokens: number | null;
+  payloadTokens: number | null;
+  highWaterTokens: number | null;
+}): {
+  render: boolean;
+  allowAdvance: boolean;
+  epochActive: boolean;
+  usageTokens: number | null;
+  highWaterTokens: number | null;
+};
 
 export class ActiveContextManager {
   constructor(options: {
@@ -111,4 +130,30 @@ export class ActiveContextManager {
     branchEvents: PiRecordedEventV1[],
     options?: { systemPrompt?: string; toolDefinitions?: string },
   ): Promise<ActiveContextPayload | null>;
+  takeoverMessages(
+    branchEvents: PiRecordedEventV1[],
+    options?: {
+      archives?: ArchiveDescriptor[];
+      lastCheckpointId?: string | null;
+      systemPrompt?: string;
+      toolDefinitions?: string;
+      capacity?: TaskModelCapacity | null;
+      factsAvailable?: boolean;
+      allowAdvance?: boolean;
+    },
+  ): Promise<any[] | null>;
+  compaction(branchEvents: PiRecordedEventV1[], tokensBefore: number): Promise<{
+    summary: string;
+    firstKeptEntryId: string;
+    tokensBefore: number;
+    details: {
+      schemaVersion: 1;
+      type: "openviking-active-context";
+      checkpointId: string;
+      checkpointHash: string | null;
+      sourceArchiveId: string;
+      sourceArchiveHash: string;
+      rawTailStartEventId: string;
+    };
+  } | null>;
 }

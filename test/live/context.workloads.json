@@ -1,22 +1,22 @@
 {
   "schemaVersion": 1,
   "gate": "verify:context:live",
-  "purpose": "活动上下文构造真实验收门禁：在真实 Pi session、真实已提交 Archive 与真实 VLM checkpoint 上，机器断言 ActiveContext 的选择、持久化、跨重启恢复与分支复用条件，断言 dry-run 候选 payload 可由源事件逐项重算且 step/anchor 完整，并断言 Pi 报告的任务模型容量在 eligibility 边界两侧分别得到 fit 与 capacity mismatch；真实接管在本阶段保持 inactive。",
+  "purpose": "活动上下文构造真实验收门禁：在真实 Pi session、真实已提交 Archive 与真实 VLM checkpoint 上，机器断言 ActiveContext 的选择、持久化、跨重启恢复与分支复用条件，断言 dry-run 候选 payload 可由源事件逐项重算且 step/anchor 完整，并断言候选容量只取 Pi 报告的任务模型容量；真实 provider 请求保持在自动高水位以下。",
   "mechanism": {
     "selected": "本地最小 ActiveContext 文件（原子替换）+ 从当前分支已消费 checkpoint 派生候选 + 由不可变事件重算 anchor 与 raw tail",
     "activeContext": "持久化对象只有 docs/spec.md“活动上下文与 prompt cache 稳定性”定义的两个字段 {checkpointId, rawTailStartEventId}。位置 ~/.pi/openviking/active-context/{targetKey}.json，targetKey 与 SyncAck 同构（endpoint/account/user + sessionId），以同目录临时文件 rename 原子替换。该文件不是事实源：损坏、丢失或分支失效时清空并从 Archive/checkpoint 事实重新选择。",
     "candidate": "候选来自当前分支上最后一个已消费 Archive：checkpointId 由该 Archive manifest 确定性重算，rawTailStartEventId 是该 Archive lastEventId 在当前分支上的下一个事件。因此 raw tail 覆盖“已归档但尚未消费”与“尚未归档”的全部事件。",
     "anchor": "原始用户指令 anchor 不进入持久化字段，而是从 raw tail 起点自身的 turnId 重算：建立该 turn 的 user entry 的全部事件即 anchor。turn 身份由 docs/spec.md“完整记录事件”固定，因而 anchor 由不可变事件唯一确定，无需第三个字段。",
     "branchReuse": "复用条件是 rawTailStartEventId 仍在当前分支的事件链上。该判定只依赖本地分支投影，不需要网络：raw tail 起点在祖先链上等价于其来源 Archive 边界仍在祖先链上；离开祖先链即失效并重新选择。OpenViking 或 checkpoint 事实暂时不可读时保留既有 ActiveContext，不因降级销毁已选定边界。",
-    "eligibility": "usableTokens = min(Pi 报告 contextWindow - Pi 报告 maxTokens, takeover.contextTokenThreshold>0 ? contextTokenThreshold : 无上限)；payloadTokens = system + 活动工具定义 + checkpoint 块 + anchor + raw tail 的上下文权重之和；headroomTokens = usableTokens - payloadTokens；headroom>0 为 eligible，否则 inactive/capacity_mismatch。maxTokens 是 provider 安全余量：任何请求都必须为模型输出留出该容量。权重使用与 Archive 压力轴同一策略量（UTF-8 字节数 / 4），由 shared/context-weight.mjs 单点维护。",
+    "eligibility": "usableTokens = Pi 报告 contextWindow - Pi 报告 maxTokens；payloadTokens = system + 活动工具定义 + 受 checkpointTokenBudget 约束的 checkpoint 块 + anchor + raw tail 的上下文权重之和；headroomTokens = usableTokens - payloadTokens；headroom>0 为 eligible，否则 inactive/capacity_mismatch。contextTokenThreshold 只控制接管高水位，不改变容量。权重使用与 Archive 压力轴同一策略量（UTF-8 字节数 / 4），由 shared/context-weight.mjs 单点维护。",
     "checkpointBlock": "接管块只渲染 checkpoint 身份头与 narrative 正文。completed/openItems/nextEntry/retrievalCues 是 narrative 的派生投影，重复注入会让同一事实占用两份上下文。",
-    "takeoverInactive": "本阶段不注册任何 provider 上下文替换：context hook 仍只做 recall 注入。gate 以真实 provider payload 断言归档前缀原文仍然在场且 checkpoint 正文不在场。",
+    "takeoverInactive": "本 gate 的真实请求保持在自动高水位以下，context hook 因而继续使用完整 Pi messages；高水位后的真实替换由 verify:takeover:live 独立证明。",
     "falsifiedAlternatives": [
       "把 anchor 作为第三个持久化字段：anchor 可由 raw tail 起点的 turnId 与不可变事件唯一重算，多一个字段就多一处可与事实分叉的状态",
       "每次同步重新选择最新 checkpoint 并覆盖已持久化的 ActiveContext：会使 docs/spec.md 要求的“到下一次接管前保持固定”失去载体，接管阶段无法证明每个高水位只替换一次",
       "把 ActiveContext 存到 OpenViking：它描述本地任务模型当前使用的边界，远端存储既不提高可用性（checkpoint 正文本来就需要 OpenViking），又新增一套远端完整性协议",
       "以 provider 累计 usage 作为容量输入：开发模型身份的 provider 在 RPC 流与持久 JSONL 中报告的 usage 恒为全零（archive gate 实测），容量判定必须用 Pi 报告的模型元数据",
-      "在 eligibility 中另设 checkpointTokenBudget 分支：checkpoint 实际权重已计入 payloadTokens，再加一条独立预算规则会产生第二套容量语义"
+      "用 contextTokenThreshold 截断候选容量：触发策略不是模型容量；checkpointTokenBudget 只约束进入候选的 checkpoint 正文，实际权重仍统一计入 payloadTokens"
     ]
   },
   "identities": {
@@ -43,7 +43,7 @@
       "activeContextFields": ["checkpointId", "rawTailStartEventId"],
       "anchorRule": "anchor = 建立 rawTailStart.turnId 的 user entry 的全部事件；rawTailStart 无 turnId 时 anchor 为空",
       "payloadSegments": ["system", "checkpoint", "anchor", "raw-tail"],
-      "eligibilityFormula": "headroomTokens = min(contextWindow - maxTokens, contextTokenThreshold>0 ? contextTokenThreshold : Infinity) - (systemTokens + toolTokens + checkpointTokens + anchorTokens + rawTailTokens)",
+      "eligibilityFormula": "headroomTokens = contextWindow - maxTokens - (systemTokens + toolTokens + boundedCheckpointTokens + anchorTokens + rawTailTokens)；contextTokenThreshold 不参与容量判定",
       "tokenWeight": "ceil(UTF-8 byteLength / 4)，与 Archive 压力轴同一策略量"
     },
     "extensionLoadOrder": ["index.ts", "scripts/e2e-probe.ts"]
@@ -54,8 +54,8 @@
     "extensionConfig": {
       "path": "<run>/home/.pi/pi-openviking.jsonc",
       "content": { "archive": { "chunkTokenBudget": 1000, "rawTailTokenBudget": 1000 } },
-      "capacityMismatchOverride": { "archive": { "chunkTokenBudget": 1000, "rawTailTokenBudget": 1000 }, "takeover": { "contextTokenThreshold": 1000 } },
-      "rationale": "Archive 预算取 schema 允许的最小值，使真实会话在确定性压力下越过归档边界；contextTokenThreshold 只在容量 workload 中把可用窗口压到 Pi 报告容量之下，用于在同一真实模型上取得 eligibility 的另一侧，不改变容量来源。"
+      "highWaterOverride": { "archive": { "chunkTokenBudget": 1000, "rawTailTokenBudget": 1000 }, "takeover": { "contextTokenThreshold": 1000 } },
+      "rationale": "Archive 预算取 schema 允许的最小值，使真实会话在确定性压力下越过归档边界；highWaterOverride 证明 contextTokenThreshold 只改变后续接管触发点，不改变同一真实模型报告的容量、候选 payload 或 eligibility。"
     },
     "pressureSource": {
       "mechanism": "verifier 通过真实 SessionManager 向持久 JSONL 追加一个由 assistant text/toolCall 与两个 toolResult 组成的真实多事件 step。该 step 完整落在 raw tail 内，使“raw tail 起点不拆 step”成为可证伪断言。",
@@ -137,27 +137,26 @@
     },
     {
       "id": "w3-capacity-boundary",
-      "summary": "同一真实模型与同一 ActiveContext 下，Pi 报告的容量在 eligibility 公式两侧分别得到 fit 与 capacity mismatch；mismatch 时保持 inactive 并由 /viking 给出诊断。",
+      "summary": "同一真实模型与同一 ActiveContext 下，显式高水位配置不改变 Pi 报告容量、候选 payload 与 eligibility；容量不匹配的真实 fail-open 由 takeover gate 使用大原子来源独立证明。",
       "steps": [
-        "同 w1 形成 ActiveContext（contextTokenThreshold=0，自动容量）",
-        "run 2：/viking sync → /viking sync → /viking（fit 侧）",
-        "verifier：改写 extensionConfig 为 capacityMismatchOverride",
-        "run 3：/viking sync → /viking sync → /viking（mismatch 侧）"
+        "同 w1 形成 ActiveContext（contextTokenThreshold=0，自动高水位）",
+        "run 2：/viking sync → /viking sync → /viking（记录容量与候选）",
+        "verifier：改写 extensionConfig 为 highWaterOverride",
+        "run 3：/viking sync → /viking sync → /viking（重算同一候选）"
       ],
       "inputs": {
         "P1": "请只回复 OK 两个字母，不要调用任何工具。"
       },
       "successCriteria": [
-        "两侧 capacityTokens 与 reserveTokens 都等于 Pi 报告的 contextWindow 与 maxTokens",
-        "fit 侧 headroomTokens>0 且 eligibility=eligible",
-        "mismatch 侧 headroomTokens<=0、eligibility=inactive、reason=capacity_mismatch",
-        "两侧都满足 headroomTokens = usableTokens - payloadTokens",
-        "mismatch 侧 /viking 显示 capacity mismatch、checkpoint ID 与 raw tail 起点，且 ActiveContext 身份不被容量结果改变"
+        "两次 capacityTokens 与 reserveTokens 都等于 Pi 报告的 contextWindow 与 maxTokens",
+        "两次 usableTokens、payloadTokens、headroomTokens 与 eligibility 完全相同",
+        "headroomTokens = usableTokens - payloadTokens > 0 且 eligibility=eligible",
+        "显式高水位不删除或改写 ActiveContext 身份"
       ],
       "falsification": [
+        "高水位配置改变容量、候选 payload、headroom 或 eligibility",
         "容量来源不是 Pi 报告的模型元数据",
-        "任一侧的 headroom 与公式不一致，或 mismatch 侧仍报告 eligible",
-        "容量不匹配删除或改写了 ActiveContext"
+        "策略变化删除或改写 ActiveContext"
       ]
     }
   ],
@@ -204,8 +203,8 @@
         "payloadTokens": 10481,
         "headroomTokens": 133519
       },
-      "expectedChange": "真实 Pi 会话在最小归档预算下形成 Archive 并由真实 VLM 消费后，ActiveContext 在下一次同步时形成并持久化；候选 payload 的 raw tail 与 anchor 逐项等于源事件；contextTokenThreshold=0 时 headroom 约为十万量级且 eligible，contextTokenThreshold=1000 时 headroom 为负且 capacity mismatch；两侧 capacity/reserve 恒为 Pi 报告的 272000/128000。",
-      "falsification": "候选与独立重算不一致、raw tail 丢失未归档事件或拆开 step、anchor 与 turn 不符、ActiveContext 未跨重启复用、来源边界离开祖先链后仍被复用、headroom 与公式不一致、任一侧容量来源不是 Pi 报告值，或 provider payload 出现 checkpoint 正文，即重新打开活动上下文构造约束。",
+      "expectedChange": "真实 Pi 会话在最小归档预算下形成 Archive 并由真实 VLM 消费后，ActiveContext 在下一次同步时形成并持久化；候选 payload 的 raw tail 与 anchor 逐项等于源事件；usable/headroom 只由 Pi 报告容量与候选 payload 决定，contextTokenThreshold=0/1000 得到同一 eligibility 结果。",
+      "falsification": "候选与独立重算不一致、raw tail 丢失未归档事件或拆开 step、anchor 与 turn 不符、ActiveContext 未跨重启复用、来源边界离开祖先链后仍被复用、headroom 与公式不一致、容量来源不是 Pi 报告值、高水位配置改变 eligibility，或低于自动高水位的 provider payload 出现 checkpoint 正文，即重新打开活动上下文构造约束。",
       "thresholdRationale": "checkpointWallMs 沿用 checkpoint 阶段已验证的 240000ms 质量边界（基线探针实测 21368ms，余量约 11 倍）。piRunWallMs 提高到 180000ms 是因为本 gate 的单个 workload 串联多次真实 Pi 运行与一次真实 VLM 消费。容量断言使用等式而非阈值：headroom 必须精确等于 usable 减 payload，因此结论不依赖模型输出长度的波动。"
     }
   }

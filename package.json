@@ -20,7 +20,8 @@
     "verify:sync:live": "node test/live/sync-live.mjs",
     "verify:archive:live": "node test/live/archive-live.mjs",
     "verify:checkpoint:live": "node test/live/checkpoint-live.mjs",
-    "verify:context:live": "node test/live/context-live.mjs"
+    "verify:context:live": "node test/live/context-live.mjs",
+    "verify:takeover:live": "node test/live/takeover-live.mjs"
   },
   "pi": {
     "extensions": [
