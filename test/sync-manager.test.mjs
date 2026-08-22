@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import test from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 import { SyncManager } from "../sync.ts";
+import { snapshotSessionSource } from "../shared/pi-session-source.mjs";
 import { buildArchiveManifest, describeArchives, planArchives } from "../shared/archive.mjs";
 import { buildCheckpointEvent, buildCheckpointRequestEvent, checkpointEventId, checkpointId } from "../shared/checkpoint.mjs";
 import { archiveStorageLocation } from "../shared/archive-store.mjs";
@@ -174,6 +176,56 @@ test("ACK 持久化失败时不推进内存 frontier，修复后通过 unchanged
     assert.equal(recovered.allDelivered, true);
     assert.equal(recovered.added, trace.shorter.length);
     assert.deepEqual(sync.status.acknowledgedLeaves, ["entry-tool-error"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("新持久会话等待首个 assistant 落盘，已落盘来源丢失仍然报错", async () => {
+  const root = "test/.artifacts/sync-manager-new-session";
+  await rm(root, { recursive: true, force: true });
+  try {
+    const session = SessionManager.create(process.cwd(), root, { id: "new-session-source" });
+    const store = new MemoryEventStore();
+    const sync = manager(store, `${root}/ack.json`);
+    await sync.ensureSession(session.getSessionId());
+
+    const initial = await sync.observeSession(session);
+    assert.equal(initial.allDelivered, true);
+    assert.equal(sync.status.source, "pending-persistence");
+    assert.equal(sync.status.lastFailure, null);
+
+    session.appendMessage({
+      role: "user", content: [{ type: "text", text: "first prompt" }], timestamp: Date.now(),
+    });
+    const userOnly = snapshotSessionSource(session);
+    assert.equal(userOnly.hasAssistantEntry(), false);
+    assert.equal((await sync.syncSession(userOnly)).allDelivered, true);
+    assert.equal(sync.status.source, "pending-persistence");
+    assert.equal(sync.status.lastFailure, null);
+
+    session.appendMessage({
+      role: "assistant", content: [{ type: "text", text: "first answer" }],
+      api: "test", provider: "test", model: "test",
+      usage: {
+        input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop", timestamp: Date.now(),
+    });
+    const materialized = snapshotSessionSource(session);
+    assert.equal(materialized.hasAssistantEntry(), true);
+    assert.ok((await readFile(session.getSessionFile(), "utf8")).length > 0);
+    const synced = await sync.syncSession(materialized);
+    assert.equal(synced.allDelivered, true);
+    assert.equal(synced.added, 2);
+    assert.equal(sync.status.source, "persistent-jsonl");
+    assert.equal(sync.status.lastFailure, null);
+
+    await rm(session.getSessionFile());
+    const missing = await sync.syncSession(snapshotSessionSource(session));
+    assert.equal(missing.allDelivered, false);
+    assert.match(sync.status.lastFailure, /ENOENT/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

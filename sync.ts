@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { OVClient } from "./client.js";
 import {
@@ -11,7 +11,7 @@ import {
 import { describeArchives, type ArchiveDescriptor } from "./shared/archive.mjs";
 import { ArchiveManager } from "./shared/archive-store.mjs";
 import { CheckpointManager, type CheckpointStatus } from "./shared/checkpoint-store.mjs";
-import { parsePiSessionJsonl } from "./shared/pi-session-source.mjs";
+import { parsePiSessionJsonl, sessionHasAssistantEntry } from "./shared/pi-session-source.mjs";
 import { observation, type Observation } from "./shared/observe.mjs";
 import { RecordedEventAdapter } from "./shared/recorded-event-adapter.mjs";
 import type { PiRecordedEventV1 } from "./shared/recorded-event.mjs";
@@ -42,7 +42,7 @@ export interface ArchiveStatus {
 }
 
 export interface SyncStatus {
-  source: "persistent-jsonl" | "in-memory" | "none";
+  source: "persistent-jsonl" | "pending-persistence" | "in-memory" | "none";
   capability: "unknown" | "ready" | "mismatch";
   acknowledgedLeaves: string[];
   pendingEntries: number;
@@ -312,12 +312,26 @@ export class SyncManager {
     const persisted = typeof sessionManager?.isPersisted === "function" && sessionManager.isPersisted();
     const sessionFile = typeof sessionManager?.getSessionFile === "function" ? sessionManager.getSessionFile() : null;
     if (persisted && sessionFile) {
-      const parsed = parsePiSessionJsonl(await readFile(sessionFile, "utf8"), {
-        sessionId: this.piSessionId || undefined,
-        leafId: typeof sessionManager.getLeafId === "function" ? sessionManager.getLeafId() : null,
-      });
-      this.observe.emit("sync_source", "persistent_jsonl", parsed.entries.length);
-      return { entries: parsed.entries, branch: parsed.branch, parentById: parsed.parentById, source: "persistent-jsonl" };
+      try {
+        const parsed = parsePiSessionJsonl(await readFile(sessionFile, "utf8"), {
+          sessionId: this.piSessionId || undefined,
+          leafId: typeof sessionManager.getLeafId === "function" ? sessionManager.getLeafId() : null,
+        });
+        this.observe.emit("sync_source", "persistent_jsonl", parsed.entries.length);
+        return { entries: parsed.entries, branch: parsed.branch, parentById: parsed.parentById, source: "persistent-jsonl" };
+      } catch (error: any) {
+        const hasAssistantEntry = typeof sessionManager?.hasAssistantEntry === "function"
+          ? sessionManager.hasAssistantEntry()
+          : sessionHasAssistantEntry(sessionManager);
+        if (error?.code !== "ENOENT" || hasAssistantEntry) throw error;
+        try {
+          await access(dirname(sessionFile));
+        } catch {
+          throw error;
+        }
+        this.observe.emit("sync_source", "pending_persistence", 0);
+        return { entries: [], branch: [], parentById: new Map(), source: "pending-persistence" };
+      }
     }
 
     const entries = typeof sessionManager?.getEntries === "function"

@@ -42,6 +42,7 @@
 
 - 解析持久 Pi JSONL，校验 session header、entry ID 和 parent tree；
 - 根据 leaf 恢复活动分支，同时返回完整 entry tree 和 parent map；
+- 持久 session 快照保留是否已产生 assistant entry 的事实，用于识别 Pi 首次写入 JSONL 前的等待状态；
 - 为非持久化 session 在同步触发时分别冻结完整 entry tree 与当前分支，保持触发时刻状态；
 - 同步层处理完整 tree，Archive 只处理当前分支，活动分支不排除 sibling branch 的同步事实。
 
@@ -158,7 +159,7 @@ ACK 文件不包含 transcript 或事件 payload。丢失 ACK 只会触发幂等
 
 `SyncManager` 是唯一协调者：
 
-1. 获取持久 JSONL source 或进程内 branch；
+1. 获取持久 JSONL、等待 Pi 首次持久化，或读取进程内 branch；
 2. 计算当前未确认 entry；
 3. 投影该 entry 的全部事件；
 4. 调用 Content adapter；

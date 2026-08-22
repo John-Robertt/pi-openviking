@@ -9,9 +9,12 @@ export interface PiSessionSourceSnapshot {
   isPersisted(): boolean;
   getSessionFile(): string | undefined;
   getLeafId(): string | null;
+  hasAssistantEntry(): boolean;
   getEntries(): Record<string, any>[];
   getBranch(): Record<string, any>[];
 }
+
+export function sessionHasAssistantEntry(sessionManager: any): boolean;
 
 export function snapshotSessionSource(sessionManager: any): PiSessionSourceSnapshot;
 

@@ -42,6 +42,7 @@ async function writeRepresentativeRun(observer) {
   const op = observer.begin("client_http", "/api/v1/content/read?uri=viking%3A%2F%2Fsecret", "GET", 1234);
   observer.end("client_http", op, "success", 200, "trace-safe");
   observer.emit("sync_source", "persistent_jsonl", 3);
+  observer.emit("sync_source", "pending_persistence", 0);
   await observer.finish();
 }
 

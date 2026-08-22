@@ -207,7 +207,7 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
     change: schema({ mode: MODE_CHANGE, from: NULLABLE_HASH, to: NULLABLE_HASH, bound: BOOLEAN }),
   })),
   sync_source: stage("sync.ts", "decision", schema({
-    branch: ENUM(["persistent_jsonl", "in_memory"]),
+    branch: ENUM(["persistent_jsonl", "pending_persistence", "in_memory"]),
     entries: INTEGER(),
   })),
   shutdown_grace: stage("sync.ts", "decision", schema({

@@ -46,6 +46,20 @@ test("/viking 展示 JSONL、Content capability、ACK 和待重放状态", () =>
   assert.match(output, new RegExp(`Checkpoint：消费落后，已消费 1 个，积压 2 个 Archive / 3000 tokens（最近 chk_c{64}）`));
 });
 
+test("/viking 把新会话首次落盘前显示为正常等待状态", () => {
+  const output = formatVikingCommand({
+    connected: true,
+    sessionId: "pi-new-session",
+    sync: {
+      source: "pending-persistence", capability: "unknown",
+      acknowledgedLeaves: [], pendingEntries: 0, lastFailure: null,
+    },
+    observation: { state: "disabled" },
+  });
+  assert.match(output, /来源：等待首个响应写入 Pi JSONL/);
+  assert.doesNotMatch(output, /最近同步失败/);
+});
+
 test("/viking 在 Archive 尚未形成或提交失败时给出可诊断状态", () => {
   const idle = formatVikingCommand({
     connected: true,

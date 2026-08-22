@@ -205,7 +205,7 @@ ACK 文件不包含 transcript，活动上下文文件只包含 `checkpointId` �
 
 `/viking` 显示：
 
-- `persistent-jsonl` 或进程内来源；
+- Pi JSONL、等待首个响应写入 Pi JSONL，或进程内 best-effort 来源；
 - Content adapter capability：待探测、可用或不兼容；
 - ACK frontier leaves；
 - 待重放 entry；

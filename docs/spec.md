@@ -98,7 +98,8 @@ tool results 沿用最近 assistant step，下一 assistant entry 开始新 step
 
 持久化 Pi session 的 append-only JSONL 是 Pi 来源事件及其 payload 的唯一事实源；同步层只
 持久化最小 `SyncAck`。OpenViking 确认接受事件后推进 ACK frontier，发送失败时保持原
-frontier。ACK 状态丢失时从 Pi JSONL 幂等重放。
+frontier。ACK 状态丢失时从 Pi JSONL 幂等重放。Pi 在首个 assistant 响应产生时首次写入新持久
+session 的 JSONL；写入前同步状态为等待来源持久化，不读取进程内 entry，也不记录同步失败。
 
 OpenViking `0.4.15` 的公开 Content API 是 OpenViking `RecordedEvent` 投影的物理持久化边界。扩展
 通过 `POST /api/v1/content/batch-write` 在 OpenViking VikingFS 内实现事件兼容层，不修改
