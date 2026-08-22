@@ -16,6 +16,7 @@ import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import { createManagedServerConfig } from "../shared/managed-server-config.mjs";
 import { buildManagedServerEnv, readManagedServerProxy } from "../shared/managed-server-env.mjs";
 import { probeServerHealth } from "../shared/server-health.mjs";
 import { OPENVIKING_OAUTH_PROVIDERS } from "../shared/openviking-oauth.mjs";
@@ -107,49 +108,24 @@ async function confirm(question) {
   }
 }
 
-/**
- * Starter ov.conf. The server config loader is strict JSON (no comments), so
- * per-field documentation lives in docs/usage.md「服务端配置」instead of the file.
- *
- * Defaults chosen for zero-friction first run: local-only server, and the
- * ~24 MB llama.cpp embedding preset (auto-downloads on first server start).
- * Only the vlm section requires user input — there is no zero-config memory
- * model, and without it extraction/takeover never work (docs/usage.md「服务端配置」).
- */
-function ovConfTemplate() {
-  return {
-    storage: { workspace: join(OV_HOME, "data") },
-    server: { host: "127.0.0.1", port: 1933 },
-    embedding: {
-      dense: { provider: "local", model: "bge-small-zh-v1.5-f16", dimension: 512 },
-    },
-    vlm: {
-      provider: "volcengine",
-      model: "doubao-seed-2-0-code-preview-260215",
-      api_key: "",
-      api_base: "https://ark.cn-beijing.volces.com/api/v3",
-      temperature: 0.0,
-      max_retries: 2,
-    },
-  };
-}
-
 async function ensureServerConfig() {
   if (existsSync(OV_CONF)) {
     say(`服务端配置已存在: ${OV_CONF}（如需修改直接编辑该文件；配置项说明见 docs/usage.md「服务端配置」）`);
     return;
   }
   mkdirSync(OV_HOME, { recursive: true });
-  writeFileSync(OV_CONF, `${JSON.stringify(ovConfTemplate(), null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(OV_CONF, `${JSON.stringify(createManagedServerConfig(OV_HOME), null, 2)}\n`, { mode: 0o600 });
   say(`已生成服务端配置: ${OV_CONF}`);
   say("");
-  say("该文件是严格 JSON（不支持注释），请用任意编辑器打开并完成：");
-  say("  · vlm 段必填：api_key（以及对应 provider 的 model/api_base）——记忆模型，不配置则记忆抽取与上下文接管不生效");
-  say("  · embedding 段已预填零依赖本地模型（bge-small-zh，约 24MB，首次启动自动下载），通常无需改动");
-  say("  · 全部 provider 示例（云端 API / Codex 订阅复用 / Kimi / GLM / Ollama 本地等）见 docs/usage.md「服务端配置」一节");
+  say("默认配置：");
+  say("  · VLM 使用 openai-codex/gpt-5.6-luna；OpenViking 自动使用 Codex CLI OAuth 登录态");
+  say("  · 凭证由 OpenViking OAuth store 管理，生成配置声明 provider 与 model");
+  say("  · 使用其他 provider 时，编辑该严格 JSON 文件中的 vlm 段");
+  say("  · embedding 使用本地 bge-small-zh 模型（约 24MB，首次启动自动下载）");
+  say("  · 全部 provider 示例见 docs/usage.md「服务端配置」与 docs/models.md「OpenViking VLM 配置参考」");
   say("");
-  if (!(await confirm("已完成编辑，继续运行 doctor 验证? [y/N] "))) {
-    fail(`请先编辑 ${OV_CONF}（至少填写 vlm.api_key），然后重新运行 \`npx pi-openviking@latest setup\`。`);
+  if (!(await confirm("Codex CLI 已登录（或已配置其他 VLM provider），继续运行 doctor 验证? [y/N] "))) {
+    fail(`请先登录 Codex CLI 或配置 ${OV_CONF} 的 vlm 段，然后重新运行 \`npx pi-openviking@latest setup\`。`);
   }
 }
 

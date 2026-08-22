@@ -43,6 +43,11 @@ eligibility。当前上下文到达高水位且候选 eligible 时，`context` h
 npx pi-openviking@latest setup
 ```
 
+首次 `setup` 生成的受管服务配置默认使用 `openai-codex/gpt-5.6-luna` 作为 VLM，OpenViking 自动使用
+Codex CLI OAuth 登录态，凭证由 OpenViking OAuth store 管理。`setup` 在运行 doctor 前确认 Codex CLI
+已登录；使用其他 provider 时，按 [docs/models.md](./models.md) 的“OpenViking VLM 配置参考”修改 `vlm` 段。
+已存在的 `~/.pi/openviking/ov.conf` 保持原样。
+
 仅安装扩展：
 
 ```bash
