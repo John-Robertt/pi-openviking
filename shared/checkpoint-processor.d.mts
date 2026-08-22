@@ -1,6 +1,6 @@
 import type { OVClient } from "../client.js";
 import type { ArchiveManifestV1 } from "./archive.mjs";
-import type { CheckpointV1 } from "./checkpoint.mjs";
+import type { CheckpointV2 } from "./checkpoint.mjs";
 import type { Observation } from "./observe.mjs";
 import type { PiRecordedEventV1 } from "./recorded-event.mjs";
 
@@ -15,7 +15,7 @@ export class OpenVikingCheckpointProcessor {
     taskId: string;
     manifest: ArchiveManifestV1;
     events: PiRecordedEventV1[];
-    previousCheckpoint: CheckpointV1 | null;
+    previousCheckpoint: CheckpointV2 | null;
   }): Promise<CheckpointProcessResult>;
   cleanup(taskId: string): Promise<boolean>;
 }

@@ -207,7 +207,8 @@ recall 结果。记录 schema、脱敏、完整 run 与清理条件只由 [`docs
 
 `npm run verify:checkpoint:live` 使用真实 Content/Session/Task API 和开发 VLM，覆盖文本、嵌入图片、明确失败后的真实
 VLM 重试、request/task 恢复与双 Archive 积压；配套 deterministic checks 覆盖完整事实链、并发首写、每个 Archive
-三次 attempt、媒体失败、外部错误脱敏和终态清理恢复。受管服务必须已启动且 VLM credential 为 ready。gate 只写
+三次 attempt、媒体失败、外部错误脱敏和终态清理恢复；多模态 workload 分别计量媒体语义处理与其后的 checkpoint
+生成，避免用一个墙钟阈值混合两个外部 VLM 边界。受管服务必须已启动且 VLM credential 为 ready。gate 只写
 随机所属 namespace；生产协调器先从终态事实清理所属 Session/媒体根，gate 最后再取消仍在途的测试 task，并按
 ownership marker 契约删除全部临时对象和 checkpoint 事实。
 

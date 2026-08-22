@@ -258,7 +258,8 @@ Archive 创建由 token 压力驱动，支持单个超长用户轮次，并保�
 ### 4. Checkpoint 生成与消费状态
 
 raw Archive 持久化后，异步 VLM 任务读取当前 Archive、多模态输入、外置工具结果和之前的
-working checkpoint，并为该 Archive 生成一个结构化 checkpoint 事件：
+working checkpoint，把“上一代统一状态 + 本 Archive 新事实”更新为一份自包含的 Working Memory，并为该
+Archive 生成最小 checkpoint 事件：
 
 ```ts
 interface Checkpoint {
@@ -266,18 +267,23 @@ interface Checkpoint {
   sourceArchiveId: string;
   sourceArchiveHash: string;
   narrative: string;
-  completed: string[];
-  openItems: string[];
-  nextEntry?: string;
-  retrievalCues: string[];
   model: string;
   promptVersion: string;
 }
 ```
 
-narrative、已完成工作、未解决问题、下一执行入口和 retrieval cues 共同组成一个
-checkpoint。checkpoint 作为新事件追加，来源 Archive 和之前的 checkpoint 始终保持不可变。
+`narrative` 是唯一续接状态，规范化 OpenViking Working Memory 的 Task & Goals、Current State、
+Key Facts & Decisions、Open Issues、Next Action、Files & Context、Errors & Corrections。Task & Goals 表达全局目标，
+Key Facts & Decisions 保存当前有效的稳定约束和决定，Current State 表达当前阶段与已完成进度；下一代从上一代完整
+状态和新 Archive 生成一个新的当前状态，只保留未完成目标与仍有效的事实，删除已完成、已失效和重复表述。
+缺少原生必需章节、没有可形成执行入口的 Open Issues 或容器计数式输出不表示
+消费完成；Next Action 在协议边界从明确入口规范化生成。checkpoint 不再保存
+从 narrative 重复投影出的数组或字段。checkpoint 作为新事件追加，来源 Archive 和之前的 checkpoint 始终保持不可变。
 VLM 失败由后台异步重试，raw Archive 的持久状态保持有效。
+
+VLM 输入只包含上一代 `narrative` 和从当前 Archive 完整事件范围重建的原始 Pi entries；Archive 身份/hash 作为来源
+证明单独携带，RecordedEvent envelope 和 checkpoint 派生字段不重复进入语义正文。VLM provider cache 不作为正确性
+或成本前提。
 
 VLM 运行事实由 Archive manifest、request、checkpoint 和失败事件共同表达。request 记录
 `taskId`、`archiveId` 和提交时间；明确失败追加稳定错误分类、错误码与代码拥有的通用消息，外部
@@ -338,6 +344,11 @@ interface ActiveContext {
 稳定前缀之后。下一次接管原子替换 checkpoint 和 raw-tail 起点。cache epoch 是
 `ActiveContext` 稳定期间的运行时视图。旧候选因后续增长进入容量不匹配而当前分支已有更新 checkpoint 时，
 同一次 `context` hook 可以改用更新候选重新判定并原子推进；更新候选仍不适配时保持完整 Pi 上下文。
+自动高水位在首次接管时比较完整 Pi context usage 与候选 headroom；epoch 建立后比较当前 ActiveContext payload
+与任务模型的全部 usable tokens，避免把同一候选 payload 同时计入 usage 又从阈值扣除。每次 `context` hook
+都从当时的当前分支重算活动 payload 后再判定推进，不能复用上一次 hook 的长度快照。显式高水位对两个阶段均生效。
+候选容量只计入 Pi 实际映射到 provider messages 的 entry；同步与来源链保留但 Pi 不渲染的 custom 状态 entry
+不占 provider payload 容量。
 
 因此，Archive 频率和接管频率相互独立：后台可以频繁归档，但 provider 上下文替换应有意
 保持低频。
@@ -352,7 +363,9 @@ split-turn compaction。扩展通过生命周期钩子提供可用上下文，�
 
 ### 8. 检索与恢复
 
-隐藏 raw event 对象是检索派生物的数据源，但不直接进入普通 Resource 的语义刷新。检索从
+隐藏 raw event 对象是检索派生物的数据源，但不是用户语义结果。现有 OpenViking Content 存储可能为其生成服务端
+派生语义对象，因此 checkpoint 输入和所有 provider-facing recall 路径都按 `/.pi-openviking` 来源 URI 排除内部事实；
+无法证明来源的服务端聚合正文不会直接注入。检索阶段从
 已确认 raw events 和 checkpoint 建立独立派生索引，标明原始记录或 VLM 理解、时间、模型、
 event ID、内容 hash 和来源 URI；删除索引不影响权威事件，并可从事件对象重建。Archive manifest
 提供范围过滤、browse、expand 和完整性校验。每个搜索结果都能按来源 URI 展开到原始事件。
@@ -416,7 +429,8 @@ VLM request 和明确失败是追加式 `RecordedEvent`。summary、索引、通
 - `archive.chunkTokenBudget` 控制每次 Archive 的目标增量；
 - `archive.rawTailTokenBudget` 控制 Archive 后保留的最近原始上下文预算；
 - `takeover.contextTokenThreshold` 是任务模型上下文高水位，`0` 表示按当前模型容量自动确定；
-- `takeover.checkpointTokenBudget` 控制接管时装载的 VLM checkpoint 上限；
+- `takeover.checkpointTokenBudget` 控制接管时可完整装载的 VLM checkpoint 上限；正文超过上限时不截断，接管与
+  ActiveContext compaction 均 fail-open 到 Pi 原生完整上下文；
 - `takeover.enabled` 控制任务模型上下文替换，事件记录和 Archive 独立持续运行。
 
 Archive 与 takeover 发布默认预算由端到端预算校准（见 [`docs/roadmap.md`](./roadmap.md)）验证，根据 Archive step
@@ -426,8 +440,9 @@ Archive 与 takeover 发布默认预算由端到端预算校准（见 [`docs/roa
 遵循 `docs/models.md` 的验证流程并建立对应证据。
 
 Pi 负责选择当前任务模型，takeover eligibility 读取该模型报告的 `contextWindow` 和 `maxTokens`。
-`contextTokenThreshold=0` 使用“当前任务模型上下文容量减去 system、工具、provider 安全余量、checkpoint 和
-raw tail”计算高水位。高水位为正且容纳目标上下文时进入 eligible；容量未知或余量不足时保持 inactive，并由
+`contextTokenThreshold=0` 时，首次接管高水位为候选 `headroomTokens`，接管后的 epoch 高水位为
+`usableTokens = contextWindow - maxTokens`；容量判定始终使用
+`headroomTokens = usableTokens - payloadTokens`。高水位为正且容纳目标上下文时进入 eligible；容量未知或余量不足时保持 inactive，并由
 `/viking` 报告。每个任务模型按自身容量获得独立判定，发布基线的性能与吞吐保证适用于 manifest 记录的模型组合。
 发布验收基线的 task/VLM 组合由用户决定，变更后重跑相关阶段；Pi 中的任务模型切换直接进入当前容量判定。
 大型 payload 通过完整存储和可追溯引用外置；当前任务模型的剩余容量定义非外置原子输入的接管上限。
@@ -440,8 +455,8 @@ Pi compaction 仍由 Pi 的运行时条件触发。
 
 受管服务固定使用已通过集成探针的 OpenViking `0.4.15`。远端服务在首次真实 Content 操作中探测
 batch-write、raw download、mkdir 和严格响应语义；路由缺失、请求 schema 不兼容或响应结构不匹配
-标记 capability mismatch，网络不可用保持 unknown。隐藏文件不进入普通语义处理是支持版本的安装/
-集成验收项，不在每次启动创建额外探针对象。0.4.15 在 namespace 删除后会由目录语义管线物化空目录骨架（不含任何文件）；live gate 的清理以逐 URI 持久 404 为准，骨架再现只是服务端行为观察。两类失败都保持事件待重放和 Pi 主任务 fail-open，并由 `/viking` 报告。
+标记 capability mismatch，网络不可用保持 unknown。内部 namespace 的服务端派生物不构成产品检索结果；读取方只消费
+来源可证明且不属于内部 namespace 的条目。0.4.15 在 namespace 删除后会由目录语义管线物化空目录骨架（不含任何文件）；live gate 的清理以逐 URI 持久 404 为准，骨架再现只是服务端行为观察。两类失败都保持事件待重放和 Pi 主任务 fail-open，并由 `/viking` 报告。
 
 ## 准确性与可用性边界
 

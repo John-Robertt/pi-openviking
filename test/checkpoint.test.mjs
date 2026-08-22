@@ -7,6 +7,7 @@ import {
   buildCheckpointRequestEvent,
   checkpointEventId,
   checkpointFailureEventId,
+  checkpointFromOverview,
   checkpointId,
   checkpointRequestEventId,
   checkpointTaskId,
@@ -14,31 +15,42 @@ import {
   parseCheckpointEvent,
   parseCheckpointFailureEvent,
   renderCheckpointInput,
+  validateCheckpointOverview,
 } from "../shared/checkpoint.mjs";
 import { ArchiveManager } from "../shared/archive-store.mjs";
 import { CheckpointManager } from "../shared/checkpoint-store.mjs";
 import { RecordedEventAdapter } from "../shared/recorded-event-adapter.mjs";
-import { buildProducedRecordedEvent, recordedEventId } from "../shared/recorded-event.mjs";
+import { buildProducedRecordedEvent, projectPiEntries, recordedEventId } from "../shared/recorded-event.mjs";
 import {
   ARCHIVE_USER_ROOT,
   MemoryContentTransport,
   archiveEvents,
 } from "./fixtures/archive-fixtures.mjs";
+import { CHECKPOINT_IMAGE_PNG_BASE64 } from "./fixtures/checkpoint-fixtures.mjs";
 
 const SESSION = "checkpoint-session";
+
+test("多模态 live fixture 是可辨识尺寸的 PNG", () => {
+  const png = Buffer.from(CHECKPOINT_IMAGE_PNG_BASE64, "base64");
+  assert.equal(png.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  assert.equal(png.readUInt32BE(16), 128);
+  assert.equal(png.readUInt32BE(20), 128);
+});
+
 const OVERVIEW = `# Working Memory
 
 ## Session Title
 Checkpoint implementation
 
-## Current State
-The Archive is verified and checkpoint production is active.
-
 ## Task & Goals
 - Implement restart-safe checkpoint recovery
 - Verify the live VLM boundary
 
+## Current State
+The Archive is verified and checkpoint production is active.
+
 ## Key Facts & Decisions
+- Preserve source-backed facts and unfinished obligations
 - Request and checkpoint facts are append-only
 - Archive contentHash binds the source
 
@@ -50,6 +62,9 @@ The Archive is verified and checkpoint production is active.
 None.
 
 ## Open Issues
+- Confirm backlog notifications
+
+## Next Action
 - Confirm backlog notifications`;
 
 async function archiveFixture() {
@@ -102,17 +117,59 @@ test("Working Memory 正向投影为结构化 checkpoint 并保持来源自证",
   const checkpoint = parseCheckpointEvent(event, manifest);
   assert.equal(checkpoint.sourceArchiveId, manifest.archiveId);
   assert.equal(checkpoint.sourceArchiveHash, manifest.contentHash);
-  assert.deepEqual(checkpoint.completed, [
-    "Request and checkpoint facts are append-only",
-    "Archive contentHash binds the source",
+  assert.equal(checkpoint.narrative, validateCheckpointOverview(OVERVIEW));
+  assert.doesNotMatch(checkpoint.narrative, /Session Title/);
+  assert.deepEqual(Object.keys(checkpoint).sort(), [
+    "checkpointId", "model", "narrative", "promptVersion", "sourceArchiveHash", "sourceArchiveId",
   ]);
-  assert.deepEqual(checkpoint.openItems, ["Confirm backlog notifications"]);
-  assert.equal(checkpoint.nextEntry, "Implement restart-safe checkpoint recovery");
-  assert.deepEqual(checkpoint.retrievalCues, [
-    "shared/checkpoint.mjs",
-    "shared/checkpoint-store.mjs",
-    "Checkpoint implementation",
-  ]);
+});
+
+test("每代 checkpoint 只保存当前统一状态，退化局部摘要不可消费", async () => {
+  const { descriptors } = await archiveFixture();
+  checkpointFromOverview(descriptors[0].manifest, OVERVIEW);
+  const updated = OVERVIEW
+    .replace("- Implement restart-safe checkpoint recovery\n", "")
+    .replace("- Preserve source-backed facts and unfinished obligations\n", "")
+    .replace("The Archive is verified", "The next Archive is verified");
+  const normalized = validateCheckpointOverview(updated);
+  assert.match(normalized, /The next Archive is verified/);
+  assert.doesNotMatch(normalized, /Implement restart-safe checkpoint recovery/);
+  assert.doesNotMatch(normalized, /Preserve source-backed facts and unfinished obligations/);
+  assert.throws(
+    () => validateCheckpointOverview("# Session Summary\n\n**Overview**: 1 turns, 1 messages"),
+    /missing Working Memory root/,
+  );
+  assert.throws(
+    () => validateCheckpointOverview(`# Working Memory
+
+## Task & Goals
+- None
+
+## Current State
+- 1 session, 3 messages
+
+## Key Facts & Decisions
+- None
+
+## Open Issues
+- None
+
+## Files & Context
+- None
+
+## Errors & Corrections
+- None`),
+    /no continuation content in Task & Goals/,
+  );
+  assert.throws(
+    () => validateCheckpointOverview(OVERVIEW.replace("- Confirm backlog notifications", "- 2 messages")),
+    /no continuation content in Open Issues/,
+  );
+  assert.throws(
+    () => validateCheckpointOverview(`${OVERVIEW}\n\n## Open Issues\n- A competing issue`),
+    /repeats Open Issues/,
+  );
+  assert.equal(validateCheckpointOverview(OVERVIEW.replaceAll("\n", "\r\n")), validateCheckpointOverview(OVERVIEW));
 });
 
 test("checkpoint-failure 只持久化代码拥有的错误分类与消息", async () => {
@@ -155,6 +212,33 @@ test("多模态输入用内容 hash 与语义摘要替换 base64，不复制图�
   assert.doesNotMatch(rendered, /aGVsbG8=/);
   assert.match(rendered, /a small image/);
   assert.match(rendered, /sha256:/);
+  assert.doesNotMatch(rendered, /"eventId"|"sessionId"|"schemaVersion"/);
+});
+
+test("checkpoint 输入保留可见工作但不消费内部注入正文", async () => {
+  const { descriptors } = await archiveFixture();
+  const events = projectPiEntries("internal-provenance", [
+    {
+      id: "observation", parentId: null, timestamp: "2026-08-20T00:00:00.000Z",
+      type: "custom", customType: "ov-observation",
+      data: { schemaVersion: 1, kind: "recall-injection", content: "private recalled block" },
+    },
+    {
+      id: "user", parentId: "observation", timestamp: "2026-08-20T00:00:01.000Z",
+      type: "message", message: { role: "user", content: "visible user work" },
+    },
+  ]);
+  const input = renderCheckpointInput(descriptors[0].manifest, events, null);
+  assert.match(input, /visible user work/);
+  assert.doesNotMatch(input, /private recalled block|recall-injection/);
+
+  const previous = checkpointFromOverview(descriptors[0].manifest, OVERVIEW);
+  const updated = JSON.parse(renderCheckpointInput(descriptors[0].manifest, events, previous));
+  assert.deepEqual(updated.unifiedContinuation.priorUnifiedState, {
+    checkpointId: previous.checkpointId,
+    narrative: previous.narrative,
+  });
+  assert.equal(updated.unifiedContinuation.newContext.entries[0].message.content, "visible user work");
 });
 
 test("失败重试、积压恢复与重放只产生一个有效 checkpoint", async () => {
@@ -240,6 +324,33 @@ test("进程重启从 request 事实恢复同一 task 并完成 checkpoint", asy
   assert.equal(taskIds.length, 2);
   assert.equal(taskIds[0], taskIds[1]);
   assert.ok(await adapter.readEventIfExists(SESSION, checkpointEventId(manifest)));
+});
+
+test("checkpoint 状态在临时任务清理完成前发布，派生消费者无需等待清理", async () => {
+  const { adapter, archives, descriptors } = await archiveFixture();
+  let releaseCleanup;
+  const cleanupBlocked = new Promise((resolve) => { releaseCleanup = resolve; });
+  let resolvePublished;
+  const published = new Promise((resolve) => { resolvePublished = resolve; });
+  let scheduleSettled = false;
+  const manager = new CheckpointManager({}, {
+    adapter,
+    archiveManager: archives,
+    processor: {
+      async advance() { return { status: "completed", overview: OVERVIEW }; },
+      async cleanup() { await cleanupBlocked; return true; },
+    },
+    now: clock(),
+    onStateChange(status) {
+      if (status.mode === "caught_up" && status.lastCheckpointId) resolvePublished();
+    },
+  });
+  const scheduled = manager.schedule(SESSION, [descriptors[0]]).then(() => { scheduleSettled = true; });
+  await published;
+  assert.equal(manager.status.mode, "caught_up");
+  assert.equal(scheduleSettled, false, "状态发布不得等待临时任务清理");
+  releaseCleanup();
+  await scheduled;
 });
 
 test("没有 request 事实链的 checkpoint 不会被接受为已消费", async () => {

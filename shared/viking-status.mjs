@@ -66,7 +66,7 @@ function formatArchiveLine(archive) {
   const identity = typeof archive?.lastArchiveId === "string" && archive.lastArchiveId
     ? archive.lastArchiveId
     : "尚未形成";
-  return `Archive：已提交 ${committed} 个，待提交 ${waiting} 个（最近 ${identity}）`;
+  return `Archive（当前分支本轮）：已验证 ${committed} 个，待验证 ${waiting} 个（最近 ${identity}）`;
 }
 
 const ACTIVE_CONTEXT_STATES = {

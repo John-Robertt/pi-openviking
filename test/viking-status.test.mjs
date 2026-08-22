@@ -42,7 +42,7 @@ test("/viking 展示 JSONL、Content capability、ACK 和待重放状态", () =>
   assert.match(output, /观察：就绪（accepted=12，dropped=0）/);
   assert.match(output, /ACK frontier：2 个 leaves/);
   assert.match(output, /待重放：4 个 entry/);
-  assert.match(output, new RegExp(`Archive：已提交 3 个，待提交 1 个（最近 arc_a{64}）`));
+  assert.match(output, new RegExp(`Archive（当前分支本轮）：已验证 3 个，待验证 1 个（最近 arc_a{64}）`));
   assert.match(output, new RegExp(`Checkpoint：消费落后，已消费 1 个，积压 2 个 Archive / 3000 tokens（最近 chk_c{64}）`));
 });
 
@@ -67,7 +67,7 @@ test("/viking 在 Archive 尚未形成或提交失败时给出可诊断状态", 
     sync: { source: "persistent-jsonl", capability: "ready", acknowledgedLeaves: [], pendingEntries: 0, lastFailure: null },
     observation: { state: "disabled" },
   });
-  assert.match(idle, /Archive：已提交 0 个，待提交 0 个（最近 尚未形成）/);
+  assert.match(idle, /Archive（当前分支本轮）：已验证 0 个，待验证 0 个（最近 尚未形成）/);
   assert.doesNotMatch(idle, /最近 Archive 失败/);
 
   const failed = formatVikingCommand({
@@ -84,7 +84,7 @@ test("/viking 在 Archive 尚未形成或提交失败时给出可诊断状态", 
     },
     observation: { state: "disabled" },
   });
-  assert.match(failed, /Archive：已提交 1 个，待提交 2 个/);
+  assert.match(failed, /Archive（当前分支本轮）：已验证 1 个，待验证 2 个/);
   assert.match(failed, /最近 Archive 失败：ContentBusyError: path busy/);
   assert.match(failed, /Checkpoint：失败，已消费 0 个，积压 1 个 Archive \/ 1000 tokens/);
   assert.match(failed, /最近 checkpoint 失败：task failed/);

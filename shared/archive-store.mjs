@@ -62,6 +62,8 @@ export class ArchiveManager {
     this.budgets = budgets;
     this.observe = observation;
     this.createdDirectories = new Set();
+    this.provenArchives = new Map();
+    this.planScope = null;
     this.state = { committed: 0, lastArchiveId: null, pending: 0, lastFailure: null };
   }
 
@@ -88,6 +90,11 @@ export class ArchiveManager {
     const archives = [];
     try {
       const plans = describeArchives(sessionId, events, this.budgets);
+      const planIds = plans.map((descriptor) => descriptor.manifest.archiveId);
+      const appendOnlyScope = this.planScope?.sessionId === sessionId &&
+        this.planScope.ids.every((archiveId, index) => planIds[index] === archiveId);
+      if (!appendOnlyScope) this.provenArchives.clear();
+      this.planScope = { sessionId, ids: planIds };
       planned = plans.length;
       // lastFailure 描述本轮：本轮出现的任何失败都会重新写入，因此持续存在的冲突会被
       // 持续报告，而不会被同一轮里其他 Archive 的成功抹掉。
@@ -102,7 +109,7 @@ export class ArchiveManager {
           archives.push({ ...descriptor, manifest: result.manifest });
           this.state.committed += 1;
           this.state.pending = Math.max(0, this.state.pending - 1);
-          if (result.branch !== "already_committed") created++;
+          if (result.branch === "created" || result.branch === "repaired_residue") created++;
         } catch (error) {
           // 各 Archive 是彼此独立的自证对象，范围互不重叠。绑定到某一个 archiveId 的
           // 完整性冲突只让那一个 Archive 停下；传输类失败对后续必然同样失败，中止本轮。
@@ -136,10 +143,18 @@ export class ArchiveManager {
 
     const existing = await this.readManifestBytes(location.manifestUri);
     if (existing && existing.equals(bytes)) {
-      await this.proveReferencedEvents(sessionId, manifest, events);
-      this.observe.emit("archive_commit", "already_committed", manifest.eventCount);
-      return { archiveId: manifest.archiveId, branch: "already_committed", manifest };
+      const proof = this.provenArchives.get(manifest.archiveId);
+      const proofMatches = proof?.sessionId === sessionId && proof.manifestHash === sha256(bytes) &&
+        proof.sourceFrontier === manifest.lastEventId && proof.eventCount === manifest.eventCount;
+      if (!proofMatches) {
+        await this.proveReferencedEvents(sessionId, manifest, events);
+        this.rememberProof(sessionId, manifest, bytes);
+      }
+      const branch = proofMatches ? "proof_reused" : "already_committed";
+      this.observe.emit("archive_commit", branch, manifest.eventCount);
+      return { archiveId: manifest.archiveId, branch, manifest };
     }
+    this.provenArchives.delete(manifest.archiveId);
     if (existing) {
       let selfProving = true;
       try {
@@ -178,8 +193,18 @@ export class ArchiveManager {
       throw new ArchiveIntegrityError("Archive manifest read-back does not match the committed bytes", manifest.archiveId);
     }
     const branch = existing ? "repaired_residue" : "created";
+    this.rememberProof(sessionId, manifest, bytes);
     this.observe.emit("archive_commit", branch, manifest.eventCount);
     return { archiveId: manifest.archiveId, branch, manifest };
+  }
+
+  rememberProof(sessionId, manifest, bytes) {
+    this.provenArchives.set(manifest.archiveId, {
+      sessionId,
+      manifestHash: sha256(bytes),
+      sourceFrontier: manifest.lastEventId,
+      eventCount: manifest.eventCount,
+    });
   }
 
   /**
@@ -242,6 +267,9 @@ export class ArchiveManager {
    * 自身证明。
    */
   async expand(sessionId, archiveId) {
+    // An explicit read is a new integrity proof. Never let an earlier proof survive a
+    // contradictory or incomplete expansion attempt.
+    this.provenArchives.delete(archiveId);
     const manifest = await this.read(sessionId, archiveId);
     const reversed = [];
     let cursor = manifest.lastEventId;
@@ -258,6 +286,7 @@ export class ArchiveManager {
     if (archiveContentHash(events) !== manifest.contentHash) {
       throw new ArchiveIntegrityError("expanded events do not recompute the manifest content hash", archiveId);
     }
+    this.rememberProof(sessionId, manifest, archiveManifestBytes(manifest));
     return { manifest, events };
   }
 }

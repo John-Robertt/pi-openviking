@@ -50,6 +50,8 @@
   产品返回值、状态和调用顺序与未观察基线一致；生产者未在 shutdown 期限内停止时不得生成完整 end；
 - 同一组固定记录分别通过新文件和继承 FD 写出，规范 JSONL 字节必须一致；文件创建、FD owner/mode/size 与路径
   不可复用条件分别验证；
+- 同一进程的多个 session producer 交错记录时，各自 session hash 与 boundary 归属保持稳定；非终止 session shutdown
+  注销旧 producer 后新扩展实例继续同一 run，终止 shutdown 由最后一个 producer 封存 sink 且只出现一个 `observe_run_end`；
 - 当前 observability manifest 引用 registry 的全部 active stage，并为成功和受控失败 workload 声明预期 branch/outcome
   与必要状态快照；verifier 逐 run 校验 start/end、accepted/dropped、连续 seq、boundary op/session 配对、观察状态和原始记录
   hash。子进程退出后由父进程同步并关闭其保留的 artifact FD，再读取最终字节；缺失、丢弃、写入、同步或关闭错误都使
@@ -126,8 +128,8 @@ manifest 中的精确依赖、服务和模型身份是可重放的最近验证�
 | observability | 当前 Pi lifecycle、真实同步、受支持 OpenViking，以及受控断线、拒绝和冲突                                     | run 完整、op 配对、分支/状态/失败可还原、无敏感值和丢弃、记录不进入事实源且清理成立                                         |
 | sync          | 当前 Pi CLI/lifecycle、真实 `SessionManager`、受支持 OpenViking Content API；涉及模型调用时使用开发模型身份 | Pi JSONL → 全部 `RecordedEvent` → direct/chunked 对象 → entry ACK 逐项对应；重放、409、断线、shutdown 和清理成立            |
 | archive       | 受管 OpenViking 的 Archive 发布中断/客户端重启，以及多个真实 Pi workload 形成的 Archive                     | 原子可见、幂等恢复、确定 expand、event 范围、entry/step 边界和每种真实样本的 Archive 完整性成立                           |
-| checkpoint    | archive gate 的各真实 Archive 与开发模型身份中的 VLM                                                        | checkpoint 来源/hash/完整事实链、失败重试、并发与重启恢复、媒体摘要、积压和终态清理正确；实际 VLM 吞吐满足 manifest 阈值     |
+| checkpoint    | archive gate 的各真实 Archive 与开发模型身份中的 VLM                                                        | 最小 checkpoint、统一 narrative 的原生章节规范化与当前目标/有效约束收敛、来源/hash/完整事实链、失败重试、并发与重启恢复、媒体摘要、积压和终态清理正确；媒体语义处理与 checkpoint 生成分别满足 manifest 阈值 |
 | context       | 真实 Pi session、候选 checkpoint/raw tail 和开发模型身份中的 task-model 元数据；请求保持在自动高水位以下 | 候选 payload 可由源事件逐项重算，entry/step/anchor 完整；容量来自 Pi，显式高水位不改变 payload/headroom/eligibility       |
-| takeover      | 真实 Pi `context`/compaction hook、开发 task provider、可控 OpenViking 降级与容量不匹配                   | provider payload/稳定前缀/cache 证据与候选一致；epoch 内固定且下一高水位推进；重启/分支/fail-open 与 compaction 正确 |
+| takeover      | 真实 Pi `context`/compaction hook、开发 task provider、可控 OpenViking 降级与容量不匹配                   | provider payload/稳定前缀/cache 证据与候选一致；epoch 内从当前分支 payload 判定 usable-token 高水位并保持固定；重启/分支/fail-open 与 compaction 正确 |
 | budget        | 发布基线 task/VLM 组合和多个彼此独立的真实 100k+ workload；每个 workload 至少重复三次                       | 全链一致且实际 token、吞吐、延迟和容量余量满足 manifest；基线身份留在 gate 证据，运行时 eligibility 继续消费 Pi 当前模型容量 |
 | retrieval     | 同一 release run 的 budget gate summary，以及在本次 namespace 重建的对应 events/Archive/checkpoint          | summary/manifest hash 匹配；索引就绪及重启后 search/browse/expand 返回预期身份和来源链；过滤、隐藏 raw event 隔离及清理成立 |

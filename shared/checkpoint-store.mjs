@@ -34,6 +34,7 @@ export class CheckpointManager {
     processor = null,
     observation = processObservation,
     notify = () => {},
+    onStateChange = () => {},
     pollIntervalMs = 2000,
     now = () => new Date().toISOString(),
   }) {
@@ -42,6 +43,7 @@ export class CheckpointManager {
     this.processor = processor ?? new OpenVikingCheckpointProcessor(client, { observation });
     this.observe = observation;
     this.notify = notify;
+    this.onStateChange = onStateChange;
     this.pollIntervalMs = pollIntervalMs;
     this.now = now;
     this.sessionId = null;
@@ -237,8 +239,23 @@ export class CheckpointManager {
         await this.cleanupAttempt(request.taskId);
         return;
       }
-      this.validateCheckpointEvent(storedCheckpoint, scan.current.descriptor, requestEvent);
+      const acceptedCheckpoint = this.validateCheckpointEvent(
+        storedCheckpoint, scan.current.descriptor, requestEvent,
+      );
       this.observe.emit("checkpoint_request", "complete", request.attempt, Math.max(0, scan.pending.length - 1));
+      const remaining = scan.pending.slice(1);
+      this.publishState({
+        ...scan,
+        consumed: [...scan.consumed, { descriptor: scan.current.descriptor, checkpoint: acceptedCheckpoint }],
+        pending: remaining,
+        previousCheckpoint: acceptedCheckpoint,
+        backlogTokens: remaining.reduce(
+          (sum, descriptor) => sum + Math.max(0, Number(descriptor.tokenCount) || 0), 0,
+        ),
+        current: remaining[0] ? { descriptor: remaining[0], attempt: 1, requestEvent: null } : null,
+        exhausted: false,
+        lastFailure: null,
+      });
       this.pendingCleanupTaskIds.add(request.taskId);
       if (!await this.cleanupAttempt(request.taskId)) return;
     }
@@ -477,6 +494,7 @@ export class CheckpointManager {
     this.state = next;
     if (JSON.stringify(previous) !== JSON.stringify(next)) {
       this.observe.emit("checkpoint_state", "change", previous, next);
+      this.onStateChange(next);
       if (previous.mode !== "lagging" && next.mode === "lagging") {
         this.notify(`OpenViking checkpoint 消费落后：${next.pending} 个 Archive，约 ${next.backlogTokens} tokens`, "warning");
       } else if (previous.mode === "lagging" && (next.mode === "processing" || next.mode === "caught_up")) {

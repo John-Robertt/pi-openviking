@@ -1,7 +1,3 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-
 import { openVikingApiPath } from "./openviking-api.mjs";
 
 const PREFERENCE_QUERY_RE = /prefer|preference|favorite|favourite|like|偏好|喜欢|爱好|更倾向/i;
@@ -55,28 +51,8 @@ function scaleQuotas(limit, weights) {
   return quotas;
 }
 
-function legacyMemoryQuotas(limit) {
-  return {
-    ...scaleQuotas(limit, { events: 10, entities: 10, preferences: 3 }),
-    experiences: 0,
-  };
-}
-
 function codingQuotas(limit) {
   return scaleQuotas(limit, CODING_QUOTA_WEIGHTS);
-}
-
-export function buildRecallEndpointBody(cfg = {}) {
-  const limit = Math.max(Number(cfg.recallLimit || DEFAULT_CONTEXT_LIMIT), 1);
-  const body = {
-    query: "",
-    quotas: legacyMemoryQuotas(limit),
-    max_chars: Math.max(Number(cfg.recallMaxContentChars || 0) * limit, 1000),
-    min_score: Number.isFinite(Number(cfg.scoreThreshold)) ? Number(cfg.scoreThreshold) : 0.35,
-    render: true,
-  };
-  if (cfg.recallPeerScope === "actor") body.peer_scope = "actor";
-  return body;
 }
 
 /**
@@ -260,6 +236,7 @@ async function resolveItemContent(fetchJSON, item, cfg, actorPeerId = "") {
     content = (item.abstract || item.overview || "").trim() || item.uri;
   }
 
+  if (containsInternalNamespace(content)) content = item.uri;
   const maxChars = Math.max(50, Number(cfg.recallMaxContentChars || 500));
   if (content.length > maxChars) content = `${content.slice(0, maxChars)}...`;
   return content;
@@ -301,39 +278,6 @@ async function buildFallbackInjectionBlock(fetchJSON, items, cfg, actorPeerId = 
   return lines.join("\n");
 }
 
-const LEGACY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-
-function stateFile(name) {
-  const override = String(process.env.OPENVIKING_STATE_DIR || "").trim();
-  return override ? join(override, name) : join(homedir(), ".openviking", "state", name);
-}
-
-async function readJsonFile(path) {
-  try { return JSON.parse(await readFile(path, "utf8")); } catch { return null; }
-}
-
-async function writeJsonFile(path, value) {
-  try {
-    await mkdir(dirname(path), { recursive: true });
-    const tmp = `${path}.tmp`;
-    await writeFile(tmp, JSON.stringify(value));
-    await rename(tmp, path);
-  } catch { /* best effort */ }
-}
-
-/**
- * Hooks are one-shot processes, so "this server has no context face" has to be
- * remembered on disk or every turn pays for a rejected request.
- */
-export async function isContextFaceLegacy(path = stateFile("context-face.json"), now = Date.now()) {
-  const cached = await readJsonFile(path);
-  return Boolean(cached?.legacyUntil && Number(cached.legacyUntil) > now);
-}
-
-export async function markContextFaceLegacy(path = stateFile("context-face.json"), now = Date.now()) {
-  await writeJsonFile(path, { legacyUntil: now + LEGACY_CACHE_TTL_MS });
-}
-
 function looksLikeUnknownField(res) {
   const text = JSON.stringify(res?.error ?? res?.result ?? res?.detail ?? "").toLowerCase();
   return text.includes("extra") || text.includes("mode") || text.includes("unexpected");
@@ -349,16 +293,13 @@ function wrapContext(body) {
 }
 
 /**
- * Server-assembled context: the context face when the deployment has it, else
- * the deprecated /recall preset. Returns the injection block, "" when there was
- * nothing relevant, or null when no server-side path was usable at all.
+ * Server-assembled context. Returns the injection block, "" when there was
+ * nothing relevant, or null when the supported context face was unavailable.
  */
 export async function buildServerAssembledBlock(fetchJSON, cfg, query, options = {}) {
   const actorPeerId = options.actorPeerId ?? cfg.peerId ?? "";
 
-  const block = await recallViaContextFace(fetchJSON, cfg, query, { ...options, actorPeerId });
-  if (block !== null) return block;
-  return recallViaEndpoint(fetchJSON, cfg, query, actorPeerId, options.observation);
+  return recallViaContextFace(fetchJSON, cfg, query, { ...options, actorPeerId });
 }
 
 /**
@@ -370,8 +311,6 @@ export async function buildServerAssembledBlock(fetchJSON, cfg, query, options =
 export async function fetchAssembledContext(fetchJSON, cfg, query, options = {}) {
   const actorPeerId = options.actorPeerId || "";
   const observation = options.observation;
-  if (await isContextFaceLegacy(options.legacyCachePath)) return null;
-
   const body = buildContextSearchBody(cfg, options);
   body.query = query;
   const res = await fetchJSON(openVikingApiPath("/search/search"), {
@@ -382,10 +321,9 @@ export async function fetchAssembledContext(fetchJSON, cfg, query, options = {})
   if (!res.ok) {
     const status = res.status || 0;
     if ((status === 400 || status === 422) && looksLikeUnknownField(res)) {
-      await markContextFaceLegacy(options.legacyCachePath);
-      observation?.emit("recall_failure", null, "context_unsupported", "retry", "legacy_endpoint", status);
+      observation?.emit("recall_failure", null, "context_unsupported", "retry", "raw_find", status);
     } else {
-      observation?.emit("recall_failure", null, "context_error", "retry", "legacy_endpoint", status);
+      observation?.emit("recall_failure", null, "context_error", "retry", "raw_find", status);
     }
     return null;
   }
@@ -405,50 +343,42 @@ async function recallViaContextFace(fetchJSON, cfg, query, options) {
   const assembled = await fetchAssembledContext(fetchJSON, cfg, query, options);
   if (assembled === null) return null;
 
-  const { rendered } = assembled;
-  const digest = assembled.digest;
   if (String(assembled.stats?.rewrite || "").toLowerCase() === "no_relevant") {
+    options.observation?.emit("recall_filter", "safe", 0, 0);
     return "";
   }
 
-  const injected = digest || rendered;
-  if (!injected) return "";
-  return wrapContext(injected);
-}
-
-async function recallViaEndpoint(fetchJSON, cfg, query, actorPeerId = "", observation = null) {
-  const body = buildRecallEndpointBody(cfg);
-  body.query = query;
-  const res = await postRecall(fetchJSON, body, { actorPeerId, observation });
-  if (!res.ok) {
-    observation?.emit("recall_failure", null, "endpoint_error", "retry", "raw_find", res.status || 0);
+  const accepted = assembled.entries.filter((entry) => !isInternalSemanticUri(entry?.uri));
+  const rejected = assembled.entries.length - accepted.length;
+  if (assembled.entries.length > 0) {
+    options.observation?.emit("recall_filter", rejected > 0 ? "filter_internal" : "safe", accepted.length, rejected);
+    if (accepted.length === 0) return "";
+    return wrapContext(accepted.map(renderAssembledEntry).join("\n"));
+  }
+  if (assembled.digest || assembled.rendered) {
+    options.observation?.emit("recall_filter", "unproven", 0, 1);
     return null;
   }
-  const rendered = String(res.result?.rendered || "").trim();
-  observation?.emit("recall_source", "legacy_endpoint", rendered ? 1 : 0);
-  if (!rendered) return "";
-  return wrapContext(rendered);
+  options.observation?.emit("recall_filter", "safe", 0, 0);
+  return "";
 }
 
-export async function postRecall(fetchJSON, body, opts = {}) {
-  const actorPeerId = opts.actorPeerId || "";
-  const observation = opts.observation;
-  const request = { ...body };
-  const res = await fetchJSON(openVikingApiPath("/search/recall"), {
-    method: "POST",
-    body: JSON.stringify(request),
-  }, { actorPeerId });
-  if (!request.peer_scope || (res.status !== 400 && res.status !== 422)) {
-    return res;
-  }
+function containsInternalNamespace(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return text.includes("/.pi-openviking") || text.includes("\\.pi-openviking");
+}
 
-  const downgraded = { ...request };
-  delete downgraded.peer_scope;
-  observation?.emit("recall_failure", null, "peer_scope_unsupported", "retry", "same_without_peer", res.status || 0);
-  return fetchJSON(openVikingApiPath("/search/recall"), {
-    method: "POST",
-    body: JSON.stringify(downgraded),
-  }, { actorPeerId });
+function isInternalSemanticUri(uri) {
+  const value = String(uri || "").trim().toLowerCase().replace(/\/+$/, "");
+  return containsInternalNamespace(value);
+}
+
+function renderAssembledEntry(entry) {
+  const category = String(entry?.category || "context").replace(/[^a-z_]/gi, "").slice(0, 32) || "context";
+  const score = (clampScore(Number(entry?.score)) * 100).toFixed(0);
+  const candidate = String(entry?.text || "").trim();
+  const text = candidate && !containsInternalNamespace(candidate) ? candidate : String(entry?.uri || "").trim();
+  return `- [${category} ${score}%] ${text}`;
 }
 
 export async function buildRecallBlock(fetchJSON, cfg, query, options = {}) {
@@ -458,7 +388,7 @@ export async function buildRecallBlock(fetchJSON, cfg, query, options = {}) {
   if (!trimmed) return null;
 
   // Assembly happens server-side when the deployment offers the context face;
-  // older servers fall through to /recall, then to raw find.
+  // unsupported or unproven responses fall through to raw find.
   const serverBlock = await buildServerAssembledBlock(fetchJSON, cfg, trimmed, {
     ...options,
     actorPeerId,
@@ -472,7 +402,9 @@ export async function buildRecallBlock(fetchJSON, cfg, query, options = {}) {
 
   const profile = buildQueryProfile(trimmed);
   const scoreThreshold = Number.isFinite(Number(cfg.scoreThreshold)) ? Number(cfg.scoreThreshold) : 0.35;
-  const filtered = raw.filter((it) => clampScore(it.score) >= scoreThreshold);
+  const visible = raw.filter((item) => !isInternalSemanticUri(item?.uri));
+  observation?.emit("recall_filter", visible.length === raw.length ? "safe" : "filter_internal", visible.length, raw.length - visible.length);
+  const filtered = visible.filter((it) => clampScore(it.score) >= scoreThreshold);
   filtered.sort((a, b) => rankItem(b, profile) - rankItem(a, profile));
   const picked = dedupeItems(filtered).slice(0, recallLimit);
 

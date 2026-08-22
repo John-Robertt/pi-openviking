@@ -6,12 +6,13 @@
  * compaction or provider-context ownership.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
 import { loadConfigFromModuleUrl, type OVConfig } from "./config.js";
 import { OVClient } from "./client.js";
 import { RecallManager } from "./recall.js";
 import { SyncManager, type TaskModelContext } from "./sync.js";
 import { buildProfileBlock } from "./shared/profile-inject.mjs";
-import { observation } from "./shared/observe.mjs";
+import { observation as processObservation } from "./shared/observe.mjs";
 import { createStatusRefresh } from "./shared/status-refresh.mjs";
 import { clearVikingFooter, formatVikingCommand, setVikingFooter } from "./shared/viking-status.mjs";
 import { guardVikingUriToolCall } from "./lib/uri-guard-adapter.mjs";
@@ -22,13 +23,15 @@ import { readTaskModelContext } from "./shared/task-model-context.mjs";
 
 const HEALTH_REFRESH_INTERVAL_MS = 5000;
 const OBSERVATION_ENTRY_TYPE = "ov-observation";
-const OBSERVATION_ENTRY_SCHEMA_VERSION = 1;
+const OBSERVATION_ENTRY_SCHEMA_VERSION = 2;
 
 
 export default async function (pi: ExtensionAPI) {
   // --- Load config ---
   const config = loadConfigFromModuleUrl(import.meta.url);
   if (!config.enabled) return;
+
+  const observation = processObservation.createProducer();
 
   // --- Initialize modules ---
   let statusContext: any = null;
@@ -41,7 +44,13 @@ export default async function (pi: ExtensionAPI) {
   const recordObservation = (kind: string, content: string, targetEntryId: string | null): void => {
     const op = observation.begin("pi_entry_append", kind);
     try {
-      pi.appendEntry(OBSERVATION_ENTRY_TYPE, { schemaVersion: OBSERVATION_ENTRY_SCHEMA_VERSION, kind, targetEntryId, content });
+      pi.appendEntry(OBSERVATION_ENTRY_TYPE, {
+        schemaVersion: OBSERVATION_ENTRY_SCHEMA_VERSION,
+        kind,
+        targetEntryId,
+        contentHash: `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`,
+        chars: content.length,
+      });
       observation.end("pi_entry_append", op, kind, "appended");
     } catch (error: unknown) {
       observation.end("pi_entry_append", op, kind, "error");
@@ -154,12 +163,15 @@ export default async function (pi: ExtensionAPI) {
     }
   };
 
-  const takeoverHighWaterTokens = (): number | null => {
+  const takeoverHighWaterTokens = (activeEpoch = false): number | null => {
     const status = sync.status.activeContext;
     if (status.eligibility !== "eligible") return null;
     const configured = Number(config.takeover.contextTokenThreshold) || 0;
     if (configured > 0) return configured;
-    const automatic = Number(status.headroomTokens);
+    // The first replacement is gated by how much of the original Pi context can
+    // grow before the candidate must fit. Once replaced, compare the replacement
+    // payload with total usable capacity instead of subtracting that payload twice.
+    const automatic = Number(activeEpoch ? status.usableTokens : status.headroomTokens);
     return Number.isFinite(automatic) && automatic > 0 ? automatic : null;
   };
 
@@ -174,6 +186,7 @@ export default async function (pi: ExtensionAPI) {
       piUsageTokens: contextUsageTokens(ctx),
       payloadTokens: status.payloadTokens,
       highWaterTokens: takeoverHighWaterTokens(),
+      activeHighWaterTokens: takeoverHighWaterTokens(true),
     });
   };
 
@@ -323,6 +336,7 @@ export default async function (pi: ExtensionAPI) {
         const checkpointBefore = sync.status.activeContext.checkpointId;
         const replacement = await sync.takeoverMessages(
           snapshotSessionSource(ctx.sessionManager), taskModel, takeover.allowAdvance,
+          takeover.epochActive ? takeover.highWaterTokens : null,
         );
         if (replacement) {
           messages = replacement;
@@ -520,6 +534,8 @@ export default async function (pi: ExtensionAPI) {
       observation.bindSession(null);
       if (reason === "quit") {
         await observation.finishRemaining(observationDeadline);
+      } else {
+        observation.release();
       }
     }
   });

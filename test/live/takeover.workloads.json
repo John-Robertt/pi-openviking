@@ -4,7 +4,7 @@
   "purpose": "上下文切换与 fail-open 真实验收门禁：在真实 Pi context/compaction lifecycle、开发 task provider、受管 OpenViking 与真实 VLM checkpoint 上，证明高水位接管、稳定前缀、跨重启与分支失效、容量或事实降级以及 Pi compaction 协作成立。",
   "mechanism": {
     "selected": "Pi context hook + 两字段 ActiveContext 原子替换 + checkpoint/anchor/raw-tail provider messages + session_before_compact 自包含 checkpoint",
-    "highWater": "contextTokenThreshold>0 时直接使用配置高水位；为 0 时使用 Pi 报告可用容量减去当前候选 payload 的余量。候选是否装得下只由 contextWindow-maxTokens-payloadTokens 判定，高水位不改变模型容量。epoch workload 先以不接管的真实请求校准 Pi provider usage 与 ActiveContext payload，再固定两者之间的高水位。",
+    "highWater": "contextTokenThreshold>0 时对首次接管与活动 epoch 直接使用配置高水位；为 0 时，首次接管使用 Pi 报告 usable tokens 减去候选 payload 的余量，活动 epoch 使用全部 usable tokens，避免把候选 payload 同时计入 usage 又从阈值扣除。候选是否装得下只由 contextWindow-maxTokens-payloadTokens 判定，高水位不改变模型容量。epoch workload 先以不接管的真实请求校准 Pi provider usage 与 ActiveContext payload，再固定两者之间的显式高水位。",
     "cacheEpoch": "ActiveContext 身份固定期间，provider payload 的 system、tools、checkpoint、anchor 和既有 raw tail 保持逐项稳定，后续 user/assistant/tool 消息只追加在该前缀之后。若 provider payload 暴露显式 cache key 则要求同一 ActiveContext 内不变；否则以稳定前缀和 Pi 持久化 usage.cacheRead/cacheWrite 作为可机器验证的 cache 证据。",
     "compaction": "Pi 是唯一 compaction 触发方。eligible ActiveContext 可读时 session_before_compact 返回 checkpoint 正文与来源身份，并以 rawTailStartEventId 对应 Pi entry 作为 firstKeptEntryId；不可用时不返回结果，由 Pi 原生 split-turn compaction 继续。",
     "falsifiedAlternatives": [

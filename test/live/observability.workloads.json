@@ -22,7 +22,7 @@
     },
     "registry": {
       "schemaVersion": 1,
-      "sha256": "15531d2e434839e2791f94463ded53f5f1f0fbcfbcacc31db0edd5de4123703b"
+      "sha256": "3d5503b7e461501153446f8c04f03785eac7f1404a9f8f11ffb48984cc8490a9"
     },
     "extensionLoadOrder": ["index.ts"]
   },
@@ -34,7 +34,7 @@
   "workloads": [
     {
       "id": "success-recall-sync",
-      "summary": "随机 session namespace 异步写入所属 marker 与 resource，并在统一 deadline 内轮询真实 search 直到目标 URI 可检索；真实 Pi prompt 触发 recall 产品 entry，再由 /viking sync 证明 Content 写入和 ACK 推进。",
+      "summary": "随机 session namespace 异步写入所属 marker 与用户语义 resource，并在统一 deadline 内轮询真实 search 直到目标 URI 可检索；真实 Pi prompt 触发 recall provenance entry，再由 /viking sync 证明 Content 写入和 ACK 推进。",
       "prompt": "请只回复 OK 两个字母，不要调用任何工具。",
       "expectedRecords": [
         { "stage": "pi_lifecycle", "data": { "phase": "end", "hook": "session_shutdown", "outcome": "success" } },
@@ -60,13 +60,14 @@
         { "stage": "checkpoint_state", "data": { "mode": "snapshot", "status": "caught_up" } },
         { "stage": "recall_request", "data": { "branch": "search" } },
         { "stage": "recall_source", "data": { "branch": "context_face" } },
+        { "stage": "recall_filter", "data": { "branch": "filter_internal" } },
         { "stage": "recall_result", "data": { "operation": "inject", "branch": "injected" } }
       ],
       "successCriteria": [
         "异步 fixture 只有在真实 search 返回同一 resource URI 后才就绪；文件存在、错误类型或其他 URI 均不能通过",
         "Pi exitCode=0、extension_error=0、/viking sync notify=info",
         "observation run 完整、seq 连续、boundary op 全部配对、accepted=end.seq、dropped=0",
-        "recall 注入通过 pi_entry_append 记录且观察 artifact 不含 recall 内容、prompt、session/user/URI、凭证",
+        "recall 注入只以 schema v2 provenance entry 记录 hash、字符数和目标 entry，不回写注入正文；观察 artifact 不含 recall 内容、prompt、session/user/URI、凭证",
         "ACK frontier 推进且观察记录未进入 Pi JSONL 或 OpenViking event namespace"
       ],
       "falsification": [

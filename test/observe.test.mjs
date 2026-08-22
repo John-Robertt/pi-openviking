@@ -143,6 +143,62 @@ test("boundary 在 begin 捕获 session，重绑定不改变 end 归属", async 
   assert.equal(boundary[1].session, boundary[0].session);
 });
 
+test("session producer 隔离交错归属，最后一个 producer 代表进程 owner 封存 run", async () => {
+  resetRoot();
+  const path = `${ROOT}/multi-session.jsonl`;
+  const observer = createObservation({ env: { OV_OBSERVE: path }, autoFinalize: false });
+  const main = observer.createProducer();
+  const child = observer.createProducer();
+  main.bindSession("main-session");
+  child.bindSession("child-session");
+
+  const mainOp = main.begin("client_http", "/health", "GET", 100);
+  child.emit("sync_source", "persistent_jsonl", 1);
+  await child.finishRemaining(child.beginDrainDeadline(500));
+  child.emit("sync_source", "persistent_jsonl", 2);
+  main.emit("sync_source", "persistent_jsonl", 3);
+  main.end("client_http", mainOp, "success", 200, "trace");
+
+  assert.equal(observer.getStatus().state, "ready");
+  await main.finishRemaining(main.beginDrainDeadline(500));
+  const records = parseJsonl(path).records;
+  assert.equal(records.filter((record) => record.stage === "observe_run_end").length, 1);
+  assert.equal(records.at(-1).stage, "observe_run_end");
+
+  const childRecord = records.find((record) => record.stage === "sync_source" && record.data.entries === 1);
+  const mainRecords = records.filter((record) =>
+    (record.stage === "sync_source" && record.data.entries === 3) || record.op === mainOp);
+  assert.equal(childRecord.session, observationSessionHash("child-session"));
+  assert.ok(mainRecords.length > 0);
+  assert.ok(mainRecords.every((record) => record.session === observationSessionHash("main-session")));
+  assert.equal(records.some((record) => record.stage === "sync_source" && record.data.entries === 2), false);
+});
+
+test("非终止会话替换注销旧 producer，并由新扩展实例继续同一进程 run", async () => {
+  resetRoot();
+  const path = `${ROOT}/session-replacement.jsonl`;
+  const observer = createObservation({ env: { OV_OBSERVE: path }, autoFinalize: false });
+  const previous = observer.createProducer();
+  previous.bindSession("previous-session");
+  previous.emit("sync_source", "persistent_jsonl", 1);
+  previous.release();
+  previous.emit("sync_source", "persistent_jsonl", 2);
+
+  const replacement = observer.createProducer();
+  replacement.bindSession("replacement-session");
+  replacement.emit("sync_source", "persistent_jsonl", 3);
+  assert.equal(observer.getStatus().state, "ready");
+  await replacement.finishRemaining(replacement.beginDrainDeadline(500));
+
+  const records = parseJsonl(path).records;
+  assert.equal(records.filter((record) => record.stage === "observe_run_end").length, 1);
+  assert.equal(records.some((record) => record.stage === "sync_source" && record.data.entries === 2), false);
+  assert.equal(records.find((record) => record.stage === "sync_source" && record.data.entries === 1).session,
+    observationSessionHash("previous-session"));
+  assert.equal(records.find((record) => record.stage === "sync_source" && record.data.entries === 3).session,
+    observationSessionHash("replacement-session"));
+});
+
 
 test("队列满、部分写和 close 错误只改变观察状态且不抛出", async (t) => {
   await t.test("queue full", async () => {

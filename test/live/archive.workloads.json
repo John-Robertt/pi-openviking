@@ -90,7 +90,7 @@
 
   "observationPoints": {
     "rpcStream": "子进程 stdout JSONL：response / agent_settled / extension_error / extension_ui_request(notify)",
-    "vikingCommand": "发送 /viking 后等待 extension_ui_request(method=notify)；其 message 含“Archive：已提交 N 个，待提交 M 个（最近 <archiveId>）”",
+    "vikingCommand": "发送 /viking 后等待 extension_ui_request(method=notify)；其 message 含“Archive（当前分支本轮）：已验证 N 个，待验证 M 个（最近 <archiveId>）”",
     "syncCompleteRule": "发送 /viking sync 后等待 notify；info 表示同步完成，warning 表示存在待重放",
     "archiveNamespace": "archiveStorageLocation 推导 sessionRoot；逐 shard ls 得到全部 manifest 对象",
     "sessionJsonl": "get_state 返回的 sessionFile；parsePiSessionJsonl + projectPiEntries 重建分支事件序列作为 Archive 的对照来源",

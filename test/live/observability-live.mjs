@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { OBSERVATION_STAGE_REGISTRY } from "../../shared/observe.mjs";
+import { openVikingApiPath } from "../../shared/openviking-api.mjs";
 import { parsePiSessionJsonl } from "../../shared/pi-session-source.mjs";
 import { projectPiEntries, recordedEventBytes } from "../../shared/recorded-event.mjs";
 import { recordedEventStorageLocation } from "../../shared/recorded-event-adapter.mjs";
@@ -86,13 +87,20 @@ function recordRun(ctx, run) {
   });
 }
 
-async function createObject(client, rootUri, uri, bytes) {
+async function createObject(client, rootUri, uri, bytes, { waitMs = 0 } = {}) {
   const request = {
     root_uri: rootUri,
     operations: [{ uri, content_base64: Buffer.from(bytes).toString("base64"), precondition: { kind: "create_if_absent" } }],
-    wait: false,
+    wait: waitMs > 0,
+    ...(waitMs > 0 ? { timeout: waitMs / 1000 } : {}),
   };
-  const response = await client.batchWrite(request);
+  const response = waitMs > 0
+    ? await client.fetchJSON(
+      openVikingApiPath("/content/batch-write"),
+      { method: "POST", body: JSON.stringify(request) },
+      waitMs + 10000,
+    )
+    : await client.batchWrite(request);
   if (!response.ok || !response.result?.created?.includes(uri)) {
     throw new FixtureError(response.ok ? "OBJECT_NOT_CREATED" : `OBJECT_HTTP_${response.status || 0}`);
   }
@@ -180,9 +188,13 @@ function preflightObservability(log, ctx) {
 // ---------------------------------------------------------------------------
 
 async function wSuccessRecallSync(log, ctx) {
-  const ownerRoot = `${ctx.userRoot}/resources/.pi-openviking`;
+  const ownerRoot = `${ctx.userRoot}/resources/observability-fixture`;
   const recallUri = `${ownerRoot}/recall-fixture.md`;
-  await createObject(ctx.client, ownerRoot, recallUri, Buffer.from(ctx.workload.prompt, "utf8"));
+  (ctx.extraCleanupRoots ??= []).push(ownerRoot);
+  await mkdirChain(ctx.client, `${ctx.userRoot}/resources`, ownerRoot);
+  await createObject(ctx.client, ownerRoot, recallUri, Buffer.from(ctx.workload.prompt, "utf8"), {
+    waitMs: ctx.manifest.thresholds.fixtureMs,
+  });
   (ctx.extraUris ??= []).push(recallUri);
   const fixture = await waitForRecallFixture(ctx.client, {
     query: ctx.workload.prompt,
@@ -216,8 +228,12 @@ async function wSuccessRecallSync(log, ctx) {
   const sessionText = await readFile(run.sessionFile, "utf8");
   const parsed = parsePiSessionJsonl(sessionText, { sessionId: ctx.sessionId });
   await assertRemoteEvents(log, ctx, parsed.entries);
-  const productObservation = parsed.entries.some((entry) => entry.type === "custom" && entry.customType === "ov-observation");
-  log.check(ctx.workloadId, "recall-product-entry", true, productObservation, productObservation);
+  const productObservation = parsed.entries.find((entry) => entry.type === "custom" && entry.customType === "ov-observation");
+  const provenance = productObservation?.data;
+  const minimalProvenance = provenance?.schemaVersion === 2 && provenance.kind === "recall-injection" &&
+    /^sha256:[0-9a-f]{64}$/.test(provenance.contentHash) && Number.isSafeInteger(provenance.chars) &&
+    provenance.chars > 0 && !Object.hasOwn(provenance, "content");
+  log.check(ctx.workloadId, "recall-product-provenance", true, minimalProvenance, minimalProvenance);
   const ack = existsSync(ackPath(ctx, ctx.endpoint)) ? await readSyncAck(ackPath(ctx, ctx.endpoint)) : null;
   log.check(ctx.workloadId, "ack-advanced", ">=1 leaf", ack?.acknowledgedLeaves?.length ?? 0,
     Boolean(ack?.acknowledgedLeaves?.length));

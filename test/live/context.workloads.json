@@ -8,8 +8,8 @@
     "candidate": "候选来自当前分支上最后一个已消费 Archive：checkpointId 由该 Archive manifest 确定性重算，rawTailStartEventId 是该 Archive lastEventId 在当前分支上的下一个事件。因此 raw tail 覆盖“已归档但尚未消费”与“尚未归档”的全部事件。",
     "anchor": "原始用户指令 anchor 不进入持久化字段，而是从 raw tail 起点自身的 turnId 重算：建立该 turn 的 user entry 的全部事件即 anchor。turn 身份由 docs/spec.md“完整记录事件”固定，因而 anchor 由不可变事件唯一确定，无需第三个字段。",
     "branchReuse": "复用条件是 rawTailStartEventId 仍在当前分支的事件链上。该判定只依赖本地分支投影，不需要网络：raw tail 起点在祖先链上等价于其来源 Archive 边界仍在祖先链上；离开祖先链即失效并重新选择。OpenViking 或 checkpoint 事实暂时不可读时保留既有 ActiveContext，不因降级销毁已选定边界。",
-    "eligibility": "usableTokens = Pi 报告 contextWindow - Pi 报告 maxTokens；payloadTokens = system + 活动工具定义 + 受 checkpointTokenBudget 约束的 checkpoint 块 + anchor + raw tail 的上下文权重之和；headroomTokens = usableTokens - payloadTokens；headroom>0 为 eligible，否则 inactive/capacity_mismatch。contextTokenThreshold 只控制接管高水位，不改变容量。权重使用与 Archive 压力轴同一策略量（UTF-8 字节数 / 4），由 shared/context-weight.mjs 单点维护。",
-    "checkpointBlock": "接管块只渲染 checkpoint 身份头与 narrative 正文。completed/openItems/nextEntry/retrievalCues 是 narrative 的派生投影，重复注入会让同一事实占用两份上下文。",
+    "eligibility": "usableTokens = Pi 报告 contextWindow - Pi 报告 maxTokens；payloadTokens = system + 活动工具定义 + 受 checkpointTokenBudget 约束的 checkpoint 块 + anchor + raw tail 中 Pi 实际映射为 provider messages 的 entry 权重之和；不渲染的 custom 状态 entry 不占候选容量。headroomTokens = usableTokens - payloadTokens；headroom>0 为 eligible，否则 inactive/capacity_mismatch。contextTokenThreshold 只控制接管高水位，不改变容量。权重使用与 Archive 压力轴同一策略量（UTF-8 字节数 / 4），由 shared/context-weight.mjs 单点维护。",
+    "checkpointBlock": "接管块只渲染 checkpoint 身份头与唯一的统一 Working Memory narrative，使任务状态在 provider 上下文中只表达一次。",
     "takeoverInactive": "本 gate 的真实请求保持在自动高水位以下，context hook 因而继续使用完整 Pi messages；高水位后的真实替换由 verify:takeover:live 独立证明。",
     "falsifiedAlternatives": [
       "把 anchor 作为第三个持久化字段：anchor 可由 raw tail 起点的 turnId 与不可变事件唯一重算，多一个字段就多一处可与事实分叉的状态",
@@ -44,7 +44,7 @@
       "anchorRule": "anchor = 建立 rawTailStart.turnId 的 user entry 的全部事件；rawTailStart 无 turnId 时 anchor 为空",
       "payloadSegments": ["system", "checkpoint", "anchor", "raw-tail"],
       "eligibilityFormula": "headroomTokens = contextWindow - maxTokens - (systemTokens + toolTokens + boundedCheckpointTokens + anchorTokens + rawTailTokens)；contextTokenThreshold 不参与容量判定",
-      "tokenWeight": "ceil(UTF-8 byteLength / 4)，与 Archive 压力轴同一策略量"
+      "tokenWeight": "provider-visible entry 内容取 ceil(UTF-8 byteLength / 4)，与 Archive 压力轴同一策略量；Pi 不映射为 provider message 的 custom 状态 entry 为 0"
     },
     "extensionLoadOrder": ["index.ts", "scripts/e2e-probe.ts"]
   },
@@ -65,7 +65,7 @@
       "toolResults": 2,
       "blobChars": 4000
     },
-    "syncCadence": "checkpoint 消费是异步的：第一次 /viking sync 触发消费扫描并在其完成后收敛活动上下文，第二次同步使同一进程内的 /viking 状态与已持久化边界确定一致。",
+    "syncCadence": "checkpoint 消费是异步的：同步只触发消费扫描，不等待 VLM 链路；需要观测新边界的 command-only 运行在两次同步后有界轮询只读 /viking 状态，直到报告目标 checkpoint。容量对照由随后两个新进程读取 Pi 已持久化的同一任务模型，避免用 prompt 改变候选 payload。",
     "checkpointSource": "Archive 由真实 Pi lifecycle 提交后，verifier 用生产 CheckpointManager 与受管 OpenViking VLM 生成真实 checkpoint（verify:checkpoint:live 已独立证明该链路），再由真实 Pi 进程发现该事实并形成 ActiveContext。",
     "storageUserDerivation": "dev--pi-<sessionId>",
     "platform": "darwin/linux"
@@ -87,7 +87,7 @@
         "verifier：SessionManager 注入多事件 step 与 custom blob 压力",
         "run 1：/viking sync（真实 Pi lifecycle 提交 Archive）",
         "verifier：生产 CheckpointManager + 受管 OpenViking VLM 生成真实 checkpoint",
-        "run 2：prompt P2 → /viking sync → /viking sync → /viking（形成 ActiveContext 并捕获 provider payload）"
+        "run 2：prompt P2 → /viking sync → /viking sync → 有界轮询 /viking 至报告目标 checkpoint（形成 ActiveContext 并捕获 provider payload）"
       ],
       "inputs": {
         "P1": "请只回复 OK 两个字母，不要调用任何工具。",
@@ -114,7 +114,7 @@
       "summary": "已形成的 ActiveContext 跨进程重启逐字节恢复并复用；切换到不含来源边界的 sibling 分支后不复用该上下文，事实对象保持不变。",
       "steps": [
         "同 w1 形成 ActiveContext",
-        "run 2：/viking sync → /viking sync → /viking（记录 ActiveContext 字节）",
+        "run 2：/viking sync → /viking sync → 有界轮询 /viking 至报告目标 checkpoint（记录 ActiveContext 字节）",
         "run 3：新 Pi 进程 /viking sync → /viking sync → /viking（跨重启复用）",
         "verifier：SessionManager.branch(归档前缀之前的 entry) + appendMessage 建立 sibling 分支",
         "run 4：/viking sync → /viking sync → /viking（来源边界离开祖先链）"
@@ -140,9 +140,10 @@
       "summary": "同一真实模型与同一 ActiveContext 下，显式高水位配置不改变 Pi 报告容量、候选 payload 与 eligibility；容量不匹配的真实 fail-open 由 takeover gate 使用大原子来源独立证明。",
       "steps": [
         "同 w1 形成 ActiveContext（contextTokenThreshold=0，自动高水位）",
-        "run 2：/viking sync → /viking sync → /viking（记录容量与候选）",
+        "run 2：/viking sync → /viking sync → 有界轮询 /viking 至报告目标 checkpoint（只观测异步 ActiveContext 形成）",
+        "run 3：新 Pi 进程 /viking sync → /viking sync → 有界轮询 /viking 至报告任务模型容量（记录自动高水位下的容量与候选）",
         "verifier：改写 extensionConfig 为 highWaterOverride",
-        "run 3：/viking sync → /viking sync → /viking（重算同一候选）"
+        "run 4：新 Pi 进程 /viking sync → /viking sync → 有界轮询 /viking 至报告任务模型容量（重算同一候选）"
       ],
       "inputs": {
         "P1": "请只回复 OK 两个字母，不要调用任何工具。"

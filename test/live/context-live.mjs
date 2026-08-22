@@ -410,7 +410,12 @@ async function w1(log, ctx) {
 
   const run = await runPi(ctx, {
     workloadId: ctx.workloadId, turn: 2, endpoint: ctx.endpoint,
-    actions: [{ prompt: inputs.P2 }, { command: "/viking sync" }, { command: "/viking sync" }, { command: "/viking" }],
+    actions: [
+      { prompt: inputs.P2 },
+      { command: "/viking sync" },
+      { command: "/viking sync" },
+      { command: "/viking", untilNotifyIncludes: lastCheckpointId },
+    ],
   });
   assertRunHealthy(log, ctx, run, { requireCapture: true });
   ctx.runs.push(summarizeRun(run));
@@ -443,7 +448,11 @@ async function w2(log, ctx) {
 
   const formation = await runPi(ctx, {
     workloadId: ctx.workloadId, turn: 2, endpoint: ctx.endpoint,
-    actions: [{ command: "/viking sync" }, { command: "/viking sync" }, { command: "/viking" }],
+    actions: [
+      { command: "/viking sync" },
+      { command: "/viking sync" },
+      { command: "/viking", untilNotifyIncludes: lastCheckpointId },
+    ],
   });
   assertRunHealthy(log, ctx, formation, { requireCapture: false });
   const branchBefore = (await branchSource(ctx, formation.sessionFile)).branch;
@@ -514,9 +523,25 @@ async function w3(log, ctx) {
   ctx.checkpointArchiveHash = descriptor.manifest.contentHash;
   const lastCheckpointId = await produceCheckpoint(log, ctx, descriptor);
 
-  const fitRun = await runPi(ctx, {
+  const formation = await runPi(ctx, {
     workloadId: ctx.workloadId, turn: 2, endpoint: ctx.endpoint,
-    actions: [{ command: "/viking sync" }, { command: "/viking sync" }, { command: "/viking" }],
+    actions: [
+      { command: "/viking sync" },
+      { command: "/viking sync" },
+      { command: "/viking", untilNotifyIncludes: lastCheckpointId },
+    ],
+  });
+  assertRunHealthy(log, ctx, formation, { requireCapture: false });
+
+  // 形成进程只观测异步 checkpoint→ActiveContext 收敛；容量对照从下一进程开始，避免形成期
+  // 的状态通知与模型事实刷新污染基线。两个对照进程读取同一持久 session，也不需要额外 prompt。
+  const fitRun = await runPi(ctx, {
+    workloadId: ctx.workloadId, turn: 3, endpoint: ctx.endpoint,
+    actions: [
+      { command: "/viking sync" },
+      { command: "/viking sync" },
+      { command: "/viking", untilNotifyIncludes: "上下文容量：Pi 报告" },
+    ],
   });
   assertRunHealthy(log, ctx, fitRun, { requireCapture: false });
   const branch = (await branchSource(ctx, fitRun.sessionFile)).branch;
@@ -536,8 +561,12 @@ async function w3(log, ctx) {
 
   writeExtensionConfig(ctx, ctx.manifest.environment.extensionConfig.highWaterOverride);
   const thresholdRun = await runPi(ctx, {
-    workloadId: ctx.workloadId, turn: 3, endpoint: ctx.endpoint,
-    actions: [{ command: "/viking sync" }, { command: "/viking sync" }, { command: "/viking" }],
+    workloadId: ctx.workloadId, turn: 4, endpoint: ctx.endpoint,
+    actions: [
+      { command: "/viking sync" },
+      { command: "/viking sync" },
+      { command: "/viking", untilNotifyIncludes: "上下文容量：Pi 报告" },
+    ],
   });
   assertRunHealthy(log, ctx, thresholdRun, { requireCapture: false });
   const thresholded = vikingActiveContext(thresholdRun);
@@ -559,7 +588,7 @@ async function w3(log, ctx) {
   const persisted = await readActiveContext(activeContextPathFor(ctx));
   log.check(ctx.workloadId, "threshold.context-retained", context.checkpointId, persisted?.checkpointId,
     persisted?.checkpointId === context.checkpointId);
-  ctx.runs.push(summarizeRun(fitRun), summarizeRun(thresholdRun), {
+  ctx.runs.push(summarizeRun(formation), summarizeRun(fitRun), summarizeRun(thresholdRun), {
     label: "eligibility",
     checkpointWallMs: ctx.checkpointWallMs,
     automatic: {

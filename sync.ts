@@ -109,6 +109,12 @@ export class SyncManager {
   private checkpointBranchLeafId: string | null = null;
   private committedArchives: ArchiveDescriptor[] = [];
   private derivedStateVersion = 0;
+  private activeContextSnapshot: {
+    version: number;
+    sessionId: string;
+    branchEvents: any[];
+    taskModel: TaskModelContext | null;
+  } | null = null;
   private operationTail: Promise<void> = Promise.resolve();
   private syncStatus: SyncStatus = {
     source: "none",
@@ -152,7 +158,12 @@ export class SyncManager {
     return sessionManager.getLeafId() === this.checkpointBranchLeafId;
   }
 
-  async takeoverMessages(sessionManager: any, taskModel: TaskModelContext | null = null, allowAdvance = true): Promise<any[] | null> {
+  async takeoverMessages(
+    sessionManager: any,
+    taskModel: TaskModelContext | null = null,
+    allowAdvance = true,
+    advanceHighWaterTokens: number | null = null,
+  ): Promise<any[] | null> {
     return this.serialize(async () => {
       if (!this.piSessionId || !this.activeContext) return null;
       const nextCheckpointId = this.checkpoints?.status.lastCheckpointId ?? null;
@@ -167,6 +178,7 @@ export class SyncManager {
           capacity: taskModel?.capacity ?? null,
           factsAvailable: taskModel?.factsAvailable === true,
           allowAdvance,
+          advanceHighWaterTokens,
           systemPrompt: taskModel?.systemPrompt ?? "",
           toolDefinitions: taskModel?.toolDefinitions ?? "",
         });
@@ -221,6 +233,7 @@ export class SyncManager {
       this.checkpointBranchLeafId = null;
       this.committedArchives = [];
       this.derivedStateVersion = 0;
+      this.activeContextSnapshot = null;
     }
     this.piSessionId = piSessionId;
     this.observe.bindSession(piSessionId);
@@ -245,6 +258,7 @@ export class SyncManager {
       archiveManager: this.archives,
       observation: this.observe,
       notify: this.options.notify,
+      onStateChange: () => this.scheduleActiveContextRefresh(),
     });
     this.activeContext = new ActiveContextManager({
       path: this.options.activeContextPathForSession
@@ -537,28 +551,24 @@ export class SyncManager {
     events: any[],
     taskModel: TaskModelContext | null,
   ): Promise<void> {
-    // 结果用对象包住 checkpoint 消费的 promise：直接返回 promise 会被 await 展开，
-    // 同步就会等待异步 VLM 消费完成。
     const version = ++this.derivedStateVersion;
     const sessionId = this.piSessionId;
-    const { consumption } = await this.formArchives(branch, parentById, events);
     const onBranch = new Set(branch.map((entry) => entry.id));
     const branchEvents = events.filter((event) => onBranch.has(event.source.entryId));
+    this.activeContextSnapshot = { version, sessionId, branchEvents, taskModel };
+    await this.formArchives(branch, parentById, events);
     await this.updateActiveContext(branchEvents, taskModel);
-    // checkpoint 消费是异步的：它完成后立即用新的消费状态再收敛一次活动上下文，使边界在
-    // 同一轮同步内固定，而不是等到下一轮。收敛排在同一操作队列上，因此 shutdown grace 覆盖它。
-    // 后续同步或会话切换会产生更新的分支快照；旧 consumption 完成后不得用旧 branchEvents
-    // 混合当前 checkpoint 状态来覆盖新分支的 ActiveContext。
-    if (consumption) {
-      // consumption 的失败由 checkpoint 协调者记录，收敛本身的降级由 updateActiveContext 记录；
-      // 这里只防止 fire-and-forget 链把未处理的 rejection 变成进程级失败。
-      void consumption
-        .then(() => this.serialize(async () => {
-          if (this.piSessionId !== sessionId || this.derivedStateVersion !== version) return;
-          await this.updateActiveContext(branchEvents, taskModel);
-        }))
-        .catch(() => {});
-    }
+  }
+
+  /** checkpoint 事实一经发布即可收敛接管边界；临时 VLM 资源清理不阻塞派生状态。 */
+  private scheduleActiveContextRefresh(): void {
+    void this.serialize(async () => {
+      // 通知只表示 checkpoint 派生事实发生了变化。执行时读取最新分支快照，避免通知排队期间
+      // 新一轮同步替换快照后，旧通知被丢弃且新 checkpoint 状态不再变化而永久漏掉收敛。
+      const snapshot = this.activeContextSnapshot;
+      if (!snapshot || this.piSessionId !== snapshot.sessionId || this.derivedStateVersion !== snapshot.version) return;
+      await this.updateActiveContext(snapshot.branchEvents, snapshot.taskModel);
+    }).catch(() => {});
   }
 
   /** 活动上下文只服务接管：它的失败不改变事件、ACK、Archive 或 checkpoint。 */
@@ -590,8 +600,8 @@ export class SyncManager {
     branch: any[],
     parentById: Map<string, string | null>,
     events: any[],
-  ): Promise<{ consumption: Promise<void> | null }> {
-    if (!this.archives || !this.piSessionId) return { consumption: null };
+  ): Promise<void> {
+    if (!this.archives || !this.piSessionId) return;
     const branchLeafId = branch.at(-1)?.id ?? null;
     const previousLeafId = this.checkpointBranchLeafId;
     if (previousLeafId !== null && !branchContinuesFrom(parentById, branchLeafId, previousLeafId)) {
@@ -612,9 +622,9 @@ export class SyncManager {
     const result = await this.archives.formArchives(this.piSessionId, acknowledgedEvents);
     // 只有完整走完本轮计划，结果才足以替换消费范围。暂时性传输失败保留上一范围；
     // 分支切换已在 I/O 前失效旧范围，因而不会继续消费已放弃分支。
-    if (!result.reconciled) return { consumption: null };
+    if (!result.reconciled) return;
     this.committedArchives = result.archives;
-    return { consumption: this.checkpoints?.schedule(this.piSessionId, result.archives, archiveChains) ?? null };
+    void this.checkpoints?.schedule(this.piSessionId, result.archives, archiveChains);
   }
 
   private setCapability(next: SyncStatus["capability"]): void {

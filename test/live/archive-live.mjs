@@ -247,10 +247,10 @@ async function verifyArchives(log, ctx, archiveIds, branch, label) {
     retained >= budgets.rawTailTokenBudget, "归档必须保留配置要求的最近原始上下文预算");
 }
 
-/** /viking 输出中的 Archive 行：已提交数、最近 archiveId 与失败提示。 */
+/** /viking 输出中的 Archive 行：当前分支本轮已验证数、最近 archiveId 与失败提示。 */
 function vikingArchiveStatus(run) {
   const message = String(run.actions.at(-1)?.notifyEvent?.message ?? "");
-  const matched = message.match(/Archive：已提交 (\d+) 个，待提交 (\d+) 个（最近 (arc_[0-9a-f]{64}|尚未形成)）/);
+  const matched = message.match(/Archive（当前分支本轮）：已验证 (\d+) 个，待验证 (\d+) 个（最近 (arc_[0-9a-f]{64}|尚未形成)）/);
   return {
     message,
     committed: matched ? Number(matched[1]) : null,

@@ -13,5 +13,4 @@ export function buildRecallBlock(
   },
 ): Promise<string | null>;
 
-export function buildRecallEndpointBody(cfg?: Record<string, any>): Record<string, any>;
 export function estimateTokens(text: string): number;

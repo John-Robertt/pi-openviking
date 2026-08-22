@@ -174,7 +174,7 @@ test("提交建立唯一 manifest 对象，重复提交幂等且不产生第二�
   assert.deepEqual(manifestFiles, [location.manifestUri]);
 
   const again = await manager.commit(SESSION, range);
-  assert.equal(again.branch, "already_committed");
+  assert.equal(again.branch, "proof_reused");
   assert.equal(again.archiveId, first.archiveId);
   assert.deepEqual([...transport.files.keys()].filter((uri) => uri.includes("/archives/v1/")), manifestFiles);
 });
@@ -273,6 +273,36 @@ test("每次展开都按会话位置重新验证 Archive", async () => {
   assert.deepEqual(second.events.map((event) => event.eventId), range.map((event) => event.eventId));
 });
 
+test("展开反证会失效进程内证明，恢复后才能重新缓存", async () => {
+  const events = eventsOf();
+  const { adapter, manager } = await storedManager(events);
+  const range = events.slice(0, 3);
+  const { archiveId: id } = await manager.commit(SESSION, range);
+  assert.equal((await manager.commit(SESSION, range)).branch, "proof_reused");
+
+  const readEvent = adapter.readEvent.bind(adapter);
+  const readEventIfExists = adapter.readEventIfExists.bind(adapter);
+  let contradicted = true;
+  adapter.readEvent = async (...args) => {
+    const stored = await readEvent(...args);
+    return contradicted
+      ? { ...stored, event: { ...stored.event, payload: { part: { type: "text", value: "contradiction" } } } }
+      : stored;
+  };
+  adapter.readEventIfExists = async (...args) => {
+    const stored = await readEventIfExists(...args);
+    return contradicted && stored ? { ...stored, bytes: Buffer.from("contradiction") } : stored;
+  };
+
+  await assert.rejects(() => manager.expand(SESSION, id), ArchiveIntegrityError);
+  await assert.rejects(() => manager.commit(SESSION, range), ArchiveIntegrityError,
+    "显式反证后不得继续复用旧证明");
+
+  contradicted = false;
+  assert.equal((await manager.commit(SESSION, range)).branch, "already_committed");
+  assert.equal((await manager.commit(SESSION, range)).branch, "proof_reused");
+});
+
 test("展开时事件被改写即失败，未提交的 archiveId 不可读", async () => {
   const events = eventsOf();
   const { transport, manager } = await storedManager(events);
@@ -291,8 +321,16 @@ test("展开时事件被改写即失败，未提交的 archiveId 不可读", asy
 
 test("formArchives 按计划提交全部到期 Archive 并保持幂等", async () => {
   const events = eventsOf();
-  const { transport, manager } = await storedManager(events);
+  const { transport, adapter, manager } = await storedManager(events);
+  let proofReads = 0;
+  const readEventIfExists = adapter.readEventIfExists.bind(adapter);
+  adapter.readEventIfExists = async (...args) => {
+    proofReads++;
+    return readEventIfExists(...args);
+  };
   const first = await manager.formArchives(SESSION, events);
+  const firstProofReads = proofReads;
+  assert.ok(firstProofReads > 0);
   assert.deepEqual(
     { planned: first.planned, created: first.created, committed: first.committed, pending: first.pending },
     { planned: 3, created: 3, committed: 3, pending: 0 },
@@ -303,19 +341,28 @@ test("formArchives 按计划提交全部到期 Archive 并保持幂等", async (
   const again = await manager.formArchives(SESSION, events);
   assert.equal(again.created, 0);
   assert.equal(again.committed, 3);
+  assert.equal(proofReads, firstProofReads, "稳定 Archive 应复用同一进程内的来源证明");
   assert.equal([...transport.files.keys()].filter((uri) => uri.includes("/archives/v1/")).length, 3);
+
+  const restarted = new ArchiveManager(transport, { userRoot: USER_ROOT, adapter, budgets: BUDGETS });
+  const beforeRestartProof = proofReads;
+  const afterRestart = await restarted.formArchives(SESSION, events);
+  assert.equal(afterRestart.created, 0);
+  assert.ok(proofReads > beforeRestartProof, "进程内证明不得跨 ArchiveManager 重启复用");
 
   transport.files.delete(manifests[0]);
   const recovered = await manager.formArchives(SESSION, events);
   assert.equal(recovered.created, 1, "丢失的 manifest 必须从当前事件重建而非命中进程缓存");
   assert.equal(recovered.committed, 3);
   assert.ok(transport.files.has(manifests[0]));
+  assert.ok(proofReads > firstProofReads, "manifest 未知时必须重新证明来源事件");
 
   const firstPlan = planArchives(events, BUDGETS)[0];
   const referencedId = events[firstPlan.startIndex].eventId;
   const eventUri = [...transport.files.keys()].find((uri) => uri.includes(`.${referencedId}.json`));
   const eventBytes = transport.files.get(eventUri);
   const manifestBytes = transport.files.get(manifests[0]);
+  await manager.formArchives(SESSION, events.slice(0, 1));
   transport.files.delete(eventUri);
   const invalid = await manager.formArchives(SESSION, events);
   assert.ok(invalid.committed < invalid.planned, "已提交 manifest 的引用事件缺失时不得继续报告 committed");
@@ -428,4 +475,3 @@ test("路径占用是可重试失败：Archive 保持待提交，已确认事件
   assert.equal(recovered.committed, 3);
   assert.equal(recovered.lastFailure, null);
 });
-

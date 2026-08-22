@@ -15,6 +15,7 @@ import { CheckpointManager } from "../shared/checkpoint-store.mjs";
 import { OBSERVATION_STAGE_REGISTRY, createObservation, validateObservationRecord } from "../shared/observe.mjs";
 import { RecordedEventAdapter } from "../shared/recorded-event-adapter.mjs";
 import { ARCHIVE_USER_ROOT, MemoryContentTransport, archiveEvents } from "./fixtures/archive-fixtures.mjs";
+import { checkpointOverview } from "./fixtures/checkpoint-fixtures.mjs";
 import { buildLongToolLoopTrace } from "./fixtures/long-tool-loop-trace.mjs";
 import { registerTools } from "../tools.ts";
 import { guardVikingUriToolCall } from "../lib/uri-guard-adapter.mjs";
@@ -150,7 +151,7 @@ test("owner failure stage 生成脱敏记录并按白名单区分 transport、ti
   observation.emit(
     "recall_failure",
     Object.assign(new Error("private timeout detail"), { name: "TimeoutError", code: "ETIMEDOUT" }),
-    "context_error", "retry", "legacy_endpoint", 0,
+    "context_error", "retry", "raw_find", 0,
   );
   observation.emit(
     "index_failure",
@@ -263,8 +264,6 @@ test("Archive 提交与失败由同一责任模块解释，只记录分支、计
 
 test("recall 只记录来源、数量与注入结果，不记录 query、内容或 URI", async () => {
   const { path, observation } = observationFor("recall");
-  const oldStateDir = process.env.OPENVIKING_STATE_DIR;
-  process.env.OPENVIKING_STATE_DIR = `${ROOT}/recall-state`;
   const client = {
     memorySpace: "private-space",
     async fetchJSON(route) {
@@ -274,7 +273,12 @@ test("recall 只记录来源、数量与注入结果，不记录 query、内容�
         result: {
           rendered: "private recalled body",
           digest: "safe-digest",
-          entries: [{ uri: "viking://user/private-space/memories/x" }],
+          entries: [{
+            uri: "viking://user/private-space/memories/x",
+            category: "memories",
+            score: 0.9,
+            text: "source-backed recalled fact",
+          }],
           stats: { rewrite: "off" },
         },
       };
@@ -290,23 +294,19 @@ test("recall 只记录来源、数量与注入结果，不记录 query、内容�
     recallPeerScope: "all",
     scoreThreshold: 0.35,
   }, () => "private-session", observation);
-  try {
-    recall.queueSearch("private user query");
-    const block = await recall.searchPending();
-    assert.match(block, /safe-digest/);
-    const messages = [{ role: "user", content: "current prompt" }];
-    const injected = recall.injectRecall(messages);
-    assert.ok(injected.injectedBlock);
-  } finally {
-    if (oldStateDir === undefined) delete process.env.OPENVIKING_STATE_DIR;
-    else process.env.OPENVIKING_STATE_DIR = oldStateDir;
-    await observation.finish();
-  }
+  recall.queueSearch("private user query");
+  const block = await recall.searchPending();
+  assert.match(block, /source-backed recalled fact/);
+  const messages = [{ role: "user", content: "current prompt" }];
+  const injected = recall.injectRecall(messages);
+  assert.ok(injected.injectedBlock);
+  await observation.finish();
 
   const { raw, records } = readRun(path);
-  assert.doesNotMatch(raw, /private user query|private recalled body|private-space|current prompt|safe-digest/);
+  assert.doesNotMatch(raw, /private user query|private recalled body|private-space|current prompt|safe-digest|source-backed recalled fact/);
   assert.ok(records.some((record) => record.stage === "recall_request" && record.data.branch === "search"));
   assert.ok(records.some((record) => record.stage === "recall_source" && record.data.branch === "context_face" && record.data.resultCount === 1));
+  assert.ok(records.some((record) => record.stage === "recall_filter" && record.data.branch === "safe"));
   assert.ok(records.some((record) => record.stage === "recall_result" && record.data.branch === "injected"));
 });
 
@@ -378,7 +378,7 @@ test("checkpoint 请求、VLM 边界、状态与失败只记录安全计数和�
     async addMessage() { return true; },
     async commitSession() { return { ok: true, result: { task_id: "provider-task" } }; },
     async getTask() { return { ok: true, result: { status: "completed", result: { token_usage: { llm: { total_tokens: 1 } } } } }; },
-    async getSessionContext() { return { ok: true, result: { latest_archive_overview: "## Current State\nready" } }; },
+    async getSessionContext() { return { ok: true, result: { latest_archive_overview: checkpointOverview() } }; },
   }, { observation });
   const expanded = await archives.expand(sessionId, descriptor.manifest.archiveId);
   assert.equal((await boundaryProcessor.advance({
@@ -396,7 +396,7 @@ test("checkpoint 请求、VLM 边界、状态与失败只记录安全计数和�
           first = false;
           return { status: "failed", error: { errorClass: "protocol", errorCode: "task_failed", message: "private provider failure" } };
         }
-        return { status: "completed", overview: "## Current State\nready" };
+        return { status: "completed", overview: checkpointOverview() };
       },
       async cleanup() { return true; },
     },
@@ -429,7 +429,7 @@ test("活动上下文的选择、容量判定与降级只记录枚举、计数�
     requestEvent: buildCheckpointRequestEvent({
       manifest: consumed.manifest, previousCheckpointId: null, attempt: 1, submittedAt: "2026-08-21T00:00:00.000Z",
     }),
-    overview: "## Task & Goals\n- private checkpoint narrative",
+    overview: checkpointOverview("private checkpoint narrative"),
     completedAt: "2026-08-21T00:00:10.000Z",
   });
   let available = true;

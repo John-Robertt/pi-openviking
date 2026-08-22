@@ -1,5 +1,5 @@
 import type { ArchiveDescriptor } from "./archive.mjs";
-import type { CheckpointV1 } from "./checkpoint.mjs";
+import type { CheckpointV2 } from "./checkpoint.mjs";
 import type { Observation } from "./observe.mjs";
 import type { PiRecordedEventV1 } from "./recorded-event.mjs";
 
@@ -86,7 +86,7 @@ export function activeContextOnBranch(context: ActiveContextV1 | null, branchEve
 export function anchorEvents(branchEvents: PiRecordedEventV1[], rawTailStartEventId: string): PiRecordedEventV1[];
 export function materializeActiveContext(input: {
   context: ActiveContextV1;
-  checkpoint: CheckpointV1;
+  checkpoint: CheckpointV2;
   branchEvents: PiRecordedEventV1[];
   systemPrompt?: string;
   toolDefinitions?: string;
@@ -108,6 +108,7 @@ export function evaluateTakeoverTrigger(input: {
   piUsageTokens: number | null;
   payloadTokens: number | null;
   highWaterTokens: number | null;
+  activeHighWaterTokens?: number | null;
 }): {
   render: boolean;
   allowAdvance: boolean;
@@ -141,6 +142,7 @@ export class ActiveContextManager {
       capacity?: TaskModelCapacity | null;
       factsAvailable?: boolean;
       allowAdvance?: boolean;
+      advanceHighWaterTokens?: number | null;
     },
   ): Promise<any[] | null>;
   compaction(branchEvents: PiRecordedEventV1[], tokensBefore: number): Promise<{

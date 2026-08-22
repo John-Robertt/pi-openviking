@@ -32,6 +32,7 @@ export class CheckpointManager {
     processor?: CheckpointProcessor;
     observation?: Observation;
     notify?: (message: string, level: "info" | "warning") => void;
+    onStateChange?: (status: CheckpointStatus) => void;
     pollIntervalMs?: number;
     now?: () => string;
   });

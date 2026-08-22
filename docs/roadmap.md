@@ -18,50 +18,58 @@
 提供真实边界证据。该门禁断言的范围见 [`docs/verification.md`](./verification.md) 的门禁表；
 workload、身份与阈值由 `test/live/sync.workloads.json` 及其固定 hash 承载。
 
-**可观测性基线出口已关闭。** `shared/observe.mjs` 的 active stage registry 是现行点位唯一清单；关闭零工作、
-sink/schema fail-open、字节一致性和职责模块接点由 deterministic checks 证明，`verify:observability:live` 在固定
-manifest/hash 下覆盖成功 recall/同步、断线、409 冲突、URI 拒绝和持久清理，当前通过 106/106。该 gate 此后作为每个阶段的常驻出口条件。
+**可观测性 deterministic 基线已完成，当前 live 出口待恢复。** `shared/observe.mjs` 的 active stage registry 是现行点位唯一清单；关闭零工作、
+sink/schema fail-open、字节一致性、进程 run 下的 session producer 隔离与会话替换注销由 deterministic checks 证明。`verify:observability:live` 的固定
+manifest/hash 覆盖成功 recall/同步、断线、409 冲突、URI 拒绝和持久清理；最新运行通过 92/94，断线、冲突、权限、
+观察 run 与清理均通过，成功 workload 的 OpenViking 同步 resource 写入在 300000ms 内未返回并以 HTTP 0 断开，
+因此未进入 recall/同步断言。该 gate 是每个阶段的常驻出口条件，真实 resource 处理恢复后必须全量通过。
 
 **原子 Archive 的出口已关闭。** Archive 的原子机制由真实 0.4.15 上的基线调查选定，机制、实测证据与
 被证伪的候选记录在 `test/live/archive.workloads.json` 的 `mechanism`。`npm test` 提供 deterministic 证据，
 `verify:archive:live` 在真实 Pi lifecycle 与受管 OpenViking 上通过 118/118，覆盖 Archive 形成、完整 Pi entry/step
-边界、崩溃残留恢复、受管重启幂等和完整性冲突 fail-open；常驻 `verify:observability:live` 全量通过。
+边界、崩溃残留恢复、受管重启幂等和完整性冲突 fail-open；现行观察 registry 的 deterministic 覆盖完整，当前
+`verify:observability:live` 的真实 resource 边界状态见上文。
 
-**checkpoint 生产的出口已关闭。** checkpoint request、代码拥有的明确 failure 与结构化 checkpoint 作为自产
+**checkpoint 生产的 deterministic 契约已完成，当前 live 出口待验证。** checkpoint request、代码拥有的明确 failure 与结构化 checkpoint 作为自产
 `RecordedEventV1` 进入既有 immutable event namespace；消费状态、完整 parent/attempt 链、积压和终态清理
 义务只从 Archive 与这些事实派生。deterministic checks 证明孤立 checkpoint 拒绝、并发首写者收敛、逐 Archive
 三次 attempt、媒体失败 pending、外部错误脱敏和跨重启清理。
 
 `verify:checkpoint:live` 在当前开发模型身份和受管 OpenViking 上覆盖文本、多模态、明确失败后的真实 VLM 重试、
-双 Archive 重启恢复及当前 Archive 范围失效，固定 240000ms 质量边界下通过 135/135；accepted baseline、
-身份、阈值和成功标准由 `test/live/checkpoint.workloads.json` 及其固定 hash 承载。常驻
-`verify:observability:live` 覆盖现行 registry。
+双 Archive 重启恢复及当前 Archive 范围失效，并分别以 480000ms 和 240000ms 约束媒体语义处理与 checkpoint 生成，
+最近一次完整运行通过 126/136：文本、重试、恢复、失效、观察和持久清理全部通过；有效 128x128 PNG 的 OpenViking 媒体
+语义处理在两段阈值总和 720000ms 内仍未返回 abstract，因此不生成 checkpoint 并保持 fail-open。受管服务重启后
+独立文本 VLM 探针通过。当前 manifest 还断言跨代全局目标与新增约束的精确标识；媒体边界恢复后须按当前 hash
+全量重跑。accepted baseline、身份、阈值和成功标准由
+`test/live/checkpoint.workloads.json` 及其固定 hash 承载；`verify:observability:live` 覆盖现行 registry。
 
-**活动上下文构造的出口已关闭。** `ActiveContext` 只持久化 `docs/spec.md` 定义的两个字段，选自当前分支上最后一个
+**活动上下文构造的 deterministic 契约已完成，当前 live 刷新待验证。** `ActiveContext` 只持久化 `docs/spec.md` 定义的两个字段，选自当前分支上最后一个
 已消费的 checkpoint；anchor 由 raw tail 起点的 turn 身份重算，因而不进入持久状态。deterministic checks 证明候选
 选择、跨重启复用、来源边界离开祖先链后的失效、anchor 重算、dry-run payload 与容量判定两侧。
 
-`verify:context:live` 在真实 Pi lifecycle、真实已提交 Archive 与真实 VLM checkpoint 上通过 139/139：持久化边界等于
+最近一次 `verify:context:live` 在真实 Pi lifecycle、真实已提交 Archive 与真实 VLM checkpoint 上通过 143/143：持久化边界等于
 从 Pi JSONL 与 Archive manifest 独立重算的候选，raw tail 逐字节等于源事件且覆盖全部未归档事件、不拆开 entry/step；
-Pi 报告的 272000/128000 容量得到 11386 tokens 候选与 132614 tokens 余量，显式高水位配置不改变容量、候选或
-eligibility；低于自动高水位的真实 provider payload 保持完整 Pi 上下文。常驻 observability manifest 与现行 registry
-双向覆盖，`verify:observability:live` 通过 106/106。
+Pi 报告的容量按 `contextWindow - maxTokens - payloadTokens` 精确重算正余量，显式高水位配置不改变容量、候选或
+eligibility；低于自动高水位的真实 provider payload 保持完整 Pi 上下文。当前实现还要求 checkpoint 完整装入预算，
+超限即保持 Pi 完整上下文；该降级边界须随 checkpoint 当前 manifest 刷新 live 证据。常驻 observability 状态见上文。
 
-**上下文切换与 fail-open 的出口已关闭。** `context` hook 在 eligible `ActiveContext` 到达高水位时原子替换 provider
+**上下文切换与 fail-open 的 deterministic 契约已完成，当前 live 刷新待验证。** `context` hook 在 eligible `ActiveContext` 到达高水位时原子替换 provider
 messages；session 启动同步在首个 provider 请求前收敛，接管时才推进到最新可用 checkpoint。连续真实请求保留同一
 `prompt_cache_key` 与稳定 provider 前缀，第二次请求产生 cache read；重启复用同一两字段边界，根级 sibling 分支、
 OpenViking 断线、来源事实不可读和容量不匹配均使用完整 Pi 上下文。
 
 `session_before_compact` 只在 ActiveContext eligible 且事实可读时向 Pi 提供带 checkpoint hash、Archive 身份和
-raw-tail 边界的自包含 compaction；否则不返回结果，由 Pi 原生 compaction 继续。`verify:takeover:live` 在真实 task
-provider、真实 Pi lifecycle、受管 OpenViking 与真实 VLM checkpoint 上通过 201/201：后台 checkpoint B 已生成时，
-同一 provider epoch 的第二个请求仍使用 checkpoint A，稳定前缀保持且第二次 `cacheRead=87552`；A payload 再次越过
+raw-tail 边界的自包含 compaction；否则不返回结果，由 Pi 原生 compaction 继续。最近一次 `verify:takeover:live` 在真实 task
+provider、真实 Pi lifecycle、受管 OpenViking 与真实 VLM checkpoint 上通过 202/202：后台 checkpoint B 已生成时，
+同一 provider epoch 的第二个请求仍使用 checkpoint A，稳定前缀保持且第二次请求命中 cache read；A payload 再次越过
 高水位后，下一请求、持久 ActiveContext、远端 checkpoint 事实与 compaction 共同推进到同一最新身份，compaction 期间
-ActiveContext 文件逐字节不变。常驻 `verify:observability:live` 通过 106/106。
+ActiveContext 文件逐字节不变。当前 checkpoint 接受门与完整装载 fail-open 契约须刷新同一真实链证据；常驻
+observability 的当前真实 resource 边界状态见上文。
 
-**发布基线端到端预算校准的出口已关闭。** 发布默认预算为 Archive chunk 50000、raw tail 20000、checkpoint 16000。
-`verify:budget:live` 对三类独立 100k+ workload 各重复三次并通过 739/739；accepted baseline、模型身份、实测阈值、
-结果及适用范围由 `test/live/budget.workloads.json` 及固定 hash 承载。
+**发布预算配置保持不变，当前端到端 live 刷新待验证。** 发布默认预算为 Archive chunk 50000、raw tail 20000、checkpoint 16000。
+最近一次 `verify:budget:live` 对三类独立 100k+ workload 各重复三次并通过 739/739；当前最小 checkpoint schema、统一
+Working Memory 接受门和完整装载 fail-open 已改变该全链边界，须在 checkpoint live 恢复后按现行实现重跑。accepted
+baseline、模型身份、实测阈值、结果及适用范围由 `test/live/budget.workloads.json` 及固定 hash 承载。
 
 ## 实施顺序
 
@@ -291,7 +299,8 @@ ActiveContext 文件逐字节不变。常驻 `verify:observability:live` 通过 
 
 ## 下一实施入口
 
-当前入口是检索与诊断体验：建立 `verify:retrieval:live` manifest，消费同一 release run 的 budget summary，
-在本次随机 namespace 从已确认 events、Archive 与 checkpoint 重建检索派生物，验证 raw event/checkpoint 语义搜索、
-按 session/branch/Archive/event ID 的过滤、browse/expand，以及 event → Archive → checkpoint → `ActiveContext`
-来源链。gate 必须核对 budget summary/manifest hash、重启后索引就绪、隐藏 raw event 隔离和所属资源清理。
+当前入口是恢复受管 OpenViking 的真实语义处理出口：能为有效 PNG 返回 abstract 后，以现行 480000ms 媒体边界和
+240000ms checkpoint 边界重跑 `verify:checkpoint:live`，要求 136 项全部通过；同步 resource 写入恢复后重跑
+`verify:observability:live`，要求成功 recall/同步与其余 workload 全量通过。两项均要求所属资源持久删除。
+这些前置 gate 关闭后再进入检索与诊断体验：建立 `verify:retrieval:live` manifest，消费同一 release run 的 budget
+summary，在随机 namespace 重建检索派生物并验证语义搜索、过滤、browse/expand、来源链和所属资源清理。

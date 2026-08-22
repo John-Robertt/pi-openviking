@@ -11,6 +11,7 @@ import { archiveStorageLocation } from "../shared/archive-store.mjs";
 import { recordedEventStorageLocation } from "../shared/recorded-event-adapter.mjs";
 import { projectPiEntries, recordedEventBytes } from "../shared/recorded-event.mjs";
 import { ARCHIVE_USER_ROOT, MemoryContentTransport, archiveEntryChain } from "./fixtures/archive-fixtures.mjs";
+import { checkpointOverview } from "./fixtures/checkpoint-fixtures.mjs";
 import { buildLongToolLoopTrace } from "./fixtures/long-tool-loop-trace.mjs";
 
 class MemoryEventStore {
@@ -456,7 +457,7 @@ test("分支切换在 Archive I/O 前使旧 checkpoint scope 失效", async () =
   const advanceEntered = new Promise((resolve) => { markAdvance = resolve; });
   const advanceBlocked = new Promise((resolve) => { releaseAdvance = resolve; });
   sync.checkpoints.processor = {
-    async advance() { markAdvance(); await advanceBlocked; return { status: "completed", overview: "old branch" }; },
+    async advance() { markAdvance(); await advanceBlocked; return { status: "completed", overview: checkpointOverview("old branch") }; },
     async cleanup() { return true; },
   };
 
@@ -586,73 +587,70 @@ test("Archive 暂时性传输失败不替换 checkpoint 消费范围", async () 
   assert.deepEqual(schedules.at(-1), acceptedScope);
 });
 
-test("旧 checkpoint consumption 完成后不得用旧分支快照覆盖新活动上下文", async () => {
-  const sessionId = "active-context-stale-consumption";
-  const { main, sibling, tree } = forkedTree(sessionId);
-  const siblingBranch = [...main.slice(0, 2), ...sibling];
+test("checkpoint 状态通知以执行时的最新分支快照收敛活动上下文", async () => {
+  const sessionId = "active-context-published-checkpoint";
+  const branch = archiveEntryChain(Array.from({ length: 6 }, () => ({ role: "assistant", chars: 4000 })));
+  const events = projectPiEntries(sessionId, branch);
+  const descriptor = describeArchives(sessionId, events, ARCHIVE_BUDGETS)[0];
+  const requestEvent = buildCheckpointRequestEvent({
+    manifest: descriptor.manifest,
+    previousCheckpointId: null,
+    attempt: 1,
+    submittedAt: "2026-08-21T00:00:00.000Z",
+  });
+  const checkpointEvent = buildCheckpointEvent({
+    manifest: descriptor.manifest,
+    requestEvent,
+    overview: checkpointOverview("publish active context before cleanup"),
+    completedAt: "2026-08-21T00:00:10.000Z",
+  });
   const transport = new MemoryContentTransport();
-  const sync = new SyncManager(contentClient(transport), { ackPathForSession: () => null, activeContextPathForSession: () => null });
+  transport.files.set(
+    recordedEventStorageLocation(ARCHIVE_USER_ROOT, sessionId, checkpointEvent.eventId).directUri,
+    recordedEventBytes(checkpointEvent),
+  );
+  const sync = new SyncManager(contentClient(transport), {
+    ackPathForSession: () => null,
+    activeContextPathForSession: () => null,
+  });
   await sync.ensureSession(sessionId);
-
-  const allEvents = projectPiEntries(sessionId, tree);
-  const eventsFor = (branch) => {
-    const ids = new Set(branch.map((entry) => entry.id));
-    return allEvents.filter((event) => ids.has(event.source.entryId));
-  };
-  const selectable = (events, archives) => archives.filter((descriptor) =>
-    events.findIndex((event) => event.eventId === descriptor.manifest.lastEventId) < events.length - 1);
-  const mainEvents = eventsFor(main);
-  const siblingEvents = eventsFor(siblingBranch);
-  const mainArchives = describeArchives(sessionId, mainEvents, ARCHIVE_BUDGETS);
-  const siblingArchives = describeArchives(sessionId, siblingEvents, ARCHIVE_BUDGETS);
-  const nextAfter = (events, descriptor) => {
-    const index = events.findIndex((event) => event.eventId === descriptor.manifest.lastEventId);
-    return index < 0 ? null : events[index + 1] ?? null;
-  };
-  const mainConsumed = selectable(mainEvents, mainArchives)
-    .find((descriptor) => nextAfter(mainEvents, descriptor)?.source.entryId.startsWith("m-"));
-  const siblingConsumed = selectable(siblingEvents, siblingArchives)
-    .find((descriptor) => nextAfter(siblingEvents, descriptor)?.source.entryId.startsWith("s-") &&
-      checkpointId(descriptor.manifest) !== (mainConsumed ? checkpointId(mainConsumed.manifest) : ""));
-  assert.ok(mainConsumed && siblingConsumed, "fixture 必须为两条分支提供不同且后面仍有 raw tail 的 checkpoint");
-
-  const writeCheckpoint = (descriptor, overview) => {
-    const requestEvent = buildCheckpointRequestEvent({
-      manifest: descriptor.manifest, previousCheckpointId: null, attempt: 1, submittedAt: "2026-08-21T00:00:00.000Z",
-    });
-    const checkpointEvent = buildCheckpointEvent({
-      manifest: descriptor.manifest, requestEvent, overview, completedAt: "2026-08-21T00:00:10.000Z",
-    });
-    transport.files.set(
-      recordedEventStorageLocation(ARCHIVE_USER_ROOT, sessionId, checkpointEvent.eventId).directUri,
-      recordedEventBytes(checkpointEvent),
-    );
-  };
-  writeCheckpoint(mainConsumed, "## Task & Goals\n- old branch");
-  writeCheckpoint(siblingConsumed, "## Task & Goals\n- new branch");
-
-  let releaseOld;
-  const oldConsumption = new Promise((resolve) => { releaseOld = resolve; });
-  sync.checkpoints = { status: { lastCheckpointId: null }, stop: async () => {}, observeFinalState: () => {} };
-  sync.formArchives = async (branch) => {
-    const useSibling = branch.at(-1)?.id === siblingBranch.at(-1)?.id;
-    sync.committedArchives = useSibling ? siblingArchives : mainArchives;
-    sync.checkpoints.status.lastCheckpointId = checkpointId((useSibling ? siblingConsumed : mainConsumed).manifest);
-    return { consumption: useSibling ? Promise.resolve() : oldConsumption };
+  const onStateChange = sync.checkpoints.onStateChange;
+  let releaseCleanup;
+  const cleanupBlocked = new Promise((resolve) => { releaseCleanup = resolve; });
+  sync.checkpoints = {
+    status: { ...sync.checkpoints.status, lastCheckpointId: null },
+    schedule: async () => cleanupBlocked,
+    stop: async () => {},
+    observeFinalState: () => {},
   };
 
-  const taskModel = { capacity: { contextWindow: 272000, maxTokens: 128000 }, factsAvailable: true, systemPrompt: "", toolDefinitions: "" };
-  await sync.advanceDerivedState(main, new Map(), allEvents, taskModel);
-  assert.equal(sync.status.activeContext.checkpointId, checkpointId(mainConsumed.manifest));
-
-  await sync.advanceDerivedState(siblingBranch, new Map(), allEvents, taskModel);
-  await sync.waitForIdle(1000);
-  assert.equal(sync.status.activeContext.checkpointId, checkpointId(siblingConsumed.manifest));
-
-  releaseOld();
-  await sync.waitForIdle(1000);
-  assert.equal(sync.status.activeContext.checkpointId, checkpointId(siblingConsumed.manifest),
-    "旧 consumption 的延迟回调不得清除或覆盖新分支活动上下文");
+  const source = { isPersisted: () => false, getEntries: () => branch, getBranch: () => branch };
+  const taskModel = {
+    capacity: { contextWindow: 272000, maxTokens: 128000 },
+    factsAvailable: true,
+    systemPrompt: "",
+    toolDefinitions: "",
+  };
+  await sync.syncSession(source, taskModel);
+  sync.checkpoints.status.lastCheckpointId = checkpointId(descriptor.manifest);
+  const updateActiveContext = sync.updateActiveContext.bind(sync);
+  let skipQueuedSyncUpdate = true;
+  sync.updateActiveContext = async (...args) => {
+    if (skipQueuedSyncUpdate) {
+      skipQueuedSyncUpdate = false;
+      return;
+    }
+    return updateActiveContext(...args);
+  };
+  // 第二轮同步先排队但尚未执行；通知此时看到的是上一快照。执行通知时必须读取第二轮
+  // 已建立的最新快照，否则 checkpoint 状态不再变化时不会有下一次收敛机会。
+  const queuedSync = sync.syncSession(source, taskModel);
+  onStateChange(sync.checkpoints.status);
+  await queuedSync;
+  assert.equal(await sync.waitForIdle(1000), true);
+  assert.equal(sync.status.activeContext.checkpointId, checkpointId(descriptor.manifest));
+  assert.equal(sync.status.activeContext.eligibility, "eligible");
+  releaseCleanup();
 });
 
 test("活动上下文的 raw tail 覆盖当前分支尚未确认的最新事件", async () => {
@@ -670,7 +668,7 @@ test("活动上下文的 raw tail 覆盖当前分支尚未确认的最新事件"
   });
   const checkpointEvent = buildCheckpointEvent({
     manifest: consumed.manifest, requestEvent,
-    overview: "## Task & Goals\n- keep the raw tail complete", completedAt: "2026-08-21T00:00:10.000Z",
+    overview: checkpointOverview("keep the raw tail complete"), completedAt: "2026-08-21T00:00:10.000Z",
   });
   for (const event of [requestEvent, checkpointEvent]) {
     transport.files.set(

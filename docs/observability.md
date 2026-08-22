@@ -33,8 +33,11 @@
 
 ### `ObservationRun`
 
-每次成功打开观察去向时创建新的随机 `run`；同一 Pi 进程内的扩展重载复用进程级观察实例，不重新打开去向。
-Pi session 可以跨进程恢复，因此 `run` 区分不同观察实例，`session` 只负责把相关记录关联到活动会话。
+每次成功打开观察去向时创建新的随机 `run`；同一 Pi 进程内的扩展实例复用进程级观察 runtime 和 sink，不重新打开去向。
+每个扩展实例持有自己的 session producer，`bindSession` 只改变该 producer 后续记录的归属；boundary 在 begin 时固定
+session。`session_shutdown` 只注销当前 producer；`new`、`resume`、`fork` 与 `reload` 保持 run 开放给随后绑定的新扩展
+实例，`quit` 由最后一个 producer 通过进程 runtime 在 shutdown deadline 内封存，`beforeExit` 只为异常清理路径兜底。Pi session 可以跨进程恢复，
+因此 `run` 区分不同观察实例，`session` 只负责把相关记录关联到对应会话。
 
 一个完整 run 的第一条记录是 `kind=state, stage=observe_run_start`，最后一条记录是
 `kind=state, stage=observe_run_end`；两者使用 `mode=snapshot`。结束记录中的 `accepted` 是从 start 到结束记录入队前
@@ -196,7 +199,8 @@ reason、accepted/dropped 数量。该状态只服务诊断和验收，任何产
 - 任何以复原运行过程为职责、写到统一 sink 之外的持久或进程外输出都是第二套观察点，包括 `OV_DEBUG_LOG`、自由文本
   文件日志、stderr debug 和 logger transport，统一实现落地时必须删除。只呈现当前产品结果且不承担过程复原的用户
   通知、配置错误和 `/viking` 状态不属于第二套观察点。
-- `ov-observation` Pi entry 记录实际注入内容，是产品事实，不属于本标准。
+- `ov-observation` Pi entry 只记录注入发生的 provenance（类型、目标 entry、内容 hash 与字符数），是产品事实，不属于本标准；
+  实际注入正文不回写 Pi 事件链。
 - `scripts/e2e-probe.ts` 捕获原始 provider payload，是受 `docs/verification.md` 约束的测试证据，不得套用观察记录
   schema 或脱敏规则；它与观察实现只能共享无业务语义的私有 JSONL sink 能力。
 - verifier 的 expected/actual/check 结果是断言产物，不是运行过程观察。

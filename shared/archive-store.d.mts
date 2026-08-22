@@ -34,7 +34,7 @@ export class ArchiveManager {
   >;
   commit(sessionId: string, events: PiRecordedEventV1[]): Promise<{
     archiveId: string;
-    branch: "already_committed" | "created" | "repaired_residue";
+    branch: "already_committed" | "proof_reused" | "created" | "repaired_residue";
     manifest: ArchiveManifestV1;
   }>;
   read(sessionId: string, archiveId: string): Promise<ArchiveManifestV1>;

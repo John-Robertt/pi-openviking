@@ -4,10 +4,12 @@ import test from "node:test";
 import { buildArchiveManifest } from "../shared/archive.mjs";
 import { OpenVikingCheckpointProcessor } from "../shared/checkpoint-processor.mjs";
 import { archiveEvents } from "./fixtures/archive-fixtures.mjs";
+import { checkpointOverview } from "./fixtures/checkpoint-fixtures.mjs";
 
 const events = archiveEvents("processor-session", [{ role: "user", chars: 20 }]);
 const manifest = buildArchiveManifest("processor-session", events);
 const TASK_ID = `cptask_${"a".repeat(64)}`;
+const OVERVIEW = checkpointOverview("complete checkpoint processing");
 
 function response(ok, result = null, status = ok ? 200 : 404, error = null) {
   return { ok, result, status, error };
@@ -26,12 +28,12 @@ test("processor 通过公开 Session/Task API 提交并读取 Working Memory", a
     async commitSession() { calls.push("commitSession"); return response(true, { task_id: "provider-task" }); },
     async listTasks() { throw new Error("commit response already has task id"); },
     async getTask() { calls.push("getTask"); return response(true, { status: "completed" }); },
-    async getSessionContext() { calls.push("getSessionContext"); return response(true, { latest_archive_overview: "## Current State\nReady" }); },
+    async getSessionContext() { calls.push("getSessionContext"); return response(true, { latest_archive_overview: OVERVIEW }); },
   };
   const processor = new OpenVikingCheckpointProcessor(client);
   const result = await processor.advance({ taskId: TASK_ID, manifest, events, previousCheckpoint: null });
   assert.equal(result.status, "completed");
-  assert.equal(result.overview, "## Current State\nReady");
+  assert.equal(result.overview, OVERVIEW);
   assert.deepEqual(calls, ["getSession", "addMessage", "commitSession", "getTask", "getSessionContext"]);
 });
 
@@ -66,6 +68,22 @@ test("processor 只把 OpenViking 明确终态失败返回为 checkpoint failure
   assert.equal(result.error.message, "checkpoint VLM task failed");
 });
 
+test("processor 拒绝缺少统一 continuation 契约的非空输出", async () => {
+  const client = {
+    userRoot: "viking://user/test",
+    async getSession() { return response(true, { message_count: 1, commit_count: 1 }); },
+    async listTasks() { return response(true, [{ task_id: "provider-task", created_at: 1 }]); },
+    async getTask() { return response(true, { status: "completed" }); },
+    async getSessionContext() {
+      return response(true, { latest_archive_overview: "# Session Summary\n\n**Overview**: 1 turns, 1 messages" });
+    },
+  };
+  const processor = new OpenVikingCheckpointProcessor(client);
+  const result = await processor.advance({ taskId: TASK_ID, manifest, events, previousCheckpoint: null });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.errorCode, "invalid_output");
+});
+
 test("processor 在任一媒体没有非空语义摘要时保留同一 request 等待恢复", async () => {
   const imageEvents = archiveEvents("processor-media", [{ role: "user", chars: 20 }]);
   imageEvents[0].source.partType = "image";
@@ -90,7 +108,7 @@ test("processor 在任一媒体没有非空语义摘要时保留同一 request �
     async addMessage() { added++; return true; },
     async commitSession() { return response(true, { task_id: "provider-task" }); },
     async getTask() { return response(true, { status: "completed" }); },
-    async getSessionContext() { return response(true, { latest_archive_overview: "## Current State\nReady" }); },
+    async getSessionContext() { return response(true, { latest_archive_overview: OVERVIEW }); },
   };
   const processor = new OpenVikingCheckpointProcessor(client);
   const result = await processor.advance({ taskId: TASK_ID, manifest: imageManifest, events: imageEvents, previousCheckpoint: null });

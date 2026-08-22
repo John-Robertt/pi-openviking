@@ -120,6 +120,19 @@ const DEV_PID_FILE = join(DEV_RUN_DIR, "server.pid");
 
 export class PiRunError extends Error {}
 
+export function commandNotifyMatches(command, message) {
+  const text = String(message ?? "");
+  if (command.trim() === "/viking sync") {
+    return text.startsWith("OpenViking：已确认 ") ||
+      text.startsWith("OpenViking：同步未完成，") ||
+      text.startsWith("OpenViking：未连接，");
+  }
+  if (command.trim() === "/viking") {
+    return text.startsWith("OpenViking：") && text.includes("\n模式：完整事件记录\n");
+  }
+  return true;
+}
+
 export function buildLivePiInvocation({
   piBin, extensionLoadOrder, sessionId, runDir, endpoint, openviking, profile, taskApiKey,
   turn, capture = "e2e", provider = null, envStrip = [], extraEnv = {}, baseEnv = process.env,
@@ -264,15 +277,32 @@ export async function runPi(ctx, {
         }
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       } else if (action.command !== undefined) {
-        send({ id, type: "prompt", message: action.command });
-        const resp = await waitFor((m) => m.type === "response" && m.id === id, 30000, `command response ${id}`);
-        if (resp.success !== true) throw new PiRunError(`command rejected: ${JSON.stringify(resp).slice(0, 200)}`);
-        action.notifyEvent = await waitFor(
-          (m) => m.type === "extension_ui_request" && m.method === "notify",
-          ctx.manifest.thresholds.syncNotifyMs,
-          "sync notify",
-          mark,
-        );
+        let attempt = 0;
+        do {
+          const attemptId = attempt === 0 ? id : `${id}-${attempt}`;
+          const attemptMark = events.length;
+          send({ id: attemptId, type: "prompt", message: action.command });
+          const resp = await waitFor(
+            (m) => m.type === "response" && m.id === attemptId,
+            30000,
+            `command response ${attemptId}`,
+          );
+          if (resp.success !== true) throw new PiRunError(`command rejected: ${JSON.stringify(resp).slice(0, 200)}`);
+          action.notifyEvent = await waitFor(
+            (m) => m.type === "extension_ui_request" && m.method === "notify" &&
+              commandNotifyMatches(String(action.command), m.message),
+            ctx.manifest.thresholds.syncNotifyMs,
+            `${action.command} notify`,
+            attemptMark,
+          );
+          attempt++;
+          if (!action.untilNotifyIncludes || String(action.notifyEvent.message).includes(action.untilNotifyIncludes)) break;
+          if (Date.now() + 50 >= deadline) {
+            throw new PiRunError(`${action.command} notify did not include ${action.untilNotifyIncludes}`);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        } while (true);
+        action.attempts = attempt;
       }
       action.ms = Date.now() - actionStarted;
     }
@@ -480,19 +510,36 @@ export async function cleanupRemote(log, ctx, objectUris, taskResources = null) 
           tasks.residuals.slice(0, 3).join(" | "));
         if (tasks.residuals.length > 0) cleanup.residuals.push(`${tasks.residuals.length} owned tasks unresolved`);
       }
-      // 只删除 marker 所证明的产品根。OpenViking 会重新物化 resources/用户根以及空的
-      // .pi-openviking 骨架；这些目录外观不承载产品对象，持久清理由下方逐对象 404 证明。
+      // marker 同时证明随机用户 namespace 写入前不存在；workload 可登记自己在 resources/
+      // 下创建的独立 fixture 根。只接受严格后代，避免把用户根或 resources 根变成删除目标。
       const productRoot = `${ctx.userRoot}/resources/.pi-openviking`;
-      let deleted = false;
+      const resourcesPrefix = `${ctx.userRoot}/resources/`;
+      const extraRoots = Array.isArray(ctx.extraCleanupRoots) ? ctx.extraCleanupRoots : [];
+      const invalidRoots = extraRoots.filter((root) =>
+        typeof root !== "string"
+          || !root.startsWith(resourcesPrefix)
+          || root.length === resourcesPrefix.length
+          || root.slice(resourcesPrefix.length).split("/").some((segment) => segment === "." || segment === ".."),
+      );
+      if (invalidRoots.length > 0) {
+        cleanup.residuals.push(`cleanup root outside owned resources: ${invalidRoots.join(", ")}`);
+      }
+      const roots = [...new Set([
+        ...extraRoots.filter((root) => !invalidRoots.includes(root)),
+        productRoot,
+      ])];
       const deleteDeadline = Date.now() + Math.max(10000, Number(ctx.manifest?.thresholds?.cleanupSettleMs) || 60000);
-      do {
-        const accepted = await ctx.cleanupClient.delete(productRoot, true);
-        const after = await ctx.cleanupClient.statUri(productRoot);
-        deleted = accepted && after.ok && !after.exists;
-        if (!deleted && Date.now() < deleteDeadline) await new Promise((resolve) => setTimeout(resolve, 500));
-      } while (!deleted && Date.now() < deleteDeadline);
-      if (deleted) cleanup.deleted.push(productRoot);
-      else cleanup.residuals.push(`${productRoot} was not deleted`);
+      for (const root of roots) {
+        let deleted = false;
+        do {
+          const accepted = await ctx.cleanupClient.delete(root, true);
+          const after = await ctx.cleanupClient.statUri(root);
+          deleted = accepted && after.ok && !after.exists;
+          if (!deleted && Date.now() < deleteDeadline) await new Promise((resolve) => setTimeout(resolve, 500));
+        } while (!deleted && Date.now() < deleteDeadline);
+        if (deleted) cleanup.deleted.push(root);
+        else cleanup.residuals.push(`${root} was not deleted`);
+      }
     } else if (ctx.markerUri) {
       cleanup.residuals.push("marker recheck failed; remote namespace left untouched");
     }

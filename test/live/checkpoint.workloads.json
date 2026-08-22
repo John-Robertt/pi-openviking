@@ -4,7 +4,7 @@
   "purpose": "checkpoint 生产真实验收门禁：使用真实 OpenViking Content API 已提交且可 expand 的 Archive 与开发模型身份中的 VLM，机器断言 request/failure/checkpoint 追加事实、来源/hash、自证、重试、进程恢复、积压派生、多模态理解和吞吐。",
   "mechanism": {
     "selected": "Archive 回读证明 + OpenViking Session/Task 公开 API + ProducedRecordedEventV1 追加事实",
-    "evidence": "当前开发模型身份在固定 240000ms 质量边界下覆盖五个 workload 并通过 135/135；accepted baseline 最慢观测为 72942ms。deterministic checks 证明孤立 checkpoint 被拒绝、并发事实首写者收敛、三个 Archive 各三次 attempt 可追平、分支失效及终态清理跨重启恢复、媒体缺少摘要保持 pending，且外部错误正文不进入事实。受管服务持有 VLM 凭证，扩展进程不读取或转发凭证。",
+    "evidence": "当前开发模型身份覆盖五个 workload；真实 gate 独立约束媒体语义处理与 checkpoint 生成时长，并逐代验证统一 Working Memory 的必需章节、可执行 Open Issues、跨代全局目标与新增约束、最小 checkpoint 事实、来源链、任务 token 与清理。deterministic checks 证明上一统一状态和新增上下文进入同一更新输入，已完成目标、失效事实和重复表述不进入下一代当前状态，退化局部摘要不可消费、孤立 checkpoint 被拒绝、并发事实首写者收敛、三个 Archive 各三次 attempt 可追平、分支失效及终态清理跨重启恢复、媒体缺少摘要保持 pending，且外部错误正文不进入事实。受管服务持有 VLM 凭证，扩展进程不读取或转发凭证。",
     "falsifiedAlternatives": [
       "扩展直接调用 VLM provider：运行时没有 VLM 凭证所有权，且会绕过受管服务固定身份",
       "把 checkpoint 仅保存在本地队列：重启后无法由 Archive/request/failure/checkpoint 事实恢复",
@@ -12,9 +12,10 @@
       "覆盖同一 checkpoint 对象保存重试状态：会破坏 append-only 与响应丢失后的内容确定性"
     ],
     "modelField": "Checkpoint.model 记录可执行且版本化的生成管线 openviking/session-working-memory-v2；gate 另以 modelProfile hash 和受管 ov.conf 指纹固定实际 VLM provider/model，避免从非结构化 observer 文本猜测服务配置。",
-    "promptVersion": "checkpoint-v1",
+    "promptVersion": "checkpoint-v2",
     "retry": "每个 Archive 最多三个确定性 attempt；request 先持久化，只有 OpenViking task 明确 failed/cancelled 才追加代码拥有的失败分类与通用消息，网络中断保留同一 request 供下次恢复；并发事实写入采用首个通过完整链校验的对象。",
-    "multimodal": "嵌入图片按内容 hash 写入 attempt 专属临时 Resource；只有每个媒体都经真实 VLM 得到非空 abstract 才提交 Working Memory，输入只保留 hash/长度/摘要而不复制 base64。终态 request/failure/checkpoint 事实跨重启派生清理义务，直到临时 Session 与媒体 Resource 都确认不存在。"
+    "multimodal": "嵌入图片按内容 hash 写入 attempt 专属临时 Resource；只有每个媒体都经真实 VLM 得到非空 abstract 才提交 Working Memory，输入只保留 hash/长度/摘要而不复制 base64。终态 request/failure/checkpoint 事实跨重启派生清理义务，直到临时 Session 与媒体 Resource 都确认不存在。",
+    "inputCost": "同一输入的两个受控真实 Session 分别报告 prompt_tokens=6570/6570、cached_tokens=0/0，因此机制不依赖 VLM provider cache；每轮只提交上一代 narrative 与当前 Archive 重建出的原始 Pi entries，不重复 RecordedEvent 身份、hash、来源 envelope 或 checkpoint 派生字段。"
   },
   "identities": {
     "pi": {
@@ -36,8 +37,8 @@
       "consumer": "受管 OpenViking 读取 profile.vlm 并独占 VLM 凭证；preflight 核对实际 ov.conf、状态指纹和 profile。"
     },
     "protocol": {
-      "checkpointIdentity": "chk_ + SHA-256(RFC 8785 canonical [\"pi-openviking/checkpoint\",1,archiveId,archive.contentHash,model,promptVersion])",
-      "taskIdentity": "cptask_ + SHA-256(RFC 8785 canonical [\"pi-openviking/checkpoint-task\",1,archiveId,archive.contentHash,previousCheckpointId,attempt,model,promptVersion])",
+      "checkpointIdentity": "chk_ + SHA-256(RFC 8785 canonical [\"pi-openviking/checkpoint\",2,archiveId,archive.contentHash,model,promptVersion])",
+      "taskIdentity": "cptask_ + SHA-256(RFC 8785 canonical [\"pi-openviking/checkpoint-task\",2,archiveId,archive.contentHash,previousCheckpointId,attempt,model,promptVersion])",
       "facts": ["checkpoint-request", "checkpoint-failure", "checkpoint"],
       "vlmApi": [
         "POST/GET/DELETE /api/v1/sessions/{id}",
@@ -66,11 +67,11 @@
   "workloads": [
     {
       "id": "w1-checkpoint-formation",
-      "summary": "一个已提交文本 Archive 经真实 VLM 生成结构化 checkpoint；request/checkpoint、来源/hash、token usage、原对象不变和临时状态清理全部成立。",
+      "summary": "一个已提交文本 Archive 经真实 VLM 生成统一 Working Memory checkpoint；request/checkpoint、来源/hash、token usage、原对象不变和临时状态清理全部成立。",
       "successCriteria": [
         "Archive manifest 与 events 在 VLM 前后逐字节不变",
         "request 先于 checkpoint 持久化，checkpoint 来源 archiveId/contentHash 完全匹配",
-        "checkpoint narrative 非空，completed/openItems/retrievalCues 为字符串数组，model/promptVersion 固定",
+        "checkpoint 只保留来源身份、统一 narrative、model 与 promptVersion；Task & Goals、Current State、Key Facts & Decisions 与 Open Issues 均包含续接内容，Open Issues 可形成执行入口",
         "OpenViking task completed、llm.total_tokens>0、wallMs<=checkpointWallMs"
       ],
       "falsification": [
@@ -84,7 +85,8 @@
       "successCriteria": [
         "媒体 Content wait=true 成功且得到非空 abstract",
         "checkpoint 形成、源 Archive 不变、输入/事实中没有第二份图片 base64",
-        "临时 checkpoint-inputs task root 在 checkpoint 接受后不存在"
+        "临时 checkpoint-inputs task root 在 checkpoint 接受后不存在",
+        "媒体语义处理 wallMs<=mediaWallMs；媒体完成后的 checkpoint 生成 wallMs<=checkpointWallMs"
       ],
       "falsification": [
         "图片只作为 base64 文本进入模型或未经过真实媒体 VLM",
@@ -114,6 +116,7 @@
         "初始 mode=lagging、pending=2、backlogTokens 等于两个 Archive tokenCount 之和",
         "重建前后第一个 request taskId 相同且没有重复提交输入",
         "两个 checkpoint 按 Archive 顺序完成，最终 caught_up/pending=0/backlogTokens=0",
+        "第二代 Working Memory 同时保留第一代未完成全局目标的精确标识，并纳入当前 Archive 的新增约束标识",
         "每个进程进入 lagging 时至多通知一次；重启后可再次提示，恢复到至多一个在途 Archive 时通知一次"
       ],
       "falsification": [
@@ -145,20 +148,21 @@
   ],
   "thresholds": {
     "checkpointWallMs": 240000,
+    "mediaWallMs": 480000,
     "pollMs": 1000,
     "cleanupSettleMs": 60000,
     "baseline": {
-      "measuredAt": "2026-08-21",
+      "measuredAt": "2026-08-23",
       "runs": [
-        { "scenario": "1000-token 文本 checkpoint", "archiveTokens": 1000, "wallMs": 23392, "totalTokens": 11291, "checkpointPersisted": true },
-        { "scenario": "嵌入 PNG 多模态 checkpoint", "archiveTokens": 1000, "wallMs": 72942, "totalTokens": 12420, "abstractBytes": 248 },
-        { "scenario": "明确失败后的真实 VLM 重试", "archiveTokens": 1000, "wallMs": 19041, "totalTokens": 11216, "attempt": 2 },
-        { "scenario": "双 Archive request/task 重启恢复", "archiveTokens": 2000, "wallMs": 49193, "totalTokens": 25565, "checkpointCount": 2 },
-        { "scenario": "写入开始前范围失效后丢弃已完成 VLM 结果", "archiveTokens": 1000, "wallMs": 11746, "totalTokens": 10693, "checkpointPersisted": false, "obsoleteObserved": true }
+        { "scenario": "1000-token 文本统一 checkpoint", "archiveTokens": 1000, "wallMs": 13109, "totalTokens": 11066, "checkpointPersisted": true },
+        { "scenario": "可读 128x128 PNG 多模态统一 checkpoint", "archiveTokens": 1000, "totalWallMs": 375690, "totalTokens": 11111, "abstractBytes": 187 },
+        { "scenario": "明确失败后的真实 VLM 重试", "archiveTokens": 1000, "wallMs": 12209, "totalTokens": 10935, "attempt": 2 },
+        { "scenario": "双 Archive request/task 重启恢复与当前状态收敛", "archiveTokens": 2000, "wallMs": 34154, "totalTokens": 23644, "checkpointCount": 2 },
+        { "scenario": "写入开始前范围失效后丢弃已完成 VLM 结果", "archiveTokens": 1000, "wallMs": 12997, "totalTokens": 11060, "checkpointPersisted": false, "obsoleteObserved": true }
       ],
       "expectedChange": "request 在 VLM 前持久化；只有来源与完整 request/failure 链可核验的 completed task 形成 checkpoint；当前 Archive 范围变化后停止尚未开始的旧 VLM 结果写入并清理其 task，已开始的 append-only 事实允许首写完成但不进入当前状态；明确失败进入下一 attempt；进程重建与并发进程复用首个有效 request/task；终态事实恢复清理；两个未消费 Archive 派生 lagging 并在追平时恢复。",
-      "falsification": "任一来源/hash/事实链/唯一性/并发恢复/积压/终态清理断言失败，写入开始前范围变化仍持久化旧 checkpoint，已开始事实进入当前范围状态，媒体无摘要仍形成 checkpoint，外部错误正文进入事实，或真实 VLM/媒体处理超过阈值，即重新打开 checkpoint 生产约束。",
-      "thresholdRationale": "checkpointWallMs 保持 240000ms 质量边界；当前 accepted baseline 最慢观测为 72942ms，保留约 3.29 倍余量。范围失效 workload 实测 11746ms/10693 tokens，完整 gate 135/135 通过；正确性继续使用确定性身份、规范字节、完整事实链、集合和状态等值断言，端到端预算校准阶段再以多个 100k+ workload 校准发布预算。"
+      "falsification": "任一来源/hash/事实链/唯一性/并发恢复/积压/终态清理断言失败，写入开始前范围变化仍持久化旧 checkpoint，已开始事实进入当前范围状态，媒体无摘要仍形成 checkpoint，外部错误正文进入事实，或媒体语义处理/checkpoint 生成任一阶段超过各自阈值，即重新打开 checkpoint 生产约束。",
+      "thresholdRationale": "媒体语义处理和 checkpoint 生成是两个独立的外部 VLM 边界，分别使用 mediaWallMs=480000ms 与 checkpointWallMs=240000ms，避免用 checkpoint 阈值评价前置媒体处理；verifier 以两段上限之和作为观测截止点，完成后仍分别断言各段。可读 128x128 PNG 的两次调查观测总时长为 337699ms 与 375690ms；媒体阈值相对较慢总时长仍保留 104310ms（27.8%）余量，而 checkpoint 阈值继续覆盖媒体完成后的统一 Working Memory 生成。正确性继续使用确定性身份、规范字节、完整事实链、当前统一 narrative、集合和状态等值断言。"
     }
   }
 }

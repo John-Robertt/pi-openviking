@@ -1,6 +1,6 @@
 import { openVikingApiPath } from "./openviking-api.mjs";
 import { acceptBatchResult, ContentWriteError, ensureDirectoryChain } from "./content-objects.mjs";
-import { embeddedImages, renderCheckpointInput } from "./checkpoint.mjs";
+import { embeddedImages, renderCheckpointInput, validateCheckpointOverview } from "./checkpoint.mjs";
 import { observation as processObservation } from "./observe.mjs";
 
 const TERMINAL_TASK_STATES = new Set(["completed", "failed", "cancelled"]);
@@ -96,8 +96,18 @@ export class OpenVikingCheckpointProcessor {
           error: { errorClass: "protocol", errorCode: "empty_output", message: "checkpoint VLM completed without a working-memory overview" },
         };
       }
+      let normalizedOverview;
+      try {
+        normalizedOverview = validateCheckpointOverview(overview);
+      } catch {
+        outcome = "failed";
+        return {
+          status: "failed",
+          error: { errorClass: "protocol", errorCode: "invalid_output", message: "checkpoint VLM completed without a valid unified continuation" },
+        };
+      }
       outcome = "completed";
-      return { status: "completed", overview };
+      return { status: "completed", overview: normalizedOverview };
     } finally {
       this.observe.end("checkpoint_process", op, outcome);
     }

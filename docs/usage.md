@@ -135,7 +135,8 @@ npx pi-openviking@latest credentials
 `archive.chunkTokenBudget` 控制每次 Archive 的目标增量，`archive.rawTailTokenBudget` 控制归档后保留
 最近原始上下文。`takeover.enabled` 控制是否允许 OpenViking 在 Pi `context` hook 中替换 provider 可见上下文；
 `takeover.contextTokenThreshold` 控制触发接管的任务模型上下文高水位，`0` 时使用 Pi 报告容量与当前候选余量自动确定；
-`takeover.checkpointTokenBudget` 限制接管和 ActiveContext compaction 装载的 checkpoint 正文。
+`takeover.checkpointTokenBudget` 限制接管和 ActiveContext compaction 可完整装载的 checkpoint 正文；超过上限时
+保持 Pi 完整上下文与原生 compaction，不使用不完整 checkpoint。
 
 只有存在 eligible `ActiveContext` 且当前 context usage 到达高水位时，provider messages 才会被替换为 checkpoint、
 原始用户指令 anchor 与 raw tail；否则继续使用完整 Pi 上下文。Pi 触发 compaction 时，扩展只在同一 ActiveContext
@@ -209,7 +210,7 @@ ACK 文件不包含 transcript，活动上下文文件只包含 `checkpointId` �
 - Content adapter capability：待探测、可用或不兼容；
 - ACK frontier leaves；
 - 待重放 entry；
-- Archive 已提交数、待提交数与最近 `archiveId`；
+- 当前分支本轮 Archive 已验证数、待验证数与最近 `archiveId`；
 - checkpoint 的已赶上/处理中/消费落后/失败状态、已消费数、积压 Archive/token 与最近 `checkpointId`；
 - 活动上下文：是否可接管、来源 `checkpointId`、raw tail 起点与事件数，以及 Pi 报告容量、输出预留、可用窗口和候选需求；
 - 最近同步失败、最近 Archive/checkpoint/活动上下文失败及 fail-open 状态；

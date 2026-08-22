@@ -108,8 +108,26 @@ export function anchorEvents(branchEvents, rawTailStartEventId) {
   return branchEvents.filter((event, index) => index < start && event.source?.entryId === first.source?.entryId);
 }
 
+function contextEntryGroups(events) {
+  const groups = [];
+  for (const event of events ?? []) {
+    const previous = groups.at(-1);
+    if (previous && previous[0]?.source?.entryId === event?.source?.entryId) previous.push(event);
+    else groups.push([event]);
+  }
+  return groups.map((group) => {
+    const entry = reconstructPiEntry(group);
+    const messages = entry?.type === "compaction" && entry.details?.type === "openviking-active-context"
+      ? []
+      : sessionEntryToContextMessages(entry);
+    return { events: group, messages };
+  });
+}
+
 function sumWeight(events) {
-  return events.reduce((total, event) => total + eventTokenWeight(event), 0);
+  return contextEntryGroups(events).reduce((total, group) => group.messages.length === 0
+    ? total
+    : total + group.events.reduce((sum, event) => sum + eventTokenWeight(event), 0), 0);
 }
 
 /**
@@ -120,26 +138,11 @@ function sumWeight(events) {
  */
 function renderBoundedCheckpointBlock(checkpoint, tokenBudget) {
   const full = renderCheckpointBlock(checkpoint);
-  if (!Number.isSafeInteger(tokenBudget) || tokenBudget <= 0 || contextTokenWeight(full) <= tokenBudget) return full;
-
-  const open = `<openviking-checkpoint id="${checkpoint.checkpointId}" archive="${checkpoint.sourceArchiveId}">`;
-  const close = "</openviking-checkpoint>";
-  const marker = "\n[checkpoint truncated to configured budget]\n";
-  const fixedBytes = Buffer.byteLength(open + marker + close, "utf8");
-  const availableBytes = tokenBudget * 4 - fixedBytes;
-  if (availableBytes < 0) throw new Error("checkpointTokenBudget cannot fit checkpoint identity");
-
-  let narrative = "";
-  let used = 0;
-  for (const character of checkpoint.narrative) {
-    const bytes = Buffer.byteLength(character, "utf8");
-    if (used + bytes > availableBytes) break;
-    narrative += character;
-    used += bytes;
+  if (!Number.isSafeInteger(tokenBudget) || tokenBudget <= 0) return full;
+  if (contextTokenWeight(full) > tokenBudget) {
+    throw new Error("complete checkpoint exceeds checkpointTokenBudget");
   }
-  const block = `${open}\n${narrative}${marker}${close}`;
-  if (contextTokenWeight(block) > tokenBudget) throw new Error("checkpoint block exceeds checkpointTokenBudget");
-  return block;
+  return full;
 }
 
 export function materializeActiveContext({ context, checkpoint, branchEvents, systemPrompt = "", toolDefinitions = "", checkpointTokenBudget = null }) {
@@ -172,17 +175,7 @@ export function payloadSegment(payload, kind) {
 }
 
 function messagesFromEvents(events) {
-  const groups = [];
-  for (const event of events ?? []) {
-    const previous = groups.at(-1);
-    if (previous && previous[0]?.source?.entryId === event?.source?.entryId) previous.push(event);
-    else groups.push([event]);
-  }
-  return groups.flatMap((group) => {
-    const entry = reconstructPiEntry(group);
-    if (entry?.type === "compaction" && entry.details?.type === "openviking-active-context") return [];
-    return sessionEntryToContextMessages(entry);
-  });
+  return contextEntryGroups(events).flatMap((group) => group.messages);
 }
 
 export function renderActiveContextMessages(payload) {
@@ -245,14 +238,15 @@ export function evaluateEligibility({ capacity, takeover, payloadTokens }) {
  */
 export function evaluateTakeoverTrigger({
   enabled, eligibility, currentCheckpointId, nextCheckpointId = null, appliedCheckpointId,
-  piUsageTokens, payloadTokens, highWaterTokens,
+  piUsageTokens, payloadTokens, highWaterTokens, activeHighWaterTokens = highWaterTokens,
 }) {
   const epochActive = Boolean(
     currentCheckpointId && appliedCheckpointId && currentCheckpointId === appliedCheckpointId,
   );
   const usageTokens = epochActive ? payloadTokens : piUsageTokens;
-  const aboveHighWater = Number.isFinite(usageTokens) && Number.isFinite(highWaterTokens) &&
-    usageTokens >= highWaterTokens;
+  const selectedHighWaterTokens = epochActive ? activeHighWaterTokens : highWaterTokens;
+  const aboveHighWater = Number.isFinite(usageTokens) && Number.isFinite(selectedHighWaterTokens) &&
+    usageTokens >= selectedHighWaterTokens;
   const enabledForTakeover = enabled !== false;
   const eligible = enabledForTakeover && eligibility === "eligible";
   const recoverableMismatch = Boolean(
@@ -264,7 +258,7 @@ export function evaluateTakeoverTrigger({
     allowAdvance: (eligible && aboveHighWater) || recoverableMismatch,
     epochActive,
     usageTokens: Number.isFinite(usageTokens) ? usageTokens : null,
-    highWaterTokens: Number.isFinite(highWaterTokens) ? highWaterTokens : null,
+    highWaterTokens: Number.isFinite(selectedHighWaterTokens) ? selectedHighWaterTokens : null,
   };
 }
 
@@ -422,7 +416,7 @@ export class ActiveContextManager {
   /** 接管渲染：用当前任务模型事实重新判定 eligible 后，给 Pi context hook 提供替换消息。 */
   async takeoverMessages(branchEvents, {
     archives = [], lastCheckpointId = null, systemPrompt = "", toolDefinitions = null, capacity = null,
-    factsAvailable = true, allowAdvance = true,
+    factsAvailable = true, allowAdvance = true, advanceHighWaterTokens = null,
   } = {}) {
     if (!factsAvailable) {
       const previous = this.state;
@@ -437,11 +431,21 @@ export class ActiveContextManager {
       return null;
     }
     try {
-      const latest = allowAdvance ? selectActiveContext(branchEvents, archives, lastCheckpointId) : null;
+      // ActiveContext status may precede the user/assistant/tool entries appended since the last hook.
+      // Recompute the current payload from this exact branch before deciding whether the epoch may advance.
+      let currentPayload = null;
+      let advance = allowAdvance;
+      if (!advance && this.context && Number.isFinite(advanceHighWaterTokens)) {
+        currentPayload = await this.materializeFor(this.context, branchEvents, { systemPrompt, toolDefinitions });
+        advance = Boolean(currentPayload && currentPayload.tokens.payload >= advanceHighWaterTokens);
+      }
+      const latest = advance ? selectActiveContext(branchEvents, archives, lastCheckpointId) : null;
       const candidate = latest ?? this.context;
       if (!activeContextOnBranch(candidate, branchEvents)) return null;
 
-      const payload = await this.materializeFor(candidate, branchEvents, { systemPrompt, toolDefinitions });
+      const payload = candidate === this.context && currentPayload
+        ? currentPayload
+        : await this.materializeFor(candidate, branchEvents, { systemPrompt, toolDefinitions });
       if (!payload) return null;
       const verdict = evaluateEligibility({
         capacity,

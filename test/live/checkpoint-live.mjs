@@ -19,16 +19,16 @@ import {
   parseCheckpointEvent,
   parseCheckpointFailureEvent,
   parseCheckpointRequestEvent,
+  validateCheckpointOverview,
 } from "../../shared/checkpoint.mjs";
 import { OpenVikingCheckpointProcessor } from "../../shared/checkpoint-processor.mjs";
 import { CheckpointManager } from "../../shared/checkpoint-store.mjs";
 import { createObservation } from "../../shared/observe.mjs";
 import { RecordedEventAdapter, recordedEventStorageLocation } from "../../shared/recorded-event-adapter.mjs";
 import { projectPiEntries, recordedEventBytes } from "../../shared/recorded-event.mjs";
+import { CHECKPOINT_IMAGE_PNG_BASE64 } from "../fixtures/checkpoint-fixtures.mjs";
 import { parseObservationRun } from "./observation-evidence.mjs";
 import { LIVE_REPO as REPO, runLiveGate } from "./live-support.mjs";
-
-const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z7S8AAAAASUVORK5CYII=";
 
 function productClient(ctx, observation) {
   const ov = ctx.manifest.identities.openviking;
@@ -42,17 +42,17 @@ function productClient(ctx, observation) {
   }, observation);
 }
 
-function sourceEntries(ctx, { textEntries = 2, image = false } = {}) {
+function sourceEntries(ctx, { textEntries = 2, image = false, prefixes = [] } = {}) {
   const entries = [];
   let parentId = null;
   for (let index = 0; index < textEntries; index++) {
     const id = `entry-${index}`;
-    const prefix = index === 0
+    const prefix = prefixes[index] ?? (index === 0
       ? "Checkpoint source: checkpoint must preserve completed work, decisions, open issues and restart recovery. "
-      : `Archive continuation ${index}: next implement and verify the remaining checkpoint chain. `;
+      : `Archive continuation ${index}: next implement and verify the remaining checkpoint chain. `);
     const text = prefix.padEnd(4000, String(index));
     const content = image && index === 0
-      ? [{ type: "text", text }, { type: "image", mimeType: "image/png", data: PNG_BASE64 }]
+      ? [{ type: "text", text }, { type: "image", mimeType: "image/png", data: CHECKPOINT_IMAGE_PNG_BASE64 }]
       : text;
     entries.push({
       id,
@@ -103,7 +103,8 @@ async function sourceStillIntact(log, ctx, adapter, archiveManager, descriptors,
     failures.slice(0, 3).join(" | "));
 }
 
-async function checkpointFact(log, ctx, adapter, descriptor, previousCheckpointId = null, attempt = 1) {
+async function checkpointFact(log, ctx, adapter, descriptor, previousCheckpoint = null, attempt = 1) {
+  const previousCheckpointId = previousCheckpoint?.checkpointId ?? null;
   const requestStored = await adapter.readEventIfExists(
     ctx.sessionId,
     checkpointRequestEventId(descriptor.manifest, previousCheckpointId, attempt),
@@ -113,15 +114,23 @@ async function checkpointFact(log, ctx, adapter, descriptor, previousCheckpointI
   let checkpoint = null;
   try {
     request = requestStored ? parseCheckpointRequestEvent(requestStored.event) : null;
-    checkpoint = checkpointStored ? parseCheckpointEvent(checkpointStored.event, descriptor.manifest) : null;
+    checkpoint = checkpointStored
+      ? parseCheckpointEvent(checkpointStored.event, descriptor.manifest)
+      : null;
   } catch { /* assertions below report malformed facts */ }
   log.check(ctx.workloadId, `checkpoint.${descriptor.manifest.archiveId.slice(4, 10)}.request`, true, Boolean(request), Boolean(request));
   log.check(ctx.workloadId, `checkpoint.${descriptor.manifest.archiveId.slice(4, 10)}.source`,
     `${descriptor.manifest.archiveId}/${descriptor.manifest.contentHash}`,
     checkpoint ? `${checkpoint.sourceArchiveId}/${checkpoint.sourceArchiveHash}` : "missing",
     checkpoint?.sourceArchiveId === descriptor.manifest.archiveId && checkpoint?.sourceArchiveHash === descriptor.manifest.contentHash);
-  const structure = Boolean(checkpoint?.narrative) && Array.isArray(checkpoint?.completed) &&
-    Array.isArray(checkpoint?.openItems) && Array.isArray(checkpoint?.retrievalCues) &&
+  let narrativeValid = false;
+  try {
+    narrativeValid = Boolean(validateCheckpointOverview(checkpoint?.narrative));
+  } catch { /* structure assertion reports the invalid output */ }
+  const structure = narrativeValid &&
+    Object.keys(checkpoint ?? {}).sort().join("\0") === [
+      "checkpointId", "model", "narrative", "promptVersion", "sourceArchiveHash", "sourceArchiveId",
+    ].sort().join("\0") &&
     checkpoint?.model === CHECKPOINT_MODEL && checkpoint?.promptVersion === CHECKPOINT_PROMPT_VERSION;
   log.check(ctx.workloadId, `checkpoint.${descriptor.manifest.archiveId.slice(4, 10)}.structure`, true, structure, structure);
   return { request, checkpoint, requestStored, checkpointStored };
@@ -218,10 +227,16 @@ async function w2(log, ctx) {
     }
     log.check(ctx.workloadId, "image-archive-selected", true, Boolean(descriptor), Boolean(descriptor));
     const mediaEvidence = [];
+    let mediaStartedAt = null;
+    let mediaCompletedAt = null;
     class CapturingProcessor extends OpenVikingCheckpointProcessor {
       async prepareMedia(taskId, events) {
+        mediaStartedAt ??= Date.now();
         const media = await super.prepareMedia(taskId, events);
-        mediaEvidence.push(...media);
+        if (Array.isArray(media) && media.length > 0) {
+          mediaCompletedAt = Date.now();
+          mediaEvidence.push(...media);
+        }
         return media;
       }
     }
@@ -233,22 +248,37 @@ async function w2(log, ctx) {
     managers.push(manager);
     const started = Date.now();
     await manager.schedule(ctx.sessionId, [descriptor]);
-    const settled = await waitForCheckpoint(manager, ctx.manifest.thresholds.checkpointWallMs);
+    const totalDeadlineMs = ctx.manifest.thresholds.mediaWallMs + ctx.manifest.thresholds.checkpointWallMs;
+    const remainingMs = Math.max(0, totalDeadlineMs - (Date.now() - started));
+    const settled = remainingMs > 0 && await waitForCheckpoint(manager, remainingMs);
+    const checkpointCompletedAt = Date.now();
     log.check(ctx.workloadId, "checkpoint-settled", true, settled, settled);
     const fact = await checkpointFact(log, ctx, fixture.adapter, descriptor);
     const mediaOk = mediaEvidence.length === 1 && mediaEvidence[0].abstract.length > 0;
     log.check(ctx.workloadId, "media-abstract", "one non-empty abstract",
       `${mediaEvidence.length}/${mediaEvidence[0]?.abstract?.length ?? 0}`, mediaOk);
-    const factBytes = Buffer.concat([fact.requestStored.bytes, fact.checkpointStored.bytes]).toString("utf8");
-    log.check(ctx.workloadId, "media-base64-not-copied", false, factBytes.includes(PNG_BASE64), !factBytes.includes(PNG_BASE64));
+    const factParts = [fact.requestStored?.bytes, fact.checkpointStored?.bytes].filter(Buffer.isBuffer);
+    const factBytes = Buffer.concat(factParts).toString("utf8");
+    log.check(ctx.workloadId, "media-base64-not-copied", false,
+      factParts.length === 2 ? factBytes.includes(CHECKPOINT_IMAGE_PNG_BASE64) : "checkpoint fact missing",
+      factParts.length === 2 && !factBytes.includes(CHECKPOINT_IMAGE_PNG_BASE64));
     const taskId = fact.request.taskId;
     const taskRoot = `${ctx.userRoot}/resources/.pi-openviking/checkpoint-inputs/v1/${taskId}`;
     const temp = await client.statUri(taskRoot);
     log.check(ctx.workloadId, "media-temp-cleaned", false, temp.exists, temp.ok && !temp.exists);
     ctx.extraUris = [`${taskRoot}/image-0000.png`];
     await sourceStillIntact(log, ctx, fixture.adapter, fixture.manager, [descriptor], "after");
-    const measurement = await taskMeasurement(log, ctx, client, taskId, Date.now() - started, "checkpoint");
-    ctx.measurements = [measurement];
+    const mediaWallMs = mediaStartedAt !== null && mediaCompletedAt !== null
+      ? mediaCompletedAt - mediaStartedAt
+      : Number.POSITIVE_INFINITY;
+    const checkpointWallMs = mediaCompletedAt !== null
+      ? checkpointCompletedAt - mediaCompletedAt
+      : checkpointCompletedAt - started;
+    const totalWallMs = checkpointCompletedAt - started;
+    log.check(ctx.workloadId, "media.wall-threshold", `<=${ctx.manifest.thresholds.mediaWallMs}`, mediaWallMs,
+      mediaWallMs <= ctx.manifest.thresholds.mediaWallMs);
+    const measurement = await taskMeasurement(log, ctx, client, taskId, checkpointWallMs, "checkpoint");
+    ctx.measurements = [{ ...measurement, mediaWallMs, totalWallMs }];
   });
   ctx.runs.push({ label: "multimodal-checkpoint", ...ctx.measurements[0], observationSha256: ctx.observationSummary.evidenceSha256 });
 }
@@ -305,8 +335,15 @@ async function w3(log, ctx) {
 
 async function w4(log, ctx) {
   await observedWorkload(log, ctx, async ({ observation, makeClient, managers }) => {
+    const globalGoal = "OV-GOAL-RESTART-CONTINUITY-7F2A";
+    const currentConstraint = "OV-CONSTRAINT-ORDERED-BACKLOG-91C4";
+    const prefixes = [
+      `The unfinished global goal ${globalGoal} is to preserve this exact opaque identifier while completing restart-safe checkpoint recovery. `,
+      `New current constraint ${currentConstraint}: consume the backlog in Archive order without replacing ${globalGoal}. `,
+      `Continue ${globalGoal} under ${currentConstraint} and verify the final caught-up state. `,
+    ];
     const clientA = makeClient();
-    const fixtureA = await createArchives(log, ctx, clientA, observation, { textEntries: 3, expectedArchives: 2 });
+    const fixtureA = await createArchives(log, ctx, clientA, observation, { textEntries: 3, expectedArchives: 2, prefixes });
     const descriptors = fixtureA.descriptors.slice(0, 2);
     const notifications = [];
     const managerA = new CheckpointManager(clientA, {
@@ -349,7 +386,12 @@ async function w4(log, ctx) {
     log.check(ctx.workloadId, "backlog-final-count", "0/0", `${managerB.status.pending}/${managerB.status.backlogTokens}`,
       managerB.status.pending === 0 && managerB.status.backlogTokens === 0);
     const firstFact = await checkpointFact(log, ctx, adapterB, descriptors[0]);
-    const secondFact = await checkpointFact(log, ctx, adapterB, descriptors[1], firstFact.checkpoint.checkpointId);
+    const secondFact = await checkpointFact(log, ctx, adapterB, descriptors[1], firstFact.checkpoint);
+    const firstGoalPreserved = firstFact.checkpoint?.narrative?.includes(globalGoal) === true;
+    log.check(ctx.workloadId, "first-global-goal", true, firstGoalPreserved, firstGoalPreserved);
+    const continuationPreserved = secondFact.checkpoint?.narrative?.includes(globalGoal) === true &&
+      secondFact.checkpoint?.narrative?.includes(currentConstraint) === true;
+    log.check(ctx.workloadId, "second-unified-continuation", true, continuationPreserved, continuationPreserved);
     log.check(ctx.workloadId, "restart-task-reused", taskBefore, firstFact.request.taskId,
       taskBefore === firstFact.request.taskId);
     const laggingNotices = notifications.filter((item) => item.message.includes("消费落后")).length;

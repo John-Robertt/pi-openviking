@@ -13,6 +13,8 @@ export interface Observation {
   begin(stage: string, ...values: unknown[]): number;
   end(stage: string, op: number, ...values: unknown[]): void;
   bindSession(piSessionId: string | null | undefined): void;
+  createProducer(): Observation;
+  release(): void;
   abandon(): void;
   getStatus(): ObservationStatus;
   beginDrainDeadline(timeoutMs: number): number;

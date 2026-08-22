@@ -75,7 +75,6 @@ const HTTP_ROUTES = [
     "/fs/stat",
     "/resources",
     "/search/find",
-    "/search/recall",
     "/search/search",
     "/sessions",
     "/sessions/{id}",
@@ -255,7 +254,7 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
     branch: ENUM(["form", "idle"]),
   })),
   archive_commit: stage("shared/archive-store.mjs", "decision", schema({
-    branch: ENUM(["already_committed", "created", "repaired_residue"]),
+    branch: ENUM(["already_committed", "proof_reused", "created", "repaired_residue"]),
     eventCount: INTEGER(),
   })),
   archive_state: stage("shared/archive-store.mjs", "state", variants("mode", {
@@ -319,7 +318,7 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
   checkpoint_failure: stage("shared/checkpoint-store.mjs", "failure", schema({
     ...FAILURE_BASE,
     errorCode: ENUM([
-      "cleanup", "empty_output", "media_prepare", "message_add", "reconcile", "session_commit", "session_create",
+      "cleanup", "empty_output", "invalid_output", "media_prepare", "message_add", "reconcile", "session_commit", "session_create",
       "session_read", "task_cancelled", "task_failed", "task_list", "task_missing", "task_read",
     ]),
     branch: ENUM(["pending_retry", "retry_attempt", "retry_exhausted", "retain_fact"]),
@@ -382,8 +381,13 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
     branch: ENUM(["cache", "skip_short", "search"]),
   })),
   recall_source: stage("shared/recall-core.mjs", "decision", schema({
-    branch: ENUM(["context_face", "legacy_endpoint", "raw_find"]),
+    branch: ENUM(["context_face", "raw_find"]),
     resultCount: INTEGER(),
+  })),
+  recall_filter: stage("shared/recall-core.mjs", "decision", schema({
+    branch: ENUM(["safe", "filter_internal", "unproven"]),
+    accepted: INTEGER(),
+    rejected: INTEGER(),
   })),
   recall_result: stage("recall.ts", "decision", schema({
     operation: ENUM(["search", "inject"]),
@@ -392,8 +396,8 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
   })),
   recall_failure: stage("shared/recall-core.mjs", "failure", schema({
     ...FAILURE_BASE,
-    errorCode: ENUM(["context_error", "context_unsupported", "endpoint_error", "peer_scope_unsupported"]),
-    branch: ENUM(["legacy_endpoint", "raw_find", "same_without_peer"]),
+    errorCode: ENUM(["context_error", "context_unsupported"]),
+    branch: ENUM(["raw_find"]),
   }, FAILURE_OPTIONAL)),
   tool_availability: stage("tools.ts", "decision", schema({
     tool: ENUM(TOOLS),
@@ -622,6 +626,7 @@ const ENCODERS = Object.freeze({
   active_context_failure: (error, errorCode, disposition, branch) => failureData(error, errorCode, disposition, branch),
   recall_request: (branch, query) => ({ branch, queryChars: safeLength(query) }),
   recall_source: (branch, resultCount) => ({ branch, resultCount: safeInteger(resultCount) }),
+  recall_filter: (branch, accepted, rejected) => ({ branch, accepted: safeInteger(accepted), rejected: safeInteger(rejected) }),
   recall_result: (operation, state, value) => ({
     operation,
     branch: operation === "search"
@@ -660,6 +665,8 @@ const DISABLED_OBSERVATION = Object.freeze({
   begin() { return 0; },
   end() {},
   bindSession() {},
+  createProducer() { return this; },
+  release() {},
   abandon() {},
   getStatus() { return DISABLED_STATUS; },
   beginDrainDeadline() { return 0; },
@@ -674,6 +681,8 @@ function incompleteObservation(reason) {
     begin() { return 0; },
     end() {},
     bindSession() {},
+    createProducer() { return this; },
+    release() {},
     abandon() {},
     getStatus() { return status; },
     beginDrainDeadline() { return 0; },
@@ -746,14 +755,19 @@ class ObservationRuntime {
     this.waiters = [];
     this.finishPromise = null;
     this.closed = false;
+    this.producers = new Set();
     this.#enqueue("state", "observe_run_start", ENCODERS.observe_run_start());
     if (autoFinalize) {
-      this.beforeExit = () => { void this.finish(); };
+      this.beforeExit = () => { void this.finish(500); };
       process.once("beforeExit", this.beforeExit);
     }
   }
 
   emit(stageName, ...values) {
+    this.emitFor(this.session, stageName, ...values);
+  }
+
+  emitFor(session, stageName, ...values) {
     if (this.closed) return;
     if (this.state !== "ready") {
       if (this.run) this.dropped++;
@@ -766,13 +780,17 @@ class ObservationRuntime {
       return;
     }
     try {
-      this.#enqueue(descriptor.kind, stageName, encoder(...values));
+      this.#enqueue(descriptor.kind, stageName, encoder(...values), { session });
     } catch {
       this.reject("schema_rejected");
     }
   }
 
   begin(stageName, ...values) {
+    return this.beginFor(this.session, stageName, ...values);
+  }
+
+  beginFor(session, stageName, ...values) {
     if (this.closed) return 0;
     if (this.state !== "ready") {
       if (this.run) this.dropped++;
@@ -787,7 +805,6 @@ class ObservationRuntime {
     try {
       const op = this.nextOp++;
       const started = this.deps.monotonicNow();
-      const session = this.session;
       const data = encoder.begin(...values);
       if (!this.#enqueue("boundary", stageName, data, { op, session })) return 0;
       this.openOperations.set(op, { stageName, started, session, values });
@@ -872,6 +889,22 @@ class ObservationRuntime {
     } catch {
       this.reject("session_hash_failed");
     }
+  }
+
+  createProducer() {
+    if (this.closed) return DISABLED_OBSERVATION;
+    const producer = new ObservationProducer(this);
+    this.producers.add(producer);
+    return producer;
+  }
+
+  releaseProducer(producer, deadline) {
+    if (!this.producers.delete(producer) || this.producers.size > 0) return Promise.resolve();
+    return this.finishRemaining(deadline);
+  }
+
+  unregisterProducer(producer) {
+    this.producers.delete(producer);
   }
 
   abandon() {
@@ -1012,6 +1045,75 @@ class ObservationRuntime {
         resolve();
       }
     });
+  }
+}
+
+class ObservationProducer {
+  constructor(runtime) {
+    this.runtime = runtime;
+    this.session = null;
+    this.released = false;
+  }
+
+  emit(stageName, ...values) {
+    if (!this.released) this.runtime.emitFor(this.session, stageName, ...values);
+  }
+
+  begin(stageName, ...values) {
+    return this.released ? 0 : this.runtime.beginFor(this.session, stageName, ...values);
+  }
+
+  end(stageName, op, ...values) {
+    if (!this.released) this.runtime.end(stageName, op, ...values);
+  }
+
+  bindSession(piSessionId) {
+    if (this.released) return;
+    if (piSessionId === null || piSessionId === undefined || piSessionId === "") {
+      this.session = null;
+      return;
+    }
+    try {
+      this.session = this.runtime.deps.sessionHash(String(piSessionId));
+    } catch {
+      this.runtime.reject("session_hash_failed");
+    }
+  }
+
+  createProducer() {
+    return this.runtime.createProducer();
+  }
+
+  release() {
+    if (this.released) return;
+    this.released = true;
+    this.runtime.unregisterProducer(this);
+  }
+
+  abandon() {
+    if (!this.released) this.runtime.abandon();
+  }
+
+  getStatus() {
+    return this.runtime.getStatus();
+  }
+
+  beginDrainDeadline(timeoutMs) {
+    return this.runtime.beginDrainDeadline(timeoutMs);
+  }
+
+  finishRemaining(deadline) {
+    if (this.released) return Promise.resolve();
+    this.released = true;
+    return this.runtime.releaseProducer(this, deadline);
+  }
+
+  finish(timeoutMs) {
+    if (this.released) return Promise.resolve();
+    const deadline = Number.isFinite(timeoutMs)
+      ? this.runtime.deps.monotonicNow() + Math.max(0, safeInteger(timeoutMs))
+      : undefined;
+    return this.finishRemaining(deadline);
   }
 }
 

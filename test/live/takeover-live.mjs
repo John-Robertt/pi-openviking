@@ -90,12 +90,17 @@ async function establishActiveContext(log, ctx, inputs) {
     workloadId: ctx.workloadId,
     turn: 2,
     endpoint: ctx.endpoint,
-    actions: [{ command: "/viking sync" }, { command: "/viking sync" }, { command: "/viking" }],
+    actions: [
+      { command: "/viking sync" },
+      { command: "/viking sync" },
+      { command: "/viking", untilNotifyIncludes: checkpointId },
+    ],
   });
   assertRunHealthy(log, ctx, formation, { requireCapture: false });
   const active = await readActiveContext(activeContextPathFor(ctx));
   log.check(ctx.workloadId, "active-context-ready", checkpointId, active?.checkpointId,
-    Boolean(active) && active.checkpointId === checkpointId);
+    Boolean(active) && active.checkpointId === checkpointId,
+    String(formation.actions.at(-1)?.notifyEvent?.message ?? ""));
   ctx.runs.push(summarizeRun(formation));
   return { ...established, descriptor, checkpointId, formation, active };
 }
@@ -225,10 +230,16 @@ async function w1(log, ctx) {
     endpoint: ctx.endpoint,
     actions: [
       { command: "/viking sync" },
+      { command: "/viking", untilNotifyIncludes: backgroundCheckpointId },
       { prompt: ctx.workload.inputs.P4 },
     ],
   });
   assertRunHealthy(log, ctx, advanceRun, { requireCapture: true });
+  const advanceStatus = vikingActiveContext({ actions: [advanceRun.actions[1]] });
+  log.check(ctx.workloadId, "epoch.advance-pressure", `>=${epochHighWater}`,
+    advanceStatus.payloadTokens,
+    Number.isFinite(advanceStatus.payloadTokens) && advanceStatus.payloadTokens >= epochHighWater,
+    advanceStatus.message);
   const advancePayloads = providerPayloads(advanceRun);
   log.check(ctx.workloadId, "epoch.advance-capture-count", 1, advancePayloads.length, advancePayloads.length === 1);
   if (advancePayloads.length !== 1) return;

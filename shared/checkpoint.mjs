@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJson, canonicalJsonBytes } from "./canonical-json.mjs";
-import { buildProducedRecordedEvent, recordedEventId } from "./recorded-event.mjs";
+import { buildProducedRecordedEvent, reconstructPiEntry, recordedEventId } from "./recorded-event.mjs";
 
-export const CHECKPOINT_SCHEMA_VERSION = 1;
-export const CHECKPOINT_IDENTITY_VERSION = 1;
-export const CHECKPOINT_PROMPT_VERSION = "checkpoint-v1";
+export const CHECKPOINT_SCHEMA_VERSION = 2;
+export const CHECKPOINT_IDENTITY_VERSION = 2;
+export const CHECKPOINT_PROMPT_VERSION = "checkpoint-v2";
 export const CHECKPOINT_MODEL = "openviking/session-working-memory-v2";
 export const CHECKPOINT_MAX_ATTEMPTS = 3;
 
@@ -16,6 +16,7 @@ const ARCHIVE_ID_PATTERN = /^arc_[0-9a-f]{64}$/;
 const HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const CHECKPOINT_FAILURE_MESSAGES = Object.freeze({
   empty_output: "checkpoint VLM completed without a working-memory overview",
+  invalid_output: "checkpoint VLM completed without a valid unified continuation",
   task_cancelled: "checkpoint VLM task was cancelled",
   task_failed: "checkpoint VLM task failed",
 });
@@ -47,10 +48,6 @@ function requireTimestamp(value, name) {
 function hasExactKeys(value, keys) {
   return value && typeof value === "object" && !Array.isArray(value) &&
     Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
-}
-
-function isStringArray(value) {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 export function checkpointId(manifest) {
@@ -170,6 +167,7 @@ function sectionMap(overview) {
   for (const line of overview.split("\n")) {
     if (line.startsWith("## ")) {
       current = line.slice(3).trim();
+      if (sections.has(current)) throw new TypeError(`checkpoint overview repeats ${current}`);
       sections.set(current, []);
     } else if (current) {
       sections.get(current).push(line);
@@ -188,25 +186,89 @@ function sectionItems(value) {
   return bullets.length > 0 ? bullets : [value.trim()];
 }
 
+function withoutTemplateGuidance(value) {
+  const lines = String(value || "").split("\n");
+  const first = lines.findIndex((line) => line.trim());
+  if (first >= 0 && /^_.*_$/.test(lines[first].trim()) && /(?:What is the purpose|Stable facts|Referenced resources|Mistakes, misunderstandings|Unresolved questions)/.test(lines[first])) {
+    lines.splice(first, 1);
+  }
+  return lines.join("\n").trim();
+}
+
+const PLACEHOLDER_ITEM = /^(?:none|n\/a|not applicable|no (?:open|remaining|unresolved|current|known)?\s*(?:issues?|goals?|facts?|decisions?|state|work|errors?|corrections?)?)[.!]?$/i;
+const CONTAINER_COUNT_ITEM = /^(?:(?:overview|summary|status|current state)\s*:\s*)?(?:\d+\s+(?:turns?|messages?|sessions?|archives?|entries?|events?|files?|tools?|resources?)(?:\s*(?:,|\/|\+|&|and)\s*|\s+)?)+[.!]?$/i;
+
+function continuationItem(value) {
+  const normalized = String(value || "")
+    .replace(/^[-*]\s+|^\d+[.)]\s+/, "")
+    .replace(/[*_`]/g, "")
+    .trim();
+  return Boolean(normalized) && !PLACEHOLDER_ITEM.test(normalized) && !CONTAINER_COUNT_ITEM.test(normalized);
+}
+
+function requireContinuationSection(sections, name) {
+  const value = withoutTemplateGuidance(sections.get(name));
+  if (!value) throw new TypeError(`checkpoint overview is missing ${name}`);
+  if (!sectionItems(value).some(continuationItem)) {
+    throw new TypeError(`checkpoint overview has no continuation content in ${name}`);
+  }
+  return value;
+}
+
+const REQUIRED_CHECKPOINT_SECTIONS = Object.freeze([
+  "Task & Goals",
+  "Current State",
+  "Key Facts & Decisions",
+  "Open Issues",
+  "Files & Context",
+  "Errors & Corrections",
+]);
+
+function nextActionFrom(sections) {
+  const explicit = withoutTemplateGuidance(sections.get("Next Action"));
+  if (sectionItems(explicit).some(continuationItem)) return explicit;
+  const open = sectionItems(withoutTemplateGuidance(sections.get("Open Issues")))
+    .find(continuationItem);
+  if (!open) throw new TypeError("checkpoint overview has no executable Open Issues");
+  return `- Address the highest-priority open issue: ${open}`;
+}
+
+export function validateCheckpointOverview(overview) {
+  if (typeof overview !== "string" || !overview.trim()) {
+    throw new TypeError("checkpoint overview must be non-empty");
+  }
+  const source = overview.trim().replace(/\r\n?/g, "\n");
+  if (!/^# Working Memory(?:\n|$)/.test(source)) {
+    throw new TypeError("checkpoint overview is missing Working Memory root");
+  }
+  const sections = sectionMap(source);
+  for (const name of REQUIRED_CHECKPOINT_SECTIONS) {
+    if (!withoutTemplateGuidance(sections.get(name))) throw new TypeError(`checkpoint overview is missing ${name}`);
+  }
+  const goals = requireContinuationSection(sections, "Task & Goals");
+  const currentState = requireContinuationSection(sections, "Current State");
+  const facts = requireContinuationSection(sections, "Key Facts & Decisions");
+  const openIssues = requireContinuationSection(sections, "Open Issues");
+  return [
+    "# Working Memory",
+    `## Task & Goals\n${goals}`,
+    `## Current State\n${currentState}`,
+    `## Key Facts & Decisions\n${facts}`,
+    `## Open Issues\n${openIssues}`,
+    `## Next Action\n${nextActionFrom(sections)}`,
+    `## Files & Context\n${withoutTemplateGuidance(sections.get("Files & Context"))}`,
+    `## Errors & Corrections\n${withoutTemplateGuidance(sections.get("Errors & Corrections"))}`,
+  ].join("\n\n");
+}
+
 export function checkpointFromOverview(manifest, overview) {
   requireArchive(manifest);
-  if (typeof overview !== "string" || !overview.trim()) throw new TypeError("checkpoint overview must be non-empty");
-  const narrative = overview.trim();
-  const sections = sectionMap(narrative);
-  const goals = sectionItems(sections.get("Task & Goals"));
-  const retrievalCues = [
-    ...sectionItems(sections.get("Files & Context")),
-    ...sectionItems(sections.get("Session Title")),
-  ];
+  const narrative = validateCheckpointOverview(overview);
   return {
     checkpointId: checkpointId(manifest),
     sourceArchiveId: manifest.archiveId,
     sourceArchiveHash: manifest.contentHash,
     narrative,
-    completed: sectionItems(sections.get("Key Facts & Decisions")),
-    openItems: sectionItems(sections.get("Open Issues")),
-    ...(goals[0] ? { nextEntry: goals[0] } : {}),
-    retrievalCues: [...new Set(retrievalCues)],
     model: CHECKPOINT_MODEL,
     promptVersion: CHECKPOINT_PROMPT_VERSION,
   };
@@ -235,8 +297,7 @@ export function buildCheckpointEvent({ manifest, requestEvent, overview, complet
 /**
  * 任务模型方向的 checkpoint 块。
  *
- * 只渲染身份头与 narrative：completed/openItems/nextEntry/retrievalCues 都是 narrative
- * 的派生投影，重复注入会让同一事实在上下文中占用两份。
+ * checkpoint 的 continuation schema 只有身份、来源与 narrative；任务状态只表达一次。
  */
 export function renderCheckpointBlock(checkpoint) {
   if (!CHECKPOINT_ID_PATTERN.test(checkpoint?.checkpointId) || typeof checkpoint?.narrative !== "string" ||
@@ -295,8 +356,7 @@ export function parseCheckpointFailureEvent(event) {
 export function parseCheckpointEvent(event, manifest) {
   const value = event?.payload?.checkpoint;
   const checkpointFields = [
-    "checkpointId", "sourceArchiveId", "sourceArchiveHash", "narrative", "completed", "openItems",
-    "retrievalCues", "model", "promptVersion", ...(value?.nextEntry === undefined ? [] : ["nextEntry"]),
+    "checkpointId", "sourceArchiveId", "sourceArchiveHash", "narrative", "model", "promptVersion",
   ];
   if (event?.source?.system !== "pi-openviking" || event.source.sourceType !== "checkpoint" ||
       !hasExactKeys(event.payload, ["schemaVersion", "type", "checkpoint"]) ||
@@ -305,12 +365,11 @@ export function parseCheckpointEvent(event, manifest) {
       event.eventId !== recordedEventId(event.source) || !Number.isFinite(Date.parse(event.occurredAt)) ||
       value.checkpointId !== checkpointId(manifest) ||
       value.sourceArchiveId !== manifest.archiveId || value.sourceArchiveHash !== manifest.contentHash ||
-      typeof value.narrative !== "string" || !value.narrative || !isStringArray(value.completed) ||
-      !isStringArray(value.openItems) || !isStringArray(value.retrievalCues) ||
-      (value.nextEntry !== undefined && typeof value.nextEntry !== "string") ||
+      typeof value.narrative !== "string" || !value.narrative ||
       value.model !== CHECKPOINT_MODEL || value.promptVersion !== CHECKPOINT_PROMPT_VERSION) {
     throw new TypeError("checkpoint event is not valid for the source Archive");
   }
+  validateCheckpointOverview(value.narrative);
   return value;
 }
 
@@ -357,7 +416,10 @@ export function embeddedImages(events) {
 export function renderCheckpointInput(manifest, events, previousCheckpoint, media = []) {
   requireArchive(manifest);
   const mediaByEvent = new Map(media.map((item) => [item.eventId, item]));
-  const projected = JSON.parse(JSON.stringify(events));
+  const semanticEvents = events.filter((event) => !(
+    event?.source?.entryType === "custom" && event?.payload?.entry?.customType === "ov-observation"
+  ));
+  const projected = JSON.parse(JSON.stringify(semanticEvents));
   for (const event of projected) {
     const item = mediaByEvent.get(event.eventId);
     if (!item || !event?.payload?.part) continue;
@@ -369,15 +431,38 @@ export function renderCheckpointInput(manifest, events, previousCheckpoint, medi
       semanticAbstract: item.abstract,
     };
   }
+  const entries = [];
+  for (let start = 0; start < projected.length;) {
+    const entryId = projected[start]?.source?.entryId;
+    let end = start + 1;
+    while (end < projected.length && projected[end]?.source?.entryId === entryId) end++;
+    entries.push(reconstructPiEntry(projected.slice(start, end)));
+    start = end;
+  }
   return canonicalJson({
     protocol: CHECKPOINT_PROMPT_VERSION,
-    instruction: "Create a durable continuation checkpoint from this verified Archive. Preserve completed work, decisions, errors and corrections, open issues, the next execution entry, files and context, and retrieval cues. Prefer source facts over prior interpretation and do not invent facts.",
-    sourceArchive: {
-      archiveId: manifest.archiveId,
-      sourceArchiveHash: manifest.contentHash,
-      eventCount: manifest.eventCount,
+    operation: "update_unified_continuation",
+    instruction: [
+      "Update one self-contained working-memory state from priorUnifiedState plus newContext.",
+      "Produce one updated OpenViking Working Memory from the full prior state and new context, not a summary of only the latest Archive.",
+      "Keep only unfinished current goals and currently valid source-backed facts and decisions; remove completed goals, superseded facts, and duplicate formulations.",
+      "Keep Current State, Open Issues, Files & Context, and Errors & Corrections sufficient to resume the task; phrase the highest-priority open issue as an executable action.",
+      "Preserve exact opaque identifiers that remain relevant across updates.",
+      "Describe the user's work, not Archive/session/message container counts. Prefer source facts over prior interpretation and do not invent facts.",
+    ].join(" "),
+    unifiedContinuation: {
+      priorUnifiedState: previousCheckpoint ? {
+        checkpointId: previousCheckpoint.checkpointId,
+        narrative: previousCheckpoint.narrative,
+      } : null,
+      newContext: {
+        sourceArchive: {
+          archiveId: manifest.archiveId,
+          sourceArchiveHash: manifest.contentHash,
+          eventCount: manifest.eventCount,
+        },
+        entries,
+      },
     },
-    previousCheckpoint: previousCheckpoint ?? null,
-    events: projected,
   });
 }
