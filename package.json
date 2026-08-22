@@ -1,6 +1,6 @@
 {
   "name": "pi-openviking",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "Pi extension for append-only event recording, atomic archives, VLM checkpoints, and memory recall.",
   "keywords": [
     "pi-package"
