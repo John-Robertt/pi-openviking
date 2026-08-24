@@ -83,18 +83,20 @@ artifact 记录队列与模型状态。OpenViking `wait=true` 的阻塞时延属
 所有 live verifier 使用同一契约：
 
 manifest 中的精确依赖、服务和模型身份是可重放的最近验证快照，不是后续版本的支持上限。最低兼容边界由
-`package.json` 等对应权威契约维护；后续版本默认向前兼容，实际 gate 发现破坏时再隔离和适配。
+`package.json` 等对应权威契约维护；后续版本默认向前兼容，实际 gate 发现破坏时再隔离和适配。宿主 Pi
+的 manifest 版本与 CLI 路径只标识建立该历史证据时的环境，不约束以后运行 gate 的宿主版本。
 
 - 每个 gate 先提交 `test/live/{gate}.workloads.json` manifest，固定 workload/seed、适用版本与真实进程/
   端点身份、成功标准、证伪条件、证据提取方式和阈值决策规则；基线探针完成后，将 baseline、数值阈值
   与预期变化写入 manifest 并在实现前固定其 hash，运行时不能临时改变；
-- 启动前连接并校验 manifest 声明的真实 Pi、OpenViking、provider/model、VLM、prompt 和协议身份，并核对
-  运行中服务配置、状态指纹与开发模型 profile 一致；身份或配置不匹配时明确拒绝运行；
+- 启动前从当前安装包的 package metadata 解析 Pi 版本和 CLI，要求版本满足 `package.json` 的 Pi peer
+  最低兼容范围，并实际启动 CLI 核对其报告版本；OpenViking、provider/model、VLM、prompt 和协议继续按
+  manifest 与开发模型 profile 核对精确身份。任一当前身份、配置或可启动性检查失败时明确拒绝运行；
 - 输入使用脱敏 fixture 或可重放生成参数；live verifier 在专用测试 workspace 和测试用户 namespace
   运行，凭证只从环境读取，不写入输入、payload artifact 或 summary；
-- summary 使用一个版本化 JSON 结构，记录 gate、run ID、manifest hash、版本/端点身份、逐项 expected/
-  actual/delta、证据文件 hash、实际 token/时长和 cleanup。`passed` 只由全部必要断言与 cleanup 派生，
-  退出码与之保持一致；
+- summary 使用一个版本化 JSON 结构，记录 gate、run ID、manifest hash、当前 Pi 版本/CLI、Pi 历史基线、
+  其他版本/端点身份、逐项 expected/actual/delta、证据文件 hash、实际 token/时长和 cleanup。`passed`
+  只由全部必要断言与 cleanup 派生，退出码与之保持一致；
 - 本地数据位于仓库 `test/.artifacts/live/{runId}` 并由 `.gitignore` 排除。verifier 以 exclusive create
   建立含 run ID、manifest hash 和随机 nonce 的本地 ownership marker；Pi 每次启动使用一个新的 `0600`
   segment file，verifier 先以 `wx` 打开并把继承 FD 交给探针。探针只写 FD，不接触路径；重启复用 run

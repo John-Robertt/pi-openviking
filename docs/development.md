@@ -47,21 +47,21 @@ npm run dev -- pi
 
 `shared/toolchain.mjs` 的 `TOOLCHAIN` 唯一维护 OpenViking、uv、托管 Python 和 zstandard 的当前
 受管选择；`package.json` 维护 Node 最低版本、npm 依赖与 peer 最低兼容基线。peer 不设置预防性上限：
-当前 lock 和 live manifest 记录最近验证快照，后续版本默认向前兼容，只有实际 gate 证明存在破坏时才临时
-隔离并适配。`npm test` 先以 `tsconfig.json` 对仓库内全部 TypeScript 源执行严格的 `noEmit` 类型检查，
-并通过本仓库声明解析模块边界；`skipLibCheck` 只跳过声明文件内部检查。随后运行 deterministic tests，
-文档中的版本号也由该命令检查与权威源一致。
+当前 lock 记录本仓库安装解析快照，live manifest 记录各 gate 最近一次通过时的证据身份；当前兼容边界、
+运行时身份与历史证据的关系以 [`docs/verification.md`](./verification.md) 为准。`npm test` 先以
+`tsconfig.json` 对仓库内全部 TypeScript 源执行严格的 `noEmit` 类型检查，再运行 deterministic tests；
+`skipLibCheck` 只跳过声明文件内部检查。
 
 ```bash
 # 1. 修改唯一权威源
 #    OpenViking / uv / Python / zstandard → shared/toolchain.mjs 的 TOOLCHAIN
 #    Node / npm dependency / peer 最低基线           → package.json
 
-# 2. 由检查列出全部待同步位置（文档正文、live manifest 身份）
+# 2. 检查权威源、当前安装的宿主兼容性及受影响引用
 npm test
 
-# 3. 按报告逐条更新，直到 npm test 通过
-#    manifest 变更后重新固定 test/live/<gate>.workloads.sha256
+# 3. 按报告更新当前契约；不要仅因宿主 Pi 精确版本变化改写历史 manifest
+#    只有完整重跑 gate 并将结果采纳为新基线时，才更新 manifest 及对应 .sha256
 
 # 4. 重建隔离环境并验证服务身份
 npm run dev -- bootstrap
@@ -76,11 +76,11 @@ npm run verify:budget:live
 npm run verify:observability:live
 ```
 
-第 3 步的 manifest 更新不是形式手续。manifest 声明的是“该 gate 的结论在哪一组真实身份上成立”，
-gate 的 preflight 会用真实 `/health` 逐字核对；服务版本变化意味着该 gate 的基线需要按
-[`docs/roadmap.md`](./roadmap.md)“实施顺序”的调查闭环重新建立，其规则见
-[`docs/verification.md`](./verification.md)。固定 hash 使这一步必须是有意识的动作。该精确身份只表示最近一次
-已经通过的证据快照，不构成对后续版本的支持上限。
+manifest 更新不是版本同步手续。OpenViking 等受管服务变化时，gate preflight 会用真实 `/health` 逐字核对，
+因此新基线必须按 [`docs/roadmap.md`](./roadmap.md)“实施顺序”的调查闭环重新建立。宿主 Pi 则由
+`package.json` 的 peer range 定义当前兼容边界；manifest 继续保留建立历史证据时的 Pi 版本和 CLI 路径，
+summary 记录本次实际解析并启动的 Pi 身份。只有重新执行完整 live gate 并明确采纳新结果时，才改写该历史
+身份和固定 hash。完整规则见 [`docs/verification.md`](./verification.md)。
 
 `shared/toolchain.mjs` 中记录特定版本缺陷的注释需要人工判断该缺陷在新版本是否仍然存在，不由检查覆盖；
 缺陷修复后同步移除仅为绕开它而存在的约束与逻辑。

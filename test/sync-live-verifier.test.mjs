@@ -13,6 +13,7 @@ import { seededString } from "./live/sync-live.mjs";
 import {
   ackFileKey,
   checkManifestHash,
+  probePiHost,
   sha256Hex,
 } from "./live/live-support.mjs";
 import { canonicalJsonBytes } from "../shared/canonical-json.mjs";
@@ -27,17 +28,29 @@ test("manifest 字节 hash 与固定 .sha256 文件一致", () => {
   assert.ok(checkManifestHash(manifestBytes, hashText), "manifest 被修改后必须重新固定 hash");
 });
 
-test("manifest 引用的路径与身份在当前仓库存在", () => {
+test("manifest 历史身份有效且当前 Pi host 满足兼容边界", () => {
   for (const rel of manifest.identities.extensionLoadOrder) {
     assert.ok(existsSync(join(REPO, rel)), `缺少扩展 ${rel}`);
   }
   assert.ok(existsSync(join(REPO, manifest.identities.modelProfile.path)));
-  assert.ok(existsSync(join(REPO, manifest.identities.pi.binPath)));
+  assert.ok(
+    manifest.identities.pi.binPath.startsWith(`node_modules/${manifest.identities.pi.package}/`),
+    "manifest 的 Pi CLI 路径必须是历史验证包内的相对路径",
+  );
   const profileBytes = readFileSync(join(REPO, manifest.identities.modelProfile.path));
   assert.equal(sha256Hex(profileBytes), manifest.identities.modelProfile.sha256);
-  const piPkg = JSON.parse(readFileSync(join(REPO, "node_modules", manifest.identities.pi.package, "package.json"), "utf8"));
-  assert.equal(piPkg.version, manifest.identities.pi.version);
   const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
+  const peerRange = pkg.peerDependencies?.[manifest.identities.pi.package];
+  const piHost = probePiHost(REPO, manifest.identities.pi.package, peerRange);
+  assert.ok(
+    piHost.versionSupported,
+    `当前 Pi ${piHost.version ?? piHost.error} 不满足 peer ${peerRange}`,
+  );
+  assert.ok(piHost.binPath, piHost.error ?? "当前 Pi CLI 不存在");
+  assert.ok(
+    piHost.cliVersionMatches,
+    piHost.error ?? `当前 Pi CLI 报告 ${piHost.reportedVersion ?? "无版本"}，metadata 为 ${piHost.version}`,
+  );
   assert.equal(pkg.scripts["verify:sync:live"], "node test/live/sync-live.mjs");
   // manifest 声明的服务身份必须与安装 pin 一致。gate 的 preflight 会用真实 /health 再核一次，
   // 这里把同一事实提前到 npm test，使升级 pin 后立即知道 manifest 需要随基线一并重做。

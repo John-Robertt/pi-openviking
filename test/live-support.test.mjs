@@ -1,15 +1,95 @@
 import assert from "node:assert/strict";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
   buildLivePiInvocation,
+  buildPiSummaryIdentity,
   checkManifestHash,
   cleanupRemote,
   commandNotifyMatches,
   conflictBytesOf,
   createRpcLineParser,
   derivePassed,
+  probePiHost,
 } from "./live/live-support.mjs";
+
+test("Pi host probe 校验当前 package metadata、peer 下限与 CLI 版本", (t) => {
+  const packageName = "@earendil-works/pi-coding-agent";
+  const root = join(process.cwd(), `.test-live-support-${process.pid}-${Date.now()}`);
+  const packageRoot = join(root, "node_modules", packageName);
+  const cliPath = join(packageRoot, "dist/bundle/cli.js");
+  const packageJsonPath = join(packageRoot, "package.json");
+  const writePackage = (version, bin = "dist/bundle/cli.js") => {
+    writeFileSync(packageJsonPath, JSON.stringify({
+      name: packageName,
+      version,
+      bin: { pi: bin },
+    }));
+  };
+  const probe = () => probePiHost(root, packageName, ">=0.84.2");
+  mkdirSync(join(packageRoot, "dist/bundle"), { recursive: true });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  writePackage("0.84.3");
+  writeFileSync(cliPath, "console.log('0.84.3');\n");
+  const current = probe();
+  assert.equal(current.version, "0.84.3");
+  assert.equal(current.versionSupported, true);
+  assert.equal(current.binRelative, "dist/bundle/cli.js");
+  assert.equal(current.binPath, cliPath);
+  assert.equal(current.reportedVersion, "0.84.3");
+  assert.equal(current.cliVersionMatches, true);
+  assert.deepEqual(buildPiSummaryIdentity(current, {
+    package: packageName,
+    version: "0.84.2",
+    binPath: "node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+  }), {
+    package: packageName,
+    version: "0.84.3",
+    binPath: "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+    baselineVersion: "0.84.2",
+    baselineBinPath: "node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+  });
+
+  writePackage("0.84.1");
+  writeFileSync(cliPath, "console.log('0.84.1');\n");
+  const unsupported = probe();
+  assert.equal(unsupported.versionSupported, false);
+  assert.equal(unsupported.cliVersionMatches, true);
+
+  writePackage("0.84.2-beta.1");
+  writeFileSync(cliPath, "console.log('0.84.2-beta.1');\n");
+  const prerelease = probe();
+  assert.equal(prerelease.versionSupported, false);
+  assert.equal(prerelease.cliVersionMatches, true);
+
+  writeFileSync(packageJsonPath, JSON.stringify({
+    name: packageName,
+    version: "0.84.3",
+    bin: "dist/bundle/cli.js",
+  }));
+  const shorthandBin = probe();
+  assert.equal(shorthandBin.versionSupported, true);
+  assert.equal(shorthandBin.binPath, null);
+  assert.match(shorthandBin.error, /bin\.pi/);
+  writePackage("0.84.3", "../outside.js");
+  const unsafe = probe();
+  assert.equal(unsafe.versionSupported, true);
+  assert.equal(unsafe.binPath, null);
+  assert.match(unsafe.error, /safe pi executable/);
+
+  writePackage("0.84.3", "dist/missing.js");
+  const missingCli = probe();
+  assert.equal(missingCli.versionSupported, true);
+  assert.equal(missingCli.binPath, null);
+  assert.match(missingCli.error, /does not exist/);
+
+  const missing = probePiHost(root, "missing-pi", ">=0.84.2");
+  assert.equal(missing.versionSupported, false);
+  assert.match(missing.error, /not installed/);
+});
 
 test("live Pi 命令只消费自身的 notify，不把启动或 checkpoint 通知当成完成屏障", () => {
   assert.equal(commandNotifyMatches("/viking sync", "OpenViking connected (abc...)"), false);

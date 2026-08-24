@@ -11,7 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { OVClient } from "../../client.ts";
@@ -117,6 +117,88 @@ export const LIVE_REPO = resolve(fileURLToPath(new URL(".", import.meta.url)), "
 const LIVE_ROOT = join(LIVE_REPO, "test/.artifacts/live");
 const DEV_RUN_DIR = join(LIVE_REPO, ".dev/runs/openviking");
 const DEV_PID_FILE = join(DEV_RUN_DIR, "server.pid");
+
+function satisfiesMinimumPeerVersion(version, peerRange) {
+  const current = /^(\d+)\.(\d+)\.(\d+)$/.exec(version ?? "");
+  const minimum = /^>=\s*(\d+)\.(\d+)\.(\d+)$/.exec(peerRange ?? "");
+  if (!current || !minimum) return false;
+  for (let i = 1; i <= 3; i++) {
+    if (Number(current[i]) > Number(minimum[i])) return true;
+    if (Number(current[i]) < Number(minimum[i])) return false;
+  }
+  return true;
+}
+
+export function probePiHost(repoRoot, packageName, peerRange) {
+  const packageRoot = resolve(repoRoot, "node_modules", packageName);
+  const packageJsonPath = join(packageRoot, "package.json");
+  const unresolved = (error) => ({
+    version: null,
+    versionSupported: false,
+    binPath: null,
+    binRelative: null,
+    reportedVersion: null,
+    cliVersionMatches: false,
+    error,
+  });
+  if (!existsSync(packageJsonPath)) return unresolved("package not installed");
+
+  let packageJson;
+  try {
+    packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+  } catch {
+    return unresolved("invalid package.json");
+  }
+
+  if (packageJson.name !== packageName) {
+    return unresolved("package name does not match requested Pi package");
+  }
+  const version = typeof packageJson.version === "string" ? packageJson.version : null;
+  if (version === null) return unresolved("package does not declare a valid version");
+  const versionSupported = satisfiesMinimumPeerVersion(version, peerRange);
+  const binRelative = packageJson.bin !== null
+    && typeof packageJson.bin === "object"
+    && Object.hasOwn(packageJson.bin, "pi")
+    && typeof packageJson.bin.pi === "string"
+    ? packageJson.bin.pi
+    : null;
+  if (binRelative === null) {
+    return { ...unresolved("package does not declare a bin.pi executable"), version, versionSupported };
+  }
+  const resolvedBinPath = binRelative ? resolve(packageRoot, binRelative) : null;
+  const binInsidePackage = resolvedBinPath !== null && resolvedBinPath.startsWith(`${packageRoot}${sep}`);
+  if (!binInsidePackage) {
+    return { ...unresolved("package does not declare a safe pi executable"), version, versionSupported };
+  }
+  if (!existsSync(resolvedBinPath)) {
+    return { ...unresolved("declared pi executable does not exist"), version, versionSupported };
+  }
+
+  const cli = spawnSync(process.execPath, [resolvedBinPath, "--version"], { encoding: "utf8", timeout: 10000 });
+  const reportedVersion = cli.stdout?.trim() || null;
+  const cliVersionMatches = cli.status === 0 && reportedVersion === version;
+  return {
+    version,
+    versionSupported,
+    binPath: resolvedBinPath,
+    binRelative,
+    reportedVersion,
+    cliVersionMatches,
+    error: cliVersionMatches ? null : cli.error?.message || cli.stderr?.trim() || "pi CLI version check failed",
+  };
+}
+
+export function buildPiSummaryIdentity(piHost, manifestPi) {
+  return {
+    package: manifestPi.package,
+    version: piHost?.version ?? null,
+    binPath: piHost?.binRelative
+      ? `node_modules/${manifestPi.package}/${piHost.binRelative.replaceAll("\\", "/")}`
+      : null,
+    baselineVersion: manifestPi.version,
+    baselineBinPath: manifestPi.binPath,
+  };
+}
 
 export class PiRunError extends Error {}
 
@@ -557,12 +639,16 @@ export async function preflight(log, ctx, extra) {
   log.check(g, "node-engines", pkg.engines?.node, process.version,
     isNodeVersionSupported(process.version, pkg.engines?.node));
 
-  const piPkgPath = join(LIVE_REPO, "node_modules", ctx.manifest.identities.pi.package, "package.json");
-  const piPkg = existsSync(piPkgPath) ? JSON.parse(readFileSync(piPkgPath, "utf8")) : null;
-  log.check(g, "pi-version", ctx.manifest.identities.pi.version, piPkg?.version,
-    piPkg?.version === ctx.manifest.identities.pi.version);
-  ctx.piBin = join(LIVE_REPO, ctx.manifest.identities.pi.binPath);
-  log.check(g, "pi-bin-exists", true, existsSync(ctx.piBin), existsSync(ctx.piBin));
+  const manifestPi = ctx.manifest.identities.pi;
+  const peerRange = pkg.peerDependencies?.[manifestPi.package];
+  ctx.piHost = probePiHost(LIVE_REPO, manifestPi.package, peerRange);
+  log.check(g, "pi-host-compatible", peerRange, ctx.piHost.version ?? ctx.piHost.error,
+    ctx.piHost.versionSupported);
+  ctx.piBin = ctx.piHost.binPath;
+  const piBinExists = ctx.piBin !== null;
+  log.check(g, "pi-bin-exists", true, piBinExists, piBinExists, ctx.piHost.error ?? undefined);
+  log.check(g, "pi-cli-version", ctx.piHost.version, ctx.piHost.reportedVersion,
+    ctx.piHost.cliVersionMatches, ctx.piHost.error ?? undefined);
 
   const profileBytes = readFileSync(join(LIVE_REPO, ctx.manifest.identities.modelProfile.path));
   log.check(g, "model-profile-hash", ctx.manifest.identities.modelProfile.sha256, sha256Hex(profileBytes),
@@ -747,7 +833,7 @@ export async function runLiveGate({ gate, manifestPath, manifestHashPath, runner
     durationMs: Date.now() - t0,
     manifestSha256,
     identities: {
-      pi: { package: manifest.identities.pi.package, version: manifest.identities.pi.version },
+      pi: buildPiSummaryIdentity(ctx.piHost, manifest.identities.pi),
       node: process.version,
       platform: `${process.platform}/${process.arch}`,
       openviking: { endpoint: ctx.endpoint, version: manifest.identities.openviking.version, authMode: manifest.identities.openviking.authMode },
