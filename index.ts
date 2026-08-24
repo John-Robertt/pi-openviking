@@ -12,14 +12,13 @@ import { OVClient } from "./client.js";
 import { RecallManager } from "./recall.js";
 import { SyncManager, type TaskModelContext } from "./sync.js";
 import { buildProfileBlock } from "./shared/profile-inject.mjs";
-import { renderCompactionPointer } from "./shared/active-context.mjs";
+import { advanceActiveContextMessages, evaluateTakeoverTrigger, renderCompactionPointer } from "./shared/active-context.mjs";
 import { observation as processObservation, type Observation } from "./shared/observe.mjs";
 import { createStatusRefresh } from "./shared/status-refresh.mjs";
 import { clearVikingFooter, formatVikingCommand, setVikingFooter } from "./shared/viking-status.mjs";
 import { guardVikingUriToolCall } from "./lib/uri-guard-adapter.mjs";
 import { registerTools, VIKING_TOOL_NAMES } from "./tools.js";
 import { snapshotSessionSource } from "./shared/pi-session-source.mjs";
-import { evaluateTakeoverTrigger } from "./shared/active-context.mjs";
 import { readTaskModelContext } from "./shared/task-model-context.mjs";
 
 const HEALTH_REFRESH_INTERVAL_MS = 5000;
@@ -86,6 +85,7 @@ export default async function (pi: ExtensionAPI) {
   let startPromise: Promise<void> | null = null;
   let startupWarningShown = false;
   let appliedTakeoverCheckpointId: string | null = null;
+  let lastTakeoverMessages: any[] | null = null;
   let extensionProvidedCompaction = false;
   let pendingCompactionEntryId: string | null = null;
   let sessionReady: Promise<unknown> = Promise.resolve();
@@ -208,6 +208,7 @@ export default async function (pi: ExtensionAPI) {
       appliedCheckpointId: appliedTakeoverCheckpointId,
       piUsageTokens: contextUsageTokens(ctx),
       payloadTokens: status.payloadTokens,
+      pressureTokens: status.pressureTokens,
       highWaterTokens: takeoverHighWaterTokens(),
       activeHighWaterTokens: takeoverHighWaterTokens(true),
     });
@@ -275,6 +276,7 @@ export default async function (pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {
     const reason = event?.reason ?? "none";
     appliedTakeoverCheckpointId = null;
+    lastTakeoverMessages = null;
     observation.bindSession(ctx.sessionManager.getSessionId());
     const op = beginHook("session_start", reason);
     try {
@@ -331,11 +333,13 @@ export default async function (pi: ExtensionAPI) {
   pi.on("context", async (event, ctx) => {
     const op = beginHook("context");
     try {
-      if (!client.connected || bypassed) {
+      if (bypassed || (!client.connected && !lastTakeoverMessages)) {
         if (!bypassed) {
           observation.emit(
             "active_context_takeover", "keep_full_context", sync.status.activeContext.eligibility,
             contextUsageTokens(ctx), takeoverHighWaterTokens(), Array.isArray(event.messages) ? event.messages.length : 0,
+            sync.status.activeContext.payloadTokens, sync.status.activeContext.payloadTokens,
+            sync.status.activeContext.pressureTokens, sync.status.activeContext.capacityTokens,
           );
         }
         endHook(op, "context", "none", "skipped");
@@ -344,9 +348,10 @@ export default async function (pi: ExtensionAPI) {
 
       // Keep recall synchronous with the provider request so the current prompt
       // still receives current-query memory, without blocking user-message UI.
-      await recall.searchPending();
+      if (client.connected) await recall.searchPending();
       await sessionReady;
       const taskModel = taskModelContext(ctx);
+      const previousPayloadTokens = sync.status.activeContext.payloadTokens;
       const takeover = takeoverDecision(ctx);
       let messages = event.messages;
       let takeoverBranch = "keep_full_context";
@@ -355,19 +360,42 @@ export default async function (pi: ExtensionAPI) {
           takeover.usageTokens < takeover.highWaterTokens) {
         takeoverBranch = "below_high_water";
       }
-      if (takeover.render || (!taskModel.factsAvailable && sync.status.activeContext.checkpointId)) {
+      const needsBoundedFallback = Boolean(
+        sync.status.activeContext.checkpointId &&
+        ["capacity_mismatch", "checkpoint_over_budget"].includes(sync.status.activeContext.eligibility),
+      );
+      if (takeover.render || lastTakeoverMessages ||
+          (!taskModel.factsAvailable && sync.status.activeContext.checkpointId) || needsBoundedFallback) {
         const checkpointBefore = sync.status.activeContext.checkpointId;
         const replacement = await sync.takeoverMessages(
           snapshotSessionSource(ctx.sessionManager), taskModel, takeover.allowAdvance,
           takeover.epochActive ? takeover.highWaterTokens : null,
         );
         if (replacement) {
-          messages = replacement;
           const checkpointAfter = sync.status.activeContext.checkpointId;
-          takeoverBranch = takeover.epochActive && checkpointBefore === checkpointAfter
+          const retained = lastTakeoverMessages && takeover.epochActive && !takeover.allowAdvance &&
+            checkpointBefore === checkpointAfter && sync.status.activeContext.eligibility === "eligible"
+            ? advanceActiveContextMessages(lastTakeoverMessages, event.messages)
+            : null;
+          messages = retained ?? replacement;
+          lastTakeoverMessages = structuredClone(messages);
+          takeoverBranch = retained
             ? "reuse_context"
-            : "replace_context";
+            : messages.some((message: any) =>
+              message?.customType === "openviking-checkpoint" &&
+              String(message?.content ?? "").includes("<openviking-checkpoint-reference"))
+              ? "reference_context"
+              : takeover.epochActive && checkpointBefore === checkpointAfter
+                ? "reuse_context"
+                : "replace_context";
           appliedTakeoverCheckpointId = checkpointAfter;
+        } else if (lastTakeoverMessages) {
+          const advanced = advanceActiveContextMessages(lastTakeoverMessages, event.messages);
+          if (advanced) {
+            messages = advanced;
+            lastTakeoverMessages = structuredClone(advanced);
+            takeoverBranch = "reuse_context";
+          }
         }
       }
       observation.emit(
@@ -377,6 +405,8 @@ export default async function (pi: ExtensionAPI) {
         takeover.usageTokens,
         takeover.highWaterTokens,
         Array.isArray(messages) ? messages.length : 0,
+        previousPayloadTokens, sync.status.activeContext.payloadTokens,
+        sync.status.activeContext.pressureTokens, sync.status.activeContext.capacityTokens,
       );
 
       const { messages: injectedMessages, injectedBlock } = recall.injectRecall(messages);

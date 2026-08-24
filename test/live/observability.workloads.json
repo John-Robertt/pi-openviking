@@ -22,7 +22,7 @@
     },
     "registry": {
       "schemaVersion": 1,
-      "sha256": "c71022de8fa9db14be3dd434d1c419c4e28bc15b30619861605ea5ba49a3af3c"
+      "sha256": "29035e3232aef0ec1fe5cfcc23649be3581b5a974872de7725f104b0772f7fea"
     },
     "extensionLoadOrder": ["index.ts"]
   },
@@ -171,6 +171,9 @@
     "checkpoint_process",
     "checkpoint_failure",
     "active_context_failure",
+    "archive_retrieval",
+    "retrieval_index",
+    "retrieval_index_failure",
     "recall_failure"
   ],
   "globalAssertions": [

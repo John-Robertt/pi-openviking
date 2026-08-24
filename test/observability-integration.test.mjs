@@ -15,6 +15,7 @@ import { OpenVikingCheckpointProcessor } from "../shared/checkpoint-processor.mj
 import { CheckpointManager } from "../shared/checkpoint-store.mjs";
 import { OBSERVATION_STAGE_REGISTRY, createObservation, validateObservationRecord } from "../shared/observe.mjs";
 import { RecordedEventAdapter } from "../shared/recorded-event-adapter.mjs";
+import { RetrievalIndex } from "../shared/retrieval-index.mjs";
 import { ARCHIVE_USER_ROOT, MemoryContentTransport, archiveEvents } from "./fixtures/archive-fixtures.mjs";
 import { checkpointOverview } from "./fixtures/checkpoint-fixtures.mjs";
 import { buildLongToolLoopTrace } from "./fixtures/long-tool-loop-trace.mjs";
@@ -372,7 +373,17 @@ test("tool 可用性和 URI 权限只记录枚举与计数，拒绝路径不发�
     async addResource() { resourceAdds++; return { root_uri: "viking://resources/imported" }; },
   };
   const tools = new Map();
-  registerTools({ registerTool: (tool) => tools.set(tool.name, tool) }, client, { sessionId: "pi-own" }, observation);
+  registerTools({ registerTool: (tool) => tools.set(tool.name, tool) }, client, {
+    sessionId: "pi-own",
+    listArchives: () => [{
+      manifest: {
+        archiveId: `arc_${"a".repeat(64)}`, eventCount: 1,
+        firstEventId: `evt_${"b".repeat(64)}`, lastEventId: `evt_${"b".repeat(64)}`,
+        contentHash: `sha256:${"c".repeat(64)}`,
+      },
+      tokenCount: 42,
+    }],
+  }, observation);
   const execute = (name, params) => tools.get(name).execute("id", params, new AbortController().signal, () => {}, {});
 
   const denied = await execute("viking_read", { uri: outside, level: "full" });
@@ -387,7 +398,9 @@ test("tool 可用性和 URI 权限只记录枚举与计数，拒绝路径不发�
   const resource = await execute("viking_add_resource", { url: "https://outside.test" });
   assert.match(resource.content[0].text, /^Refused:/);
   assert.equal(resourceAdds, 0);
-  assert.equal(scopeReads, 4, "每次工具执行只读取一次产品 scope，不为观察重复求值");
+  const archiveList = await execute("viking_archive_expand", {});
+  assert.match(archiveList.content[0].text, /knows 1 committed archive/);
+  assert.equal(scopeReads, 5, "每次工具执行只读取一次产品 scope，不为观察重复求值");
   assert.equal(guardVikingUriToolCall({ toolName: "read", input: { path: outside } }, observation)?.block, true);
   await observation.finish();
 
@@ -399,6 +412,7 @@ test("tool 可用性和 URI 权限只记录枚举与计数，拒绝路径不发�
   assert.ok(records.some((record) => record.stage === "tool_scope" && record.data.operation === "resource_add" && record.data.branch === "deny"));
   assert.ok(records.some((record) => record.stage === "tool_scope" && record.data.branch === "clamp"));
   assert.ok(records.some((record) => record.stage === "tool_scope" && record.data.branch === "filter"));
+  assert.ok(records.some((record) => record.stage === "archive_retrieval" && record.data.branch === "list" && record.data.emitted === 1));
 });
 
 test("checkpoint 请求、VLM 边界、状态与失败只记录安全计数和协议 hash", async () => {
@@ -500,7 +514,7 @@ test("活动上下文的选择、容量判定与降级只记录枚举、计数�
   assert.equal((await manager.update(sessionId, input)).eligibility, "eligible");
   assert.equal((await manager.update(sessionId, { ...input, branchEvents: events.slice(0, 1), archives: [], lastCheckpointId: null })).eligibility, "no_context");
 
-  // 容量不匹配、持久化失败与来源事实不可读分别降级，产品继续使用完整 Pi 上下文。
+  // 容量不匹配与 checkpoint 超预算使用有界引用；持久化失败和来源不可读各自降级。
   const mismatch = new ActiveContextManager({
     path: null, adapter, observation, takeover: { enabled: true, contextTokenThreshold: 0 },
   });
@@ -512,7 +526,8 @@ test("活动上下文的选择、容量判定与降级只记录枚举、计数�
   });
   const overBudgetStatus = await overBudget.update(sessionId, input);
   assert.equal(overBudgetStatus.eligibility, "checkpoint_over_budget");
-  assert.equal(await overBudget.takeoverMessages(events, { capacity: input.capacity }), null);
+  const bounded = await overBudget.takeoverMessages(events, { capacity: input.capacity });
+  assert.ok(bounded?.[0]?.content.includes("<openviking-checkpoint-reference"));
   assert.equal(await overBudget.compaction(events, 1000), null);
   const blocked = new ActiveContextManager({
     path: `${ROOT}/active-context/blocker/context.json`, adapter, observation,
@@ -531,6 +546,11 @@ test("活动上下文的选择、容量判定与降级只记录枚举、计数�
   const { raw, records } = readRun(path);
   assert.doesNotMatch(raw, /private-active-context-session|private checkpoint narrative|private system prompt|private OpenViking failure/);
   assert.ok(records.some((record) => record.stage === "active_context_select" && record.data.branch === "selected"));
+  const eligible = records.find((record) => record.stage === "active_context_eligibility" && record.data.branch === "eligible");
+  assert.ok(Number.isInteger(eligible?.data.pressure));
+  assert.ok(Number.isInteger(eligible?.data.inlineEvents));
+  assert.ok(Number.isInteger(eligible?.data.omittedEvents));
+  assert.ok(Number.isInteger(eligible?.data.omittedTokens));
   assert.ok(records.some((record) => record.stage === "active_context_select" && record.data.branch === "invalidated"));
   assert.ok(records.some((record) => record.stage === "active_context_eligibility" && record.data.branch === "eligible"));
   assert.ok(records.some((record) => record.stage === "active_context_eligibility" && record.data.branch === "capacity_mismatch"));
@@ -541,6 +561,35 @@ test("活动上下文的选择、容量判定与降级只记录枚举、计数�
   assert.ok(records.some((record) => record.stage === "active_context_failure" && record.data.errorCode === "materialize"));
   const headroom = records.find((record) => record.stage === "active_context_eligibility" && record.data.branch === "capacity_mismatch");
   assert.ok(headroom.data.headroom < 0, "容量不匹配的余量必须可读为负值");
+});
+
+test("检索索引只记录来源类型、数量和可重试降级，不记录正文或 URI", async () => {
+  const { path, observation } = observationFor("retrieval-index");
+  const transport = new MemoryContentTransport();
+  const index = new RetrievalIndex(transport, { userRoot: ARCHIVE_USER_ROOT, observation });
+  const archiveId = `arc_${"a".repeat(64)}`;
+  const events = archiveEvents("private-retrieval-session", [{ role: "user", chars: 128 }]);
+  await index.indexArchives("private-retrieval-session", [
+    { manifest: { archiveId }, startIndex: 0, endIndex: 0 },
+  ], events);
+  transport.batchWrite = async () => ({ ok: false, status: 503, error: { message: "private index failure" } });
+  await assert.rejects(index.indexCheckpoint(
+    "private-retrieval-session",
+    { archiveId },
+    {
+      source: { system: "pi-openviking", sourceType: "checkpoint", sourceId: `chk_${"b".repeat(64)}` },
+      payload: { checkpoint: { narrative: "private checkpoint retrieval text" } },
+    },
+  ));
+  await observation.finish();
+
+  const { raw, records } = readRun(path);
+  assert.doesNotMatch(raw, /private-retrieval-session|private checkpoint retrieval text|private index failure|viking:\/\//);
+  assert.ok(records.some((record) => record.stage === "retrieval_index"
+    && record.data.sourceType === "raw_event" && record.data.records === 1));
+  assert.ok(records.some((record) => record.stage === "retrieval_index_failure"
+    && record.data.sourceType === "checkpoint" && record.data.errorCode === "write"
+    && record.data.disposition === "degrade" && record.data.branch === "retry_on_sync"));
 });
 
 test.after(() => {

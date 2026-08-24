@@ -100,7 +100,7 @@
   "workloads": [
     {
       "id": "w1-archive-formation",
-      "summary": "真实 Pi 会话在最小归档预算下形成 Archive：逐个 manifest 自证、按 parentId 链 expand 得到与源事件逐字节一致的序列、聚合 hash 复算一致、边界不拆 step，且命名空间内没有多余对象。",
+      "summary": "真实 Pi 会话在最小归档预算下形成 Archive：逐个 manifest 自证、按 parentId 链 expand 得到与源事件逐字节一致的序列、聚合 hash 复算一致、边界不拆 Pi entry 或 step，且命名空间内没有多余对象。",
       "steps": [
         "verifier：写入 extensionConfig",
         "run A：prompt P1 → agent_settled → /viking sync → 退出",
@@ -116,13 +116,13 @@
         "Archive 命名空间内至少 1 个 manifest 对象；对象数等于 /viking 报告的已提交数",
         "每个 manifest 字节可 parseArchiveManifest 自证（复算 archiveId 与规范字节一致）",
         "按 archiveId expand：沿 parentId 回溯 eventCount 步到达 firstEventId，逐事件规范字节与本地投影一致，聚合 contentHash 与 manifest 相等",
-        "分支中至少存在一个跨事件 step（否则边界断言恒真）；每个 Archive 的末事件所属 step 不延续到分支中的下一事件",
-        "保留的 raw tail 压力不低于 archive.rawTailTokenBudget",
+        "分支中至少存在一个跨事件 step（否则边界断言恒真）；每个 Archive 边界不拆 Pi entry 或 step",
+        "raw tail 达到目标保留量；若已封闭原子组超过 chunk 预算，则该组整体归档且至少保留后继独立原子组",
         "各 Archive 范围在分支事件序列上严格连续：相邻 Archive 首尾相接，不重叠也不遗漏事件"
       ],
       "falsification": [
         "manifest 无法自证、expand 链断裂或聚合 hash 不符",
-        "Archive 边界拆开一个 assistant/tool step",
+        "Archive 边界拆开一个 Pi entry 或 assistant/tool step",
         "Archive 命名空间的普通 ls 返回任何对象（隐藏文件泄露）",
         "从来源重算出的某个 archiveId 在远端缺失或字节不符"
       ]

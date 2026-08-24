@@ -5,6 +5,7 @@ import type { SyncManager } from "./sync.js";
 import { observation, type Observation } from "./shared/observe.mjs";
 import { eventTokenWeight } from "./shared/context-weight.mjs";
 import { recordedEventBytes } from "./shared/recorded-event.mjs";
+import { parseRetrievalResultUri } from "./shared/retrieval-index.mjs";
 
 /** 已注册的工具名，供系统提示引用；集合的事实源在本模块。 */
 export const VIKING_TOOL_NAMES = [
@@ -135,11 +136,11 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
   pi.registerTool({
     name: "viking_search",
     label: "Viking Search",
-    description: "Semantic search over the OpenViking knowledge base. Returns ranked results with viking:// URIs and abstracts. Use to recall past decisions, user preferences, project-specific knowledge, or earlier parts of THIS session that were compacted or replaced out of current context.",
+    description: "Semantic search over public OpenViking knowledge and the current Pi session's rebuildable history index. Session-history hits return Archive/event or checkpoint locators; use viking_archive_expand to read authoritative raw events.",
     promptSnippet: "Search OpenViking for past decisions, preferences, project knowledge, and compacted earlier context of this session",
     promptGuidelines: [
       "Use viking_search when you need information from previous sessions not in MEMORY.md.",
-      "Use viking_search when current work references earlier session context you can no longer see (compacted or checkpoint-replaced); follow hits up with viking_read or viking_archive_expand.",
+      "Use viking_search when current work references earlier session context you can no longer see; expand raw_event hits with viking_archive_expand and read public viking:// hits with viking_read.",
       "Use viking_search before making decisions that might conflict with past decisions.",
     ],
     parameters: Type.Object({
@@ -154,41 +155,73 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
       if (unavailable("viking_search")) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
-      // 请求范围与回读核验都做：范围表达意图，核验保证返回给模型的 URI 确实
-      // 落在绑定命名空间内，不依赖服务端对 target_uri 的执行。
+      // Public knowledge and Pi history have different trust boundaries: public search never returns
+      // adapter-owned internals; the history query targets only the rebuildable index and converts
+      // server faces into stable Archive/event or checkpoint locators.
       const root = scoped();
       const searchScope = resolveSearchScope("viking_search", params.scope, root);
       if (searchScope.error) return { content: [{ type: "text", text: searchScope.error }] };
-      const found = await client.find(params.query, {
-        targetUri: searchScope.targetUri,
-        topK: params.limit ?? 10,
-      });
-      const results = found.flatMap((result) => {
+      const limit = Math.min(50, Math.max(1, Math.floor(Number(params.limit) || 10)));
+      const historyRoot = sync.retrievalRoot;
+      const includeHistory = Boolean(historyRoot && (!params.scope || !root || searchScope.targetUri === root));
+      const [publicFound, historyFound] = await Promise.all([
+        client.find(params.query, { targetUri: searchScope.targetUri, topK: limit }),
+        includeHistory ? client.find(params.query, { targetUri: historyRoot!, topK: limit }) : Promise.resolve([]),
+      ]);
+      const publicResults = publicFound.flatMap((result) => {
         const uri = canonicalVikingUri(result.uri);
-        return uri && insideCanonical(uri, root) ? [{ ...result, uri }] : [];
+        return uri && insideCanonical(uri, root) && !uri.includes("/.pi-openviking/")
+          ? [{ kind: "public" as const, ...result, uri }]
+          : [];
       });
+      const historyBySource = new Map<string, any>();
+      for (const result of historyFound) {
+        const uri = canonicalVikingUri(result.uri);
+        const locator = uri && historyRoot ? parseRetrievalResultUri(uri, historyRoot) : null;
+        if (!locator || !insideCanonical(uri!, root)) continue;
+        const key = locator.sourceType === "raw_event" ? locator.eventId! : locator.checkpointId!;
+        const previous = historyBySource.get(key);
+        if (!previous || result.score > previous.score) {
+          historyBySource.set(key, { kind: "history" as const, ...result, locator });
+        }
+      }
+      const results = [...publicResults, ...historyBySource.values()]
+        .sort((left, right) => right.score - left.score)
+        .slice(0, limit);
+      const foundCount = publicFound.length + historyFound.length;
       observe.emit(
         "tool_scope",
         "viking_search",
         "search_result",
         Boolean(root),
-        results.length === found.length ? "allow" : "filter",
+        results.length === foundCount ? "allow" : "filter",
         results.length,
-        found.length - results.length,
+        foundCount - results.length,
       );
       if (results.length === 0) {
         return { content: [{ type: "text", text: "No results found." }] };
       }
       const maxChars = client.cfg.recallMaxContentChars;
-      const lines = results.map(r => {
-        const abs = r.abstract.length > maxChars
-          ? r.abstract.slice(0, maxChars) + "..."
-          : r.abstract;
-        return `[${r.score.toFixed(2)}] ${r.uri}\n  ${abs}`; }
-      );
+      const abstract = (result: any): string => {
+        const value = String(result.abstract || result.overview || result.match_reason || "");
+        return value.length > maxChars ? `${value.slice(0, maxChars)}...` : value;
+      };
+      const lines = results.map((result: any) => {
+        if (result.kind === "public") {
+          return `[${result.score.toFixed(2)}] ${result.uri}\n  ${abstract(result)}`;
+        }
+        const locator = result.locator;
+        const identity = locator.sourceType === "raw_event"
+          ? `archive_id: ${locator.archiveId}\n  event_id: ${locator.eventId}`
+          : `source_archive_id: ${locator.archiveId}\n  checkpoint_id: ${locator.checkpointId}`;
+        return `[${result.score.toFixed(2)}] ${locator.sourceType}\n  ${identity}\n  ${abstract(result)}`;
+      });
+      const details = results.map((result: any) => result.kind === "public"
+        ? { kind: "public", uri: result.uri, score: result.score, abstract: abstract(result) }
+        : { kind: "history", ...result.locator, score: result.score, abstract: abstract(result) });
       return {
         content: [{ type: "text", text: lines.join("\n\n") }],
-        details: { results },
+        details: { results: details },
       };
     },
   });
@@ -399,18 +432,25 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
       "List committed archives currently known in this session process, or page through one archive's event index" +
       " (event ids, roles, context weights, short excerpts, and direct-representation read URIs when available)." +
       " Use to recover earlier context of THIS session that was compacted or replaced by a checkpoint; use" +
-      " viking_read when the index exposes a read URI. Never dumps full event payloads.",
+      " viking_read when the index exposes a read URI; pass event_id only for an oversized event without one." +
+      " Never dumps full archive payloads by default.",
     promptSnippet: "List this session's archives or inspect one archive's event index to recover compacted earlier context",
     promptGuidelines: [
-      "Call viking_archive_expand without archive_id to list committed archives currently known in this session process when earlier context is no longer visible.",
-      "Page large archives with offset/limit instead of fetching everything at once.",
+      "Retrieve only when an omitted fact could change the next action; inspect the archive list or index first.",
+      "Read the smallest relevant page or event slice, and do not expand a complete omitted range by default.",
+      "Use viking_read for indexed direct URIs; use event_id with bounded event_offset/event_limit only when no URI is available.",
     ],
     parameters: Type.Object({
       archive_id: Type.Optional(Type.String({
         description: "Archive ID (arc_<64 hex>) produced by this session; omit to list committed archives currently known in this process",
       })),
+      event_id: Type.Optional(Type.String({
+        description: "Event ID from this archive's index; only oversized events without a read URI are returned in bounded slices",
+      })),
       offset: Type.Optional(Type.Number({ description: "Event index offset for paging (default 0)" })),
-      limit: Type.Optional(Type.Number({ description: "Max events per page (default 50)" })),
+      limit: Type.Optional(Type.Number({ description: "Max events per index page (default 50)" })),
+      event_offset: Type.Optional(Type.Number({ description: "Code-point offset within an oversized event (default 0)" })),
+      event_limit: Type.Optional(Type.Number({ description: "Max code points from an oversized event (default 4000, max 16000)" })),
     }),
     async execute(
       _id: string, params: any, _signal: AbortSignal,
@@ -431,6 +471,7 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
         const limit = Math.min(200, Math.max(1, Math.floor(Number(params.limit) || 50)));
         const page = archives.slice(offset, offset + limit);
         const pageRange = page.length > 0 ? `${offset + 1}-${offset + page.length}` : "none";
+        observe.emit("archive_retrieval", "list", limit, page.length, archives.length);
         const lines = page.map((descriptor: any, index: number) => {
           const manifest = descriptor.manifest;
           return `- [${offset + index + 1}] ${manifest.archiveId} — ${manifest.eventCount} events,` +
@@ -450,9 +491,40 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
         observe.emit("tool_scope", "viking_archive_expand", "archive", Boolean(scoped()), "deny", 0, 1);
         return { content: [{ type: "text", text: `Refused: ${archiveId} is not a valid archive id.` }] };
       }
+      const eventId = String(params.event_id ?? "").trim();
+      if (eventId && !/^evt_[0-9a-f]{64}$/.test(eventId)) {
+        observe.emit("tool_scope", "viking_archive_expand", "archive", Boolean(scoped()), "deny", 0, 1);
+        return { content: [{ type: "text", text: `Refused: ${eventId} is not a valid event id.` }] };
+      }
       observe.emit("tool_scope", "viking_archive_expand", "archive", Boolean(scoped()), "allow", 1, 0);
       try {
         const { manifest, events } = await sync.expandArchive(archiveId);
+        if (eventId) {
+          const event = events.find((candidate: any) => candidate.eventId === eventId);
+          if (!event) {
+            return { content: [{ type: "text", text: `Event ${eventId} is not referenced by archive ${archiveId}.` }] };
+          }
+          const bytes = recordedEventBytes(event);
+          const uri = sync.eventStorageUri(event.eventId, bytes.length);
+          if (uri) {
+            observe.emit("archive_retrieval", "direct", 1, 1, 1);
+            return { content: [{
+              type: "text",
+              text: `Event ${eventId} has an authoritative direct representation. Read the smallest required level with viking_read: ${uri}`,
+            }] };
+          }
+          const points = Array.from(bytes.toString("utf8"));
+          const eventOffset = Math.min(points.length, Math.max(0, Math.floor(Number(params.event_offset) || 0)));
+          const eventLimit = Math.min(16000, Math.max(1, Math.floor(Number(params.event_limit) || 4000)));
+          const slice = points.slice(eventOffset, eventOffset + eventLimit).join("");
+          const emitted = Math.min(eventLimit, points.length - eventOffset);
+          observe.emit("archive_retrieval", "chunk", eventLimit, emitted, points.length);
+          return { content: [{
+            type: "text",
+            text: `Oversized event ${eventId}; canonical JSON code points ${eventOffset + 1}-${eventOffset + emitted}` +
+              ` of ${points.length}. Continue with event_offset=${eventOffset + emitted} and the smallest needed event_limit.\n\n${slice}`,
+          }] };
+        }
         const offset = Math.min(events.length, Math.max(0, Math.floor(Number(params.offset) || 0)));
         const limit = Math.min(200, Math.max(1, Math.floor(Number(params.limit) || 50)));
         const page = events.slice(offset, offset + limit);
@@ -462,7 +534,7 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
           `events ${manifest.eventCount} (${manifest.firstEventId} → ${manifest.lastEventId})`,
           `content ${manifest.contentHash}`,
           `showing ${pageRange} of ${events.length}; page with offset/limit.`,
-          "This is an index, not full content: use viking_read when an entry exposes a read URI; oversized chunked entries have no single read URI.",
+          "This is an index, not full content: use viking_read for a read URI; for an oversized event without one, pass its event_id and bounded event_offset/event_limit.",
         ].join("\n");
         const body = page.map((event: any, index: number) => {
           const uri = sync.eventStorageUri(event.eventId, recordedEventBytes(event).length);
@@ -474,6 +546,7 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
           if (uri) lines.push(`    read: ${uri}`);
           return lines.join("\n");
         });
+        observe.emit("archive_retrieval", "index", limit, page.length, events.length);
         return { content: [{ type: "text", text: `${header}\n\n${body.join("\n")}` }] };
       } catch (error: any) {
         return { content: [{ type: "text", text: `Archive not available: ${error?.name || "Error"}` }] };

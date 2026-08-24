@@ -135,6 +135,32 @@ function sumWeight(events) {
     : total + group.events.reduce((sum, event) => sum + eventTokenWeight(event), 0), 0);
 }
 
+function omittedArchiveContext(checkpoint, branchEvents, archives, rawTailStart) {
+  const sourceIndex = (archives ?? []).findIndex(
+    (descriptor) => descriptor?.manifest?.archiveId === checkpoint?.sourceArchiveId,
+  );
+  if (sourceIndex < 0 || sourceIndex === archives.length - 1) return null;
+
+  const omittedArchives = archives.slice(sourceIndex + 1);
+  const end = branchEvents.findIndex(
+    (event) => event.eventId === omittedArchives.at(-1)?.manifest?.lastEventId,
+  );
+  if (end < rawTailStart) return null;
+
+  const events = branchEvents.slice(rawTailStart, end + 1);
+  const first = omittedArchives[0].manifest;
+  const last = omittedArchives.at(-1).manifest;
+  const text = [
+    `<openviking-omitted-context checkpoint="${checkpoint.checkpointId}" first-archive="${first.archiveId}" last-archive="${last.archiveId}" archive-count="${omittedArchives.length}" first-event="${events[0].eventId}" last-event="${events.at(-1).eventId}" event-count="${events.length}">`,
+    "Events in this range remain stored but were omitted from this request to keep the provider context bounded.",
+    "Use the checkpoint and visible recent messages by default. If an omitted fact could change the next action,",
+    "inspect only the smallest relevant page with viking_archive_expand; use viking_search when only keywords or meaning are known.",
+    "Do not load the complete omitted range by default.",
+    "</openviking-omitted-context>",
+  ].join("\n");
+  return { text, events, archives: omittedArchives, end };
+}
+
 /**
  * dry-run：把候选上下文 materialize 成任务模型将会看到的有序分段。
  *
@@ -144,25 +170,45 @@ function sumWeight(events) {
  * 装不装得下不在这里判定：checkpoint 正文只有完整或不用两种形态，是否超出
  * `checkpointTokenBudget` 与容量一样是候选的适配问题，由 `evaluateEligibility` 单点回答。
  */
-export function materializeActiveContext({ context, checkpoint, branchEvents, systemPrompt = "", toolDefinitions = "" }) {
+export function materializeActiveContext({
+  context, checkpoint, branchEvents, archives = [], systemPrompt = "", toolDefinitions = "",
+}) {
   const start = branchEvents.findIndex((event) => event.eventId === context?.rawTailStartEventId);
   if (start < 0) throw new Error("raw tail start is not on the current branch");
-  const rawTail = branchEvents.slice(start);
+  const sourceRawTail = branchEvents.slice(start);
+  const omitted = omittedArchiveContext(checkpoint, branchEvents, archives, start);
+  const rawTail = omitted ? branchEvents.slice(omitted.end + 1) : sourceRawTail;
   const anchor = anchorEvents(branchEvents, context.rawTailStartEventId);
   const checkpointBlock = renderCheckpointBlock(checkpoint);
   const tokens = {
     system: contextTokenWeight(systemPrompt),
-    tools: contextTokenWeight(toolDefinitions),
+    tools: contextTokenWeight(toolDefinitions ?? ""),
     checkpoint: contextTokenWeight(checkpointBlock),
     anchor: sumWeight(anchor),
+    omitted: omitted ? contextTokenWeight(omitted.text) : 0,
     rawTail: sumWeight(rawTail),
+    sourceRawTail: sumWeight(sourceRawTail),
   };
-  tokens.payload = tokens.system + tokens.tools + tokens.checkpoint + tokens.anchor + tokens.rawTail;
+  tokens.payload = tokens.system + tokens.tools + tokens.checkpoint + tokens.anchor + tokens.omitted + tokens.rawTail;
+  tokens.pressure = tokens.system + tokens.tools + tokens.checkpoint + tokens.anchor + tokens.sourceRawTail;
   return {
     segments: [
       { kind: "system", text: systemPrompt },
-      { kind: "checkpoint", text: checkpointBlock },
+      {
+        kind: "checkpoint", text: checkpointBlock,
+        checkpointId: checkpoint.checkpointId, sourceArchiveId: checkpoint.sourceArchiveId,
+      },
       { kind: "anchor", events: anchor },
+      ...(omitted ? [{
+        kind: "omitted",
+        text: omitted.text,
+        archiveCount: omitted.archives.length,
+        eventCount: omitted.events.length,
+        eventTokens: sumWeight(omitted.events),
+        firstEventId: omitted.events[0].eventId,
+        lastEventId: omitted.events.at(-1).eventId,
+        occurredAt: omitted.events[0].occurredAt,
+      }] : []),
       { kind: "raw-tail", events: rawTail },
     ],
     tokens,
@@ -180,12 +226,14 @@ function messagesFromEvents(events) {
 export function renderActiveContextMessages(payload) {
   const checkpoint = payloadSegment(payload, "checkpoint");
   const anchor = payloadSegment(payload, "anchor");
+  const omitted = payloadSegment(payload, "omitted");
   const rawTail = payloadSegment(payload, "raw-tail");
   if (!checkpoint || typeof checkpoint.text !== "string" || !rawTail || !Array.isArray(rawTail.events)) {
     throw new Error("ActiveContext payload is not renderable");
   }
   const firstEvent = anchor?.events?.[0] ?? rawTail.events[0];
   const timestamp = Number.isFinite(Date.parse(firstEvent?.occurredAt)) ? Date.parse(firstEvent.occurredAt) : 0;
+  const omittedTimestamp = Number.isFinite(Date.parse(omitted?.occurredAt)) ? Date.parse(omitted.occurredAt) : timestamp;
   return [
     {
       role: "custom",
@@ -195,8 +243,56 @@ export function renderActiveContextMessages(payload) {
       timestamp,
     },
     ...messagesFromEvents(anchor?.events ?? []),
+    ...(omitted ? [{
+      role: "custom",
+      customType: "openviking-omitted-context",
+      content: omitted.text,
+      display: false,
+      timestamp: omittedTimestamp,
+    }] : []),
     ...messagesFromEvents(rawTail.events),
   ];
+}
+
+/** 完整 checkpoint 不适配时，整体省略正文，只保留可恢复身份；不截断或改写 checkpoint 事实。 */
+function checkpointReferencePayload(payload) {
+  const checkpoint = payloadSegment(payload, "checkpoint");
+  if (!checkpoint?.checkpointId || !checkpoint?.sourceArchiveId) return null;
+  const text = [
+    `<openviking-checkpoint-reference id="${checkpoint.checkpointId}" archive="${checkpoint.sourceArchiveId}">`,
+    "The complete checkpoint remains stored but is omitted from this request to keep provider context bounded.",
+    "Use the visible recent messages by default. Recover only a needed fact with viking_search, or inspect",
+    "the smallest relevant Archive page with viking_archive_expand. Do not load the complete range by default.",
+    "</openviking-checkpoint-reference>",
+  ].join("\n");
+  const checkpointTokens = contextTokenWeight(text);
+  return {
+    segments: payload.segments.map((segment) => segment === checkpoint ? { ...segment, text } : segment),
+    tokens: {
+      ...payload.tokens,
+      checkpoint: checkpointTokens,
+      payload: payload.tokens.payload - payload.tokens.checkpoint + checkpointTokens,
+      // pressure represents the complete source candidate and therefore retains the full checkpoint weight.
+      pressure: payload.tokens.pressure,
+    },
+  };
+}
+
+/**
+ * 已激活 provider epoch 暂时无法重算时，用上次有界投影在完整 Pi 消息中的最后一个可见消息
+ * 对齐当前后缀。找不到精确交点就拒绝猜测，避免重复或遗漏当前 turn。
+ */
+export function advanceActiveContextMessages(rendered, current) {
+  if (!Array.isArray(rendered) || rendered.length === 0 || !Array.isArray(current)) return null;
+  for (let left = rendered.length - 1; left >= 0; left--) {
+    if (rendered[left]?.role === "custom") continue;
+    const expected = JSON.stringify(rendered[left]);
+    for (let right = current.length - 1; right >= 0; right--) {
+      if (JSON.stringify(current[right]) !== expected) continue;
+      return [...structuredClone(rendered), ...structuredClone(current.slice(right + 1))];
+    }
+  }
+  return null;
 }
 
 /**
@@ -274,12 +370,14 @@ export function evaluateEligibility({ capacity, takeover, payloadTokens, checkpo
  */
 export function evaluateTakeoverTrigger({
   enabled, eligibility, currentCheckpointId, nextCheckpointId = null, appliedCheckpointId,
-  piUsageTokens, payloadTokens, highWaterTokens, activeHighWaterTokens = highWaterTokens,
+  piUsageTokens, payloadTokens, pressureTokens = payloadTokens, highWaterTokens, activeHighWaterTokens = highWaterTokens,
 }) {
   const epochActive = Boolean(
     currentCheckpointId && appliedCheckpointId && currentCheckpointId === appliedCheckpointId,
   );
-  const usageTokens = epochActive ? payloadTokens : piUsageTokens;
+  // provider payload 经过 Archive 引用保持有界；epoch 的推进仍消费完整来源压力，避免
+  // VLM checkpoint 落后时因过滤后的 payload 变小而永久冻结旧 checkpoint。
+  const usageTokens = epochActive ? pressureTokens : piUsageTokens;
   const selectedHighWaterTokens = epochActive ? activeHighWaterTokens : highWaterTokens;
   const aboveHighWater = Number.isFinite(usageTokens) && Number.isFinite(selectedHighWaterTokens) &&
     usageTokens >= selectedHighWaterTokens;
@@ -302,11 +400,15 @@ const initialState = () => ({
   checkpointId: null,
   rawTailStartEventId: null,
   rawTailEvents: 0,
+  inlineTailEvents: 0,
+  omittedTailEvents: 0,
+  omittedTailTokens: 0,
   eligibility: "no_context",
   capacityTokens: null,
   reserveTokens: null,
   usableTokens: null,
   payloadTokens: null,
+  pressureTokens: null,
   headroomTokens: null,
   lastFailure: null,
 });
@@ -361,7 +463,7 @@ export class ActiveContextManager {
 
     const branch = await this.resolveContext(branchEvents, archives, lastCheckpointId);
     this.observe.emit("active_context_select", branch, archives.length, branchEvents.length);
-    await this.publish({ branchEvents, capacity, systemPrompt, toolDefinitions, factsAvailable });
+    await this.publish({ branchEvents, archives, capacity, systemPrompt, toolDefinitions, factsAvailable });
     return this.status;
   }
 
@@ -385,12 +487,12 @@ export class ActiveContextManager {
     return candidate ? "selected" : invalidated ? "invalidated" : "unavailable";
   }
 
-  async publish({ branchEvents, capacity, systemPrompt, toolDefinitions, factsAvailable }) {
+  async publish({ branchEvents, archives, capacity, systemPrompt, toolDefinitions, factsAvailable }) {
     let candidate = null;
     let missing = !factsAvailable || this.roundFailure ? "facts_unavailable" : "no_context";
     if (this.context && factsAvailable) {
       try {
-        candidate = await this.materialize(branchEvents, { systemPrompt, toolDefinitions });
+        candidate = await this.materialize(branchEvents, { archives, systemPrompt, toolDefinitions });
       } catch (error) {
         this.recordFailure(error, "materialize", "degrade");
         missing = "facts_unavailable";
@@ -405,10 +507,16 @@ export class ActiveContextManager {
     });
     // 没有候选时，"为什么没有"比"没有"本身更有诊断价值：区分尚未形成与来源事实不可读。
     if (!factsAvailable || (!candidate && verdict.eligibility === "no_context")) verdict.eligibility = missing;
+    const rawTail = candidate ? payloadSegment(candidate, "raw-tail") : null;
+    const omitted = candidate ? payloadSegment(candidate, "omitted") : null;
     this.applyState({
       checkpointId: this.context?.checkpointId ?? null,
       rawTailStartEventId: this.context?.rawTailStartEventId ?? null,
-      rawTailEvents: candidate ? payloadSegment(candidate, "raw-tail").events.length : 0,
+      rawTailEvents: (rawTail?.events.length ?? 0) + (omitted?.eventCount ?? 0),
+      inlineTailEvents: rawTail?.events.length ?? 0,
+      omittedTailEvents: omitted?.eventCount ?? 0,
+      omittedTailTokens: omitted?.eventTokens ?? 0,
+      pressureTokens: candidate?.tokens.pressure ?? null,
       ...verdict,
       lastFailure: this.roundFailure,
     });
@@ -426,6 +534,7 @@ export class ActiveContextManager {
     this.observe.emit(
       "active_context_eligibility", this.state.eligibility,
       this.state.capacityTokens, this.state.usableTokens, this.state.payloadTokens, this.state.headroomTokens,
+      this.state.pressureTokens, this.state.inlineTailEvents, this.state.omittedTailEvents, this.state.omittedTailTokens,
     );
     if (JSON.stringify(previous) !== JSON.stringify(this.state)) {
       this.observe.emit("active_context_state", "change", previous, this.state);
@@ -443,12 +552,13 @@ export class ActiveContextManager {
     return checkpoint;
   }
 
-  async materializeFor(context, branchEvents, { systemPrompt = "", toolDefinitions = null } = {}) {
+  async materializeFor(context, branchEvents, { archives = [], systemPrompt = "", toolDefinitions = null } = {}) {
     if (!context) return null;
     return materializeActiveContext({
       context,
       checkpoint: await this.loadCheckpoint(context),
       branchEvents,
+      archives,
       systemPrompt,
       toolDefinitions,
     });
@@ -478,8 +588,8 @@ export class ActiveContextManager {
       let currentPayload = null;
       let advance = allowAdvance;
       if (!advance && this.context && Number.isFinite(advanceHighWaterTokens)) {
-        currentPayload = await this.materializeFor(this.context, branchEvents, { systemPrompt, toolDefinitions });
-        advance = Boolean(currentPayload && currentPayload.tokens.payload >= advanceHighWaterTokens);
+        currentPayload = await this.materializeFor(this.context, branchEvents, { archives, systemPrompt, toolDefinitions });
+        advance = Boolean(currentPayload && currentPayload.tokens.pressure >= advanceHighWaterTokens);
       }
       const latest = advance ? selectActiveContext(branchEvents, archives, lastCheckpointId) : null;
       const candidate = latest ?? this.context;
@@ -488,7 +598,7 @@ export class ActiveContextManager {
 
       const payload = candidateIsCurrent && currentPayload
         ? currentPayload
-        : await this.materializeFor(candidate, branchEvents, { systemPrompt, toolDefinitions });
+        : await this.materializeFor(candidate, branchEvents, { archives, systemPrompt, toolDefinitions });
       const verdict = evaluateEligibility({
         capacity,
         takeover: this.takeover,
@@ -511,7 +621,7 @@ export class ActiveContextManager {
       if (verdict.eligibility !== "eligible" && this.context && !candidateIsCurrent) {
         statusContext = this.context;
         statusPayload = currentPayload ?? await this.materializeFor(
-          this.context, branchEvents, { systemPrompt, toolDefinitions },
+          this.context, branchEvents, { archives, systemPrompt, toolDefinitions },
         );
         statusVerdict = evaluateEligibility({
           capacity,
@@ -520,10 +630,36 @@ export class ActiveContextManager {
           checkpointTokens: statusPayload.tokens.checkpoint,
         });
       }
+      if (!rendered && statusVerdict.eligibility === "eligible") {
+        rendered = renderActiveContextMessages(statusPayload);
+      }
+      if (!rendered && ["capacity_mismatch", "checkpoint_over_budget"].includes(statusVerdict.eligibility)) {
+        const referencePayload = checkpointReferencePayload(statusPayload);
+        const referenceVerdict = referencePayload ? evaluateEligibility({
+          capacity,
+          takeover: { ...this.takeover, checkpointTokenBudget: null },
+          payloadTokens: referencePayload.tokens.payload,
+          checkpointTokens: null,
+        }) : null;
+        if (referenceVerdict?.eligibility === "eligible") {
+          rendered = renderActiveContextMessages(referencePayload);
+          statusPayload = referencePayload;
+          statusVerdict = {
+            ...statusVerdict,
+            payloadTokens: referenceVerdict.payloadTokens,
+            headroomTokens: referenceVerdict.headroomTokens,
+          };
+        }
+      }
       this.applyState({
         checkpointId: statusContext.checkpointId,
         rawTailStartEventId: statusContext.rawTailStartEventId,
-        rawTailEvents: payloadSegment(statusPayload, "raw-tail").events.length,
+        rawTailEvents: payloadSegment(statusPayload, "raw-tail").events.length +
+          (payloadSegment(statusPayload, "omitted")?.eventCount ?? 0),
+        inlineTailEvents: payloadSegment(statusPayload, "raw-tail").events.length,
+        omittedTailEvents: payloadSegment(statusPayload, "omitted")?.eventCount ?? 0,
+        omittedTailTokens: payloadSegment(statusPayload, "omitted")?.eventTokens ?? 0,
+        pressureTokens: statusPayload.tokens.pressure,
         ...statusVerdict,
         lastFailure: null,
       });
@@ -536,16 +672,20 @@ export class ActiveContextManager {
   }
 
   /** Pi compaction 的自包含 checkpoint；事实不可读时返回 null，由 Pi 使用原生 compaction。 */
-  async compaction(branchEvents, tokensBefore) {
+  async compaction(branchEvents, tokensBefore, archives = []) {
     try {
       if (this.state.eligibility !== "eligible" || !activeContextOnBranch(this.context, branchEvents)) return null;
       const checkpoint = await this.loadCheckpoint();
-      const start = branchEvents.find((event) => event.eventId === this.context.rawTailStartEventId);
-      if (!start?.source?.entryId) return null;
-      const summary = renderCheckpointBlock(checkpoint);
+      const payload = materializeActiveContext({ context: this.context, checkpoint, branchEvents, archives });
+      const rawTail = payloadSegment(payload, "raw-tail").events;
+      const omitted = payloadSegment(payload, "omitted");
+      const firstKept = rawTail[0] ?? branchEvents.find((event) => event.eventId === omitted?.lastEventId) ??
+        branchEvents.find((event) => event.eventId === this.context.rawTailStartEventId);
+      if (!firstKept?.source?.entryId) return null;
+      const summary = [renderCheckpointBlock(checkpoint), omitted?.text].filter(Boolean).join("\n\n");
       return {
         summary,
-        firstKeptEntryId: start.source.entryId,
+        firstKeptEntryId: firstKept.source.entryId,
         tokensBefore,
         details: {
           schemaVersion: 1,

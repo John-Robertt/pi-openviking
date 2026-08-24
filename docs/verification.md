@@ -131,7 +131,7 @@ manifest 中的精确依赖、服务和模型身份是可重放的最近验证�
 | sync          | 当前 Pi CLI/lifecycle、真实 `SessionManager`、受支持 OpenViking Content API；涉及模型调用时使用开发模型身份 | Pi JSONL → 全部 `RecordedEvent` → direct/chunked 对象 → entry ACK 逐项对应；重放、409、断线、shutdown 和清理成立            |
 | archive       | 受管 OpenViking 的 Archive 发布中断/客户端重启，以及多个真实 Pi workload 形成的 Archive                     | 原子可见、幂等恢复、确定 expand、event 范围、entry/step 边界和每种真实样本的 Archive 完整性成立                           |
 | checkpoint    | archive gate 的各真实 Archive 与开发模型身份中的 VLM                                                        | 最小 checkpoint、统一 narrative 的原生章节规范化与当前目标/有效约束收敛、来源/hash/完整事实链、失败重试、并发与重启恢复、媒体摘要、积压和终态清理正确；媒体语义处理与 checkpoint 生成分别满足 manifest 阈值 |
-| context       | 真实 Pi session、候选 checkpoint/raw tail 和开发模型身份中的 task-model 元数据；请求保持在自动高水位以下 | 候选 payload 可由源事件逐项重算，entry/step/anchor 完整；容量来自 Pi，显式高水位不改变 payload/headroom/eligibility       |
-| takeover      | 真实 Pi `context`/compaction hook、开发 task provider、可控 OpenViking 降级与容量不匹配                   | provider payload/稳定前缀/cache 证据与候选一致；epoch 内从当前分支 payload 判定 usable-token 高水位并保持固定；重启/分支/fail-open 与 compaction 正确 |
+| context       | 真实 Pi session、候选 checkpoint/Archive/raw tail 和开发模型身份中的 task-model 元数据；请求保持在自动高水位以下 | provider payload 与完整来源 pressure 可分别从事件重算，entry/step/anchor/省略边界完整；容量来自 Pi，显式高水位不改变 payload/headroom/eligibility |
+| takeover      | 真实 Pi `context`/compaction hook、开发 task provider、可控 OpenViking 降级、容量不匹配和超预算 checkpoint | provider payload 与有界候选一致；epoch 按 pressure 推进；引用 fallback、精确后缀延续、重启/分支/降级正确；扩展不主动 compaction |
 | budget        | 发布基线 task/VLM 组合和多个彼此独立的真实 100k+ workload；每个 workload 至少重复三次                       | 全链一致且实际 token、吞吐、延迟和容量余量满足 manifest；基线身份留在 gate 证据，运行时 eligibility 继续消费 Pi 当前模型容量 |
-| retrieval     | 同一 release run 的 budget gate summary，以及在本次 namespace 重建的对应 events/Archive/checkpoint          | summary/manifest hash 匹配；索引就绪及重启后 search/browse/expand 返回预期身份和来源链；过滤、隐藏 raw event 隔离及清理成立 |
+| retrieval     | 随机 session namespace 中由真实 Pi JSONL、Archive、checkpoint 与新进程重建的派生索引；确定性 provider 只选择生产工具 | 一个已归档 raw fact 可语义发现并返回 locator；raw/checkpoint 同形状写入由 deterministic/观察证明；权威来源链、Archive 分页、direct URI、超大事件切片、scope clamp、完整脱敏观察与所属资源清理成立 |

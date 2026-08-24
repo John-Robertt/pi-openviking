@@ -253,8 +253,10 @@ Archive 创建由 token 压力驱动，支持单个超长用户轮次，并保�
 上下文的内容，不是一次 provider 请求的累计 usage（后者含 system prompt 与工具定义，与事件范围不同
 尺度）。首次 Archive 的目标压力为
 `archive.rawTailTokenBudget + archive.chunkTokenBudget`，之后每累计一个
-`archive.chunkTokenBudget` 形成下一 Archive，同时保留 `archive.rawTailTokenBudget`。边界落在压力轴的
-绝对位置上，因而后续事件不会移动已固定的边界；候选边界若会拆开一个 entry 或 step，则退回该原子范围起点之前。
+`archive.chunkTokenBudget` 形成下一 Archive，并以 `archive.rawTailTokenBudget` 作为 raw tail 的目标保留量。边界落在
+压力轴的绝对位置上，因而后续事件不会移动已固定的边界；候选边界若会拆开一个 entry 或 step，则退回该原子
+范围起点之前。已由后继事件证明封闭的原子组若自身超过 chunk 预算，可整体形成 Archive；此时 raw tail 可低于
+目标保留量，但至少保留一个独立后继原子组，末尾仍可能增长的原子组不归档。
 
 ### 4. Checkpoint 生成与消费状态
 
@@ -325,12 +327,13 @@ system + 已归档的 raw 前缀 + 最近 raw tail
 切换为：
 
 ```text
-system + active VLM checkpoint + 原始用户指令 anchor + 最近 raw tail
+system + active VLM checkpoint（或完整 checkpoint 的身份引用）+ 原始用户指令 anchor + 有界省略说明 + 最近 raw tail
 ```
 
-持久化 Pi session 的 JSONL 始终保持完整。checkpoint 标明其 Archive 输入，raw-tail 边界
-保持完整 tool call/result step。有效 `ActiveContext` 就绪后执行接管；首次接管就绪前继续使用
-完整 Pi 上下文。Pi 自身触发压缩时按“与 Pi compaction 协作”执行。
+持久化 Pi session 的 JSONL 始终保持完整。checkpoint 标明其 Archive 输入；该 Archive 之后已经提交的
+Archive 以固定大小的省略说明表达身份、事件边界和数量，任务模型默认只消费 checkpoint 与最近 raw tail，需要时
+通过检索和分页展开选择性恢复。raw-tail 边界保持完整 Pi entry 与 tool call/result step。有效 `ActiveContext`
+就绪后执行接管；首次接管前由 Pi 的原生容量管理负责完整上下文。Pi 自身触发压缩时按“与 Pi compaction 协作”执行。
 
 ### 6. 活动上下文与 prompt cache 稳定性
 
@@ -347,15 +350,16 @@ interface ActiveContext {
 ```
 
 `ActiveContext` 在下一次上下文高水位到达前保持固定，新产生的 assistant/tool 事件追加在该
-稳定前缀之后。下一次接管原子替换 checkpoint 和 raw-tail 起点。cache epoch 是
-`ActiveContext` 稳定期间的运行时视图。旧候选因后续增长进入容量不匹配，或 checkpoint 超出配置预算，而当前分支已有
-更新 checkpoint 时，同一次 `context` hook 可以改用更新候选重新判定并原子推进；更新候选仍不适配时保留原边界并
-使用完整 Pi 上下文。
-自动高水位在首次接管时比较完整 Pi context usage 与候选 headroom；epoch 建立后比较当前 ActiveContext payload
-与任务模型的全部 usable tokens，避免把同一候选 payload 同时计入 usage 又从阈值扣除。每次 `context` hook
-都从当时的当前分支重算活动 payload 后再判定推进，不能复用上一次 hook 的长度快照。显式高水位对两个阶段均生效。
-候选容量只计入 Pi 实际映射到 provider messages 的 entry；同步与来源链保留但 Pi 不渲染的 custom 状态 entry
-不占 provider payload 容量。
+稳定前缀之后。下一次接管原子替换 checkpoint 和 raw-tail 起点。cache epoch 是 `ActiveContext` 稳定期间的运行时视图。
+每次 `context` hook 都从当前分支重算候选：provider 可见 `payload` 由 system、tools、完整 checkpoint、anchor、
+有界省略说明和最近 raw tail 组成并用于容量判定；`pressure` 额外按完整来源 raw tail 计量并用于高水位推进，避免
+已归档内容移出 provider 后冻结旧 checkpoint。候选容量只计入 Pi 实际映射到 provider messages 的 entry；同步与
+来源链保留但 Pi 不渲染的 custom 状态 entry 不占 provider payload。
+
+旧候选无法重新计算时，已建立的 provider epoch 通过与当前 Pi messages 的最后一个精确交点追加新后缀；找不到交点即
+拒绝猜测。完整 checkpoint 超出策略预算，或完整候选超出模型可用容量时，checkpoint 正文作为整体离开 provider 请求，
+请求只保留 checkpoint/Archive 身份引用、anchor、省略说明和最近 raw tail；权威 checkpoint 本身不截断、不改写。
+更新 checkpoint 只有在新候选可渲染、容量适配且持久化成功后才原子推进；否则保留原 `ActiveContext` 边界。
 
 因此，Archive 频率和接管频率相互独立：后台可以频繁归档，但 provider 上下文替换应有意
 保持低频。
@@ -377,16 +381,20 @@ prompt cache 前缀稳定性。发生 Pi 原生压缩时，摘要里没有归档
 
 ### 8. 检索与恢复
 
-隐藏 raw event 对象是检索派生物的数据源，但不是用户语义结果。现有 OpenViking Content 存储可能为其生成服务端
-派生语义对象，因此 checkpoint 输入和所有 provider-facing recall 路径都按 `/.pi-openviking` 来源 URI 排除内部事实；
-无法证明来源的服务端聚合正文不会直接注入。检索阶段从
-已确认 raw events 和 checkpoint 建立独立派生索引，标明原始记录或 VLM 理解、时间、模型、
-event ID、内容 hash 和来源 URI；删除索引不影响权威事件，并可从事件对象重建。Archive manifest
-提供范围过滤、browse、expand 和完整性校验。每个搜索结果都能按来源 URI 展开到原始事件。
+隐藏 raw event 对象是检索派生物的数据源，但不是用户语义结果。OpenViking Content 存储可能为内部对象生成派生 face；
+provider-facing recall 和公共知识搜索都排除 `/.pi-openviking` 命中，无法从受控索引路径还原来源身份的内部 face 不返回。
 
-当前任务按 `checkpointId` 确定性装载续接 checkpoint；语义搜索负责发现相关历史。任务模型
-判断记录的含义、范围和适用性。provider-facing recall block 固定声明检索记忆可能不完整或过期，其角色是辅助证据，并为每个条目明确标注相关度和来源 URI；
-当前对话和已验证事实具有更高优先级，历史正文按资料而非当前指令消费，只有详情不足且条目携带 URI 时才按需展开。checkpoint 链表达跨 Archive 的长期理解。
+每个已提交 Archive 的 raw event 与每个已验证 checkpoint 都投影到当前 session 的同一派生索引。记录只包含 `sourceType`、
+`archiveId`、`eventId` 或 `checkpointId`，以及最多 32000 Unicode code points 的语义正文；完整事件、checkpoint、hash、
+模型和版本继续只存在于权威对象。索引位置由 session 与来源身份确定，内容不可变；删除索引不影响权威事实，进程重启时
+从当前事件、Archive 与 checkpoint 重新写出，写入失败不改变 ACK、Archive 或 checkpoint，并在下次同步重试。
+
+`viking_search` 同时查询公共知识与当前 session 索引，把索引文件或其服务端派生 face 归一化为有界 abstract 和稳定
+Archive/event/checkpoint locator。合法但越界的只读 search scope 夹回当前 session 根；非法 URI 和精确 read/expand 越界请求
+在 I/O 前拒绝。raw event 详情沿 `archiveId` → 事件索引 → direct URI 或有界 code-point 切片回读；Archive manifest 与事件
+规范字节提供身份和完整性证明。checkpoint 命中用于语义发现及定位其来源 Archive，模型、prompt 版本和来源 hash 从权威
+checkpoint 事实验证，不复制到索引。当前任务按 `checkpointId` 确定性装载续接 checkpoint；历史正文作为辅助证据消费，
+当前对话和已验证事实具有更高优先级。
 
 ## 最小权威状态
 
@@ -444,8 +452,8 @@ VLM request 和明确失败是追加式 `RecordedEvent`。summary、索引、通
 - `archive.chunkTokenBudget` 控制每次 Archive 的目标增量；
 - `archive.rawTailTokenBudget` 控制 Archive 后保留的最近原始上下文预算；
 - `takeover.contextTokenThreshold` 是任务模型上下文高水位，`0` 表示按当前模型容量自动确定；
-- `takeover.checkpointTokenBudget` 控制接管时可完整装载的 VLM checkpoint 上限；正文超过上限时不截断，而以独立的
-  checkpoint 超预算判定与容量不匹配区分，接管与 ActiveContext compaction 均 fail-open 到 Pi 原生完整上下文；
+- `takeover.checkpointTokenBudget` 控制接管时完整装载 VLM checkpoint narrative 的上限；正文超过上限时不截断，
+  provider 请求改用 checkpoint/Archive 身份引用，ActiveContext compaction 保持 Pi 原生实现；
 - `takeover.enabled` 控制任务模型上下文替换，事件记录和 Archive 独立持续运行。
 
 Archive 与 takeover 发布默认预算由端到端预算校准（见 [`docs/roadmap.md`](./roadmap.md)）验证，根据 Archive step
@@ -457,8 +465,9 @@ Archive 与 takeover 发布默认预算由端到端预算校准（见 [`docs/roa
 Pi 负责选择当前任务模型，takeover eligibility 读取该模型报告的 `contextWindow` 和 `maxTokens`。
 `contextTokenThreshold=0` 时，首次接管高水位为候选 `headroomTokens`，接管后的 epoch 高水位为
 `usableTokens = contextWindow - maxTokens`；容量判定始终使用
-`headroomTokens = usableTokens - payloadTokens`。高水位为正且容纳目标上下文时进入 eligible；容量未知或余量不足时保持 inactive，并由
-`/viking` 报告。每个任务模型按自身容量获得独立判定，发布基线的性能与吞吐保证适用于 manifest 记录的模型组合。
+`headroomTokens = usableTokens - payloadTokens`。完整候选余量不足时，以完整 checkpoint 的身份引用重算 provider
+payload；引用候选适配时保持有界接管，同时由 `/viking` 保留原完整候选的容量不匹配或 checkpoint 超预算成因。
+每个任务模型按自身容量获得独立判定，发布基线的性能与吞吐保证适用于 manifest 记录的模型组合。
 发布验收基线的 task/VLM 组合由用户决定，变更后重跑相关阶段；Pi 中的任务模型切换直接进入当前容量判定。
 大型 payload 通过完整存储和可追溯引用外置；当前任务模型的剩余容量定义非外置原子输入的接管上限。
 Pi compaction 仍由 Pi 的运行时条件触发。

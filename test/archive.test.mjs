@@ -108,6 +108,17 @@ test("压力不足时不形成 Archive", () => {
   assert.deepEqual(planArchives([], BUDGETS), []);
 });
 
+test("单个原子组超过 chunk budget 时整体归档，不会永久撑大 raw tail", () => {
+  const events = eventsOf([{ role: "user", chars: 12000 }, { role: "assistant", chars: 4000 }]);
+  const plans = planArchives(events, BUDGETS);
+  assert.deepEqual(plans[0], { startIndex: 0, endIndex: 0 });
+  assert.ok(eventTokenWeight(events[0]) > BUDGETS.chunkTokenBudget);
+  assert.ok(plans.every(({ startIndex, endIndex }) => startIndex <= endIndex && endIndex < events.length));
+  const archivedEnd = plans.at(-1).endIndex;
+  assert.ok(events.slice(archivedEnd + 1).reduce((sum, event) => sum + eventTokenWeight(event), 0)
+    <= BUDGETS.rawTailTokenBudget + BUDGETS.chunkTokenBudget);
+});
+
 test("边界退回 step 起点之前，tool call/result 不被拆开", () => {
   const events = eventsOf([
     { role: "user", chars: 4000 },

@@ -132,16 +132,21 @@ npx pi-openviking@latest credentials
 }
 ```
 
-`archive.chunkTokenBudget` 控制每次 Archive 的目标增量，`archive.rawTailTokenBudget` 控制归档后保留
-最近原始上下文。`takeover.enabled` 控制是否允许 OpenViking 在 Pi `context` hook 中替换 provider 可见上下文；
+`archive.chunkTokenBudget` 控制每次 Archive 的目标增量，`archive.rawTailTokenBudget` 控制归档后最近原始上下文的
+目标保留量；超出 chunk 预算的原子 entry/step 整体归档时，保留量可低于目标，但仍保留独立后继原子组。
+`takeover.enabled` 控制是否允许 OpenViking 在 Pi `context` hook 中替换 provider 可见上下文；
 `takeover.contextTokenThreshold` 控制触发接管的任务模型上下文高水位，`0` 时使用 Pi 报告容量与当前候选余量自动确定；
-`takeover.checkpointTokenBudget` 限制接管和 ActiveContext compaction 可完整装载的 checkpoint 正文；超过上限时
-保持 Pi 完整上下文与原生 compaction，不使用不完整 checkpoint。
+`takeover.checkpointTokenBudget` 限制 provider 请求可完整装载的 checkpoint narrative；超过上限时完整 checkpoint
+仍保存在 OpenViking，请求改用 checkpoint/Archive 身份引用，ActiveContext compaction 使用 Pi 原生实现。
 
-只有存在 eligible `ActiveContext` 且当前 context usage 到达高水位时，provider messages 才会被替换为 checkpoint、
-原始用户指令 anchor 与 raw tail；否则继续使用完整 Pi 上下文。已接管的候选容量不匹配或 checkpoint 超预算、且当前分支
-已有更新 checkpoint 时，下一次请求直接改用更新候选重新判定；更新候选仍不适配时保留原边界并继续使用完整 Pi 上下文。
-Pi 触发 compaction 时，扩展只在同一 ActiveContext 可读时提供自包含 checkpoint，不可用时保留 Pi 原生 compaction。
+存在 eligible `ActiveContext` 且当前 context usage 到达高水位时，provider messages 替换为 checkpoint、原始用户指令
+anchor、有界省略说明与最近 raw tail。省略说明覆盖 checkpoint 来源之后已经提交的 Archive，提供身份与事件边界；
+任务默认不加载该范围，需要细节时只展开最小相关页。provider 容量按有界 payload 判定，checkpoint 推进按完整来源
+pressure 判定。完整候选容量不适配或 checkpoint 超预算时，请求使用 checkpoint/Archive 身份引用，不恢复完整消息前缀。
+
+已建立的接管 epoch 在服务或事实暂不可读时，按与当前 Pi messages 的最后一个精确交点延续上次有界投影；新候选只有
+在当前分支可渲染、容量适配并成功持久化后才替换旧边界。尚未建立接管 epoch 时，Pi 继续负责原生上下文容量管理。
+Pi 触发 compaction 时，扩展只在同一 ActiveContext eligible 且可读时提供自包含 checkpoint，其他情况使用 Pi 原生 compaction。
 接管替换与原生压缩都会让早期上下文离开模型视野：checkpoint 正文固定携带恢复指引；原生压缩后的下一轮请求，
 扩展会在用户消息前补一段一次性指引，列出当前进程在本会话已验证的 Archive，并指明用 `viking_search`、
 `viking_archive_expand` 以及事件索引提供直读 URI 时的 `viking_read` 找回细节。该一次性指针绑定产生压缩的当前进程和
@@ -237,15 +242,24 @@ ACK 文件不包含 transcript，活动上下文文件只包含 `checkpointId` �
 
 | 工具                    | 作用                               |
 | ----------------------- | ---------------------------------- |
-| `viking_search`         | 语义搜索                           |
+| `viking_search`         | 搜索公共知识及当前 session 的可重建历史索引，历史命中返回 Archive/event/checkpoint locator |
 | `viking_read`           | 按 abstract、overview 或 full 读取 |
 | `viking_browse`         | 浏览 URI 或查看元数据              |
 | `viking_remember`       | 显式提交一条待抽取记忆             |
 | `viking_forget`         | 删除普通记忆 URI 或高置信匹配      |
 | `viking_add_resource`   | 导入 HTTP URL                      |
-| `viking_archive_expand` | 列出当前进程已知的本会话 Archive，或按 `archiveId` 分页列出事件索引（身份、类型、权重、摘要，以及 direct 表示可用时的单事件读取 URI） |
+| `viking_archive_expand` | 列出当前会话可验证的 committed Archives，或按 `archiveId` 分页列出事件索引并有界读取单事件 |
+
+`viking_search` 的 session 历史命中只返回有界 abstract 与来源 locator，不直接暴露 `.pi-openviking` 内部对象或完整正文。
+合法但越界的 search scope 会夹回当前 session 根；非法 URI 仍被拒绝。raw event 命中用 `viking_archive_expand` 沿
+Archive/event 身份恢复，checkpoint 命中用其来源 Archive 定位对应原始事实。
 
 原始事件同步不经过这些工具。
+
+`viking_archive_expand` 采用逐层收窄的恢复路径：省略 `archive_id` 分页列出 Archive；指定 `archive_id` 后用
+`offset`/`limit` 分页查看事件索引；索引给出 direct URI 时用 `viking_read`；仅当超大事件没有 direct URI 时，
+同时指定 `event_id`，并用 `event_offset`/`event_limit` 读取所需 code-point 切片。Archive 和索引页默认 50、最多
+200 项；事件切片默认 4000、最多 16000 个 code points。工具不会默认输出完整 Archive payload。
 
 ## 9. 故障排查
 

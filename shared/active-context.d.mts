@@ -33,22 +33,46 @@ export interface ActiveContextStatus {
   checkpointId: string | null;
   rawTailStartEventId: string | null;
   rawTailEvents: number;
+  inlineTailEvents: number;
+  omittedTailEvents: number;
+  omittedTailTokens: number;
   eligibility: ActiveContextEligibility;
   capacityTokens: number | null;
   reserveTokens: number | null;
   usableTokens: number | null;
   payloadTokens: number | null;
+  pressureTokens: number | null;
   headroomTokens: number | null;
   lastFailure: string | null;
 }
 
 export type ActiveContextSegment =
   | { kind: "system" | "checkpoint"; text: string }
+  | {
+      kind: "omitted";
+      text: string;
+      archiveCount: number;
+      eventCount: number;
+      eventTokens: number;
+      firstEventId: string;
+      lastEventId: string;
+      occurredAt: string;
+    }
   | { kind: "anchor" | "raw-tail"; events: PiRecordedEventV1[] };
 
 export interface ActiveContextPayload {
   segments: ActiveContextSegment[];
-  tokens: { system: number; tools: number; checkpoint: number; anchor: number; rawTail: number; payload: number };
+  tokens: {
+    system: number;
+    tools: number;
+    checkpoint: number;
+    anchor: number;
+    omitted: number;
+    rawTail: number;
+    sourceRawTail: number;
+    payload: number;
+    pressure: number;
+  };
 }
 
 export interface EligibilityVerdict {
@@ -89,11 +113,13 @@ export function materializeActiveContext(input: {
   context: ActiveContextV1;
   checkpoint: CheckpointV2;
   branchEvents: PiRecordedEventV1[];
+  archives?: ArchiveDescriptor[];
   systemPrompt?: string;
   toolDefinitions?: string;
 }): ActiveContextPayload;
 export function payloadSegment(payload: ActiveContextPayload | null, kind: string): ActiveContextSegment | null;
 export function renderActiveContextMessages(payload: ActiveContextPayload): any[];
+export function advanceActiveContextMessages(rendered: any[], current: any[]): any[] | null;
 export function renderCompactionPointer(archives: Array<{ manifest: { archiveId: string; eventCount: number } }>): string;
 export function evaluateEligibility(input: {
   capacity: TaskModelCapacity | null;
@@ -109,6 +135,7 @@ export function evaluateTakeoverTrigger(input: {
   appliedCheckpointId: string | null;
   piUsageTokens: number | null;
   payloadTokens: number | null;
+  pressureTokens?: number | null;
   highWaterTokens: number | null;
   activeHighWaterTokens?: number | null;
 }): {
@@ -132,7 +159,7 @@ export class ActiveContextManager {
   update(sessionId: string, input?: ActiveContextUpdateInput): Promise<ActiveContextStatus>;
   materialize(
     branchEvents: PiRecordedEventV1[],
-    options?: { systemPrompt?: string; toolDefinitions?: string },
+    options?: { archives?: ArchiveDescriptor[]; systemPrompt?: string; toolDefinitions?: string },
   ): Promise<ActiveContextPayload | null>;
   takeoverMessages(
     branchEvents: PiRecordedEventV1[],
@@ -147,7 +174,7 @@ export class ActiveContextManager {
       advanceHighWaterTokens?: number | null;
     },
   ): Promise<any[] | null>;
-  compaction(branchEvents: PiRecordedEventV1[], tokensBefore: number): Promise<{
+  compaction(branchEvents: PiRecordedEventV1[], tokensBefore: number, archives?: ArchiveDescriptor[]): Promise<{
     summary: string;
     firstKeptEntryId: string;
     tokensBefore: number;

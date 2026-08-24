@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "gate": "verify:retrieval:live",
+  "purpose": "检索与恢复真实验收门禁：在随机 session namespace 中由真实 Pi JSONL 形成 raw events、Archive 与 checkpoint，重启后通过生产 viking_search/viking_read/viking_archive_expand 证明语义发现、权威回读、有界分页/切片、命名空间约束、脱敏观察和所属资源清理。",
+  "mechanism": {
+    "selected": "从已归档 raw events 与已验证 checkpoint 写出同一形状的有界、不可变、可重建检索记录；搜索只返回 sourceType 与 Archive/event/checkpoint locator，正文和完整性仍由权威事件与 manifest 提供。",
+    "evidence": "verify:archive:live、verify:checkpoint:live 与 verify:budget:live 已分别以 119/119、139/139、746/746 关闭上游事实、VLM 消费和容量边界；本 gate 只新增检索出口的真实重启与工具链证据。",
+    "falsifiedAlternatives": [
+      "新增 viking_event_read：事件直读已有 viking_read，超大事件已有 viking_archive_expand 的有界切片",
+      "把 Archive manifest、raw event 或 checkpoint 改成搜索对象：会混淆权威事实与可删除派生物",
+      "直接返回 OpenViking 为内部目录生成的 abstract：目录 face 不能稳定证明 sourceType 或源对象身份",
+      "在本 gate 重复捕获 ActiveContext provider payload 或测试 Pi transport：对应责任已由 context/takeover gate 和 Pi 自身承担"
+    ]
+  },
+  "identities": {
+    "pi": {
+      "package": "@earendil-works/pi-coding-agent",
+      "version": "0.84.2",
+      "binPath": "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+    },
+    "node": { "engines": ">=22.19.0" },
+    "openviking": {
+      "version": "0.4.15",
+      "endpoint": "http://127.0.0.1:19331",
+      "authMode": "dev",
+      "account": "dev",
+      "user": "dev"
+    },
+    "modelProfile": {
+      "path": "dev/model-profile.json",
+      "sha256": "38f28aed9d6ec9a129d9c554a85e47ef316ae226897e066bc9324f05f29ab246"
+    },
+    "protocol": {
+      "eventSchema": "RecordedEventV1/ProducedRecordedEventV1",
+      "archiveSchema": "ArchiveManifestV1",
+      "checkpointPromptVersion": "checkpoint-v2",
+      "activeContextState": ["checkpointId", "rawTailStartEventId"],
+      "sliceUnit": "Unicode code points"
+    },
+    "extensionLoadOrder": ["index.ts"]
+  },
+  "environment": {
+    "isolation": "每个 workload 使用 randomUUID session 和 dev--pi-<sessionId> user namespace；写入前不存在，清理前 marker 必须逐字节匹配。",
+    "extensionConfig": {
+      "content": {
+        "archive": { "chunkTokenBudget": 20000, "rawTailTokenBudget": 20000 },
+        "takeover": { "enabled": true, "contextTokenThreshold": 0, "checkpointTokenBudget": 16000 }
+      }
+    },
+    "pressureSource": {
+      "normalEntries": 3,
+      "normalChars": 80000,
+      "oversizedChars": 8392704,
+      "trailingEntries": 2,
+      "trailingChars": 8000
+    },
+    "transport": "脚本化 Codex Responses SSE provider 只负责确定性选择生产工具；Pi agent loop、context hook、工具执行、同步与观察保持真实，transport 行为不作为本 gate 的产品断言。"
+  },
+  "observationPoints": {
+    "pi": "RPC response、agent_settled、tool_execution_end 与 extension_error",
+    "semantic": "viking_search 的 raw_event/checkpoint sourceType、Archive/event/checkpoint locator 与有界 abstract",
+    "archive": "list/index/direct/chunk 四个 archive_retrieval branch 与权威 manifest/event 回读",
+    "sourceChain": "本地 Pi JSONL 独立投影 → 远端 event 规范字节 → Archive manifest/hash → checkpoint model/prompt/source",
+    "privacy": "retrieval_index、archive_retrieval、tool_scope 记录的 registry 校验及 marker/query/payload/URI/credential 缺失",
+    "cleanup": "marker、direct/chunked events、Archive、checkpoint facts、检索派生记录与 task resources 删除并在 60s 后持续不存在"
+  },
+  "workloads": [
+    {
+      "id": "w1-restart-retrieval-chain",
+      "summary": "同一真实 Pi 会话先形成可搜索 raw event、Archive 与 checkpoint，再追加一个 >8MiB chunked event；新进程通过生产工具搜索来源 locator，并验证 Archive 分页、直读、切片、scope clamp、来源证明、观察和清理。",
+      "inputs": {
+        "rawMarker": "OV-RETRIEVAL-RAW-7B91",
+        "checkpointGoal": "OV-GOAL-RESTART-CONTINUITY-7F2A",
+        "checkpointConstraint": "OV-CONSTRAINT-ORDERED-BACKLOG-91C4",
+        "oversizedMarker": "OV-RETRIEVAL-OVERSIZED-3D6E"
+      },
+      "steps": [
+        "run A（scripted）：prompt 写入连续性标识并完成真实 Pi turn；随后用 SessionManager 追加确定性压力 entry",
+        "run B：/viking sync 形成 Archive，轮询 /viking 直到对应 checkpoint caught_up",
+        "verifier：追加含 oversizedMarker 的 >8MiB custom entry 和两个独立 trailing entry",
+        "run C：/viking sync 在 sibling branch 形成含 chunked event 的后续 Archive；按确定性 resource ID 回读所有权并取消本 gate 不消费的 VLM task 后退出",
+        "run D（新 Pi 进程）：从已持久化的稳定 sibling leaf 恢复，依次调用 search/read/archive list/index/direct/chunk，以越界 search scope 证明 clamp；最后仅等待已排队的增量同步完成后退出",
+        "verifier：独立回读并复算 event、Archive 与 checkpoint 来源，检查分页/切片/脱敏观察；统一清理并做持久删除核验"
+      ],
+      "successCriteria": [
+        "重启后可语义发现一个已归档 raw event，结果显式携带 sourceType 与 Archive/event locator；checkpoint 同形状写入由 deterministic checks 与 retrieval_index 观察证明，不要求语义排序同时命中",
+        "重启后 Archive 可列举并按 archiveId/eventId 展开；index offset/limit 有界，direct URI 与 chunk code-point slice 对应权威事件",
+        "event 规范字节、Archive identity/contentHash/首尾/count 与 checkpointId/model/promptVersion/archiveId/archiveHash 一致",
+        "合法越界 search scope 被夹回当前 namespace，精确 read/expand 的拒绝边界继续由 deterministic tools-boundary 测试证明",
+        "retrieval_index、archive_retrieval 与 tool_scope 有完整记录，且不含 query、marker、事件正文、原始 URI 或凭证",
+        "所有本次写入对象与临时 task 资源按 ownership 清理，cleanupSettleMs 后不复活"
+      ],
+      "falsification": [
+        "search 只能找到普通 memory、直接暴露内部 directory face，或不能返回 raw_event Archive/event locator",
+        "重启后检索记录、Archive list 或 expand 只存在于旧进程缓存",
+        "搜索 locator 无法沿 Archive/event 回到规范字节，或 checkpoint 来源不一致",
+        "offset/limit 绕过 200/16000 上限，或切片按 UTF-16 code unit 而非 code point",
+        "越界 search scope 返回外部 namespace，观察记录泄露 marker/query/payload/URI/credential，或缺少成功/降级记录",
+        "已写对象或 task 在清理后仍存在"
+      ]
+    }
+  ],
+  "globalAssertions": [
+    "manifest 字节 hash 必须匹配固定 .sha256，否则拒绝运行",
+    "Node/Pi/OpenViking/model profile/受管服务 owner 与运行配置全部匹配后才进入 workload",
+    "每次重启前本地 owner.marker 字节和 0600 权限仍匹配；远端写入前 namespace 不存在且 marker create_if_absent 后逐字节回读",
+    "summary 只保留版本、身份、计数、时长、hash、边界 ID 和断言，不保留检索正文、provider payload、session JSONL、观察原始记录或凭证",
+    "passed 删除整个本地 run 目录；failed 删除全部私有 artifact，只保留 owner.marker 和白名单 summary"
+  ],
+  "thresholds": {
+    "piRunWallMs": 180000,
+    "agentSettledMs": 90000,
+    "syncNotifyMs": 120000,
+    "devUpMs": 180000,
+    "cleanupSettleMs": 60000,
+    "searchLimit": 10,
+    "archivePageLimit": 1,
+    "eventSliceLimit": 16000,
+    "baseline": {
+      "runs": [
+        {
+          "date": "2026-08-24",
+          "upstream": "archive 119/119; checkpoint 139/139; budget 746/746",
+          "retrieval": "gate absent; deterministic tool boundary tests prove Archive list/index/direct/chunk contracts only"
+        }
+      ]
+    }
+  }
+}

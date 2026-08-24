@@ -4,6 +4,7 @@ import type { ArchiveManifestV1 } from "./archive.mjs";
 import type { CheckpointProcessResult } from "./checkpoint-processor.mjs";
 import type { Observation } from "./observe.mjs";
 import type { RecordedEventAdapter } from "./recorded-event-adapter.mjs";
+import type { ProducedRecordedEventV1 } from "./recorded-event.mjs";
 
 export interface CheckpointStatus {
   mode: "caught_up" | "processing" | "lagging" | "failed";
@@ -33,6 +34,7 @@ export class CheckpointManager {
     observation?: Observation;
     notify?: (message: string, level: "info" | "warning") => void;
     onStateChange?: (status: CheckpointStatus) => void;
+    onCheckpoint?: (manifest: ArchiveManifestV1, event: ProducedRecordedEventV1) => Promise<void> | void;
     pollIntervalMs?: number;
     taskTimeoutMs?: number;
     now?: () => string;

@@ -384,10 +384,8 @@ async function runBudgetWorkload(log, ctx) {
   assertRunHealthy(log, ctx, refreshedContextRun, { requireCapture: false });
   if (ctx.workload.family === "tool-loop") {
     const stale = vikingActiveContext(refreshedContextRun);
-    log.check(ctx.workloadId, "recovery.stale-mismatch", "容量不匹配", stale.reason,
-      stale.reason === "容量不匹配");
-    log.check(ctx.workloadId, "recovery.newer-checkpoint", `!=${catchup.checkpointId}`, stale.checkpointId,
-      Boolean(stale.checkpointId) && stale.checkpointId !== catchup.checkpointId);
+    log.check(ctx.workloadId, "recovery.epoch-held", checkpointMeasurement.checkpointId, stale.checkpointId,
+      stale.checkpointId === checkpointMeasurement.checkpointId);
   }
 
   const providerObservationPath = join(ctx.runDir, "observations", `${ctx.workloadId}-provider.jsonl`);

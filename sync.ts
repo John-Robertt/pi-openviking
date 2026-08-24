@@ -17,6 +17,7 @@ import { observation, type Observation } from "./shared/observe.mjs";
 import { RecordedEventAdapter, recordedEventStorageLocation } from "./shared/recorded-event-adapter.mjs";
 import type { PiRecordedEventV1 } from "./shared/recorded-event.mjs";
 import { projectPiEntries } from "./shared/recorded-event.mjs";
+import { RetrievalIndex, retrievalSessionRoot } from "./shared/retrieval-index.mjs";
 import { deriveHarnessSessionId } from "./shared/session-model.mjs";
 import type { PiTaskModelContextFacts } from "./shared/task-model-context.mjs";
 import {
@@ -104,6 +105,7 @@ export class SyncManager {
   private archives: ArchiveManager | null = null;
   private checkpoints: CheckpointManager | null = null;
   private activeContext: ActiveContextManager | null = null;
+  private retrievalIndex: RetrievalIndex | null = null;
   private ack: SyncAck = { acknowledgedLeaves: [] };
   private ackPath: string | null = null;
   private knownParents = new Map<string, string | null>();
@@ -127,9 +129,10 @@ export class SyncManager {
     },
     activeContext: {
       checkpointId: null, rawTailStartEventId: null, rawTailEvents: 0,
+      inlineTailEvents: 0, omittedTailEvents: 0, omittedTailTokens: 0,
       eligibility: "no_context",
       capacityTokens: null, reserveTokens: null, usableTokens: null,
-      payloadTokens: null, headroomTokens: null, lastFailure: null,
+      payloadTokens: null, pressureTokens: null, headroomTokens: null, lastFailure: null,
     },
   };
 
@@ -140,6 +143,12 @@ export class SyncManager {
   }
 
   get sessionId(): string | null { return this.ovSessionId; }
+
+  get retrievalRoot(): string | null {
+    return this.piSessionId && this.client.userRoot
+      ? retrievalSessionRoot(this.client.userRoot, this.piSessionId)
+      : null;
+  }
 
   get status(): SyncStatus {
     return {
@@ -195,7 +204,7 @@ export class SyncManager {
         const events = projectPiEntries(this.piSessionId, entries);
         const onBranch = new Set(branch.map((entry) => entry.id));
         const branchEvents = events.filter((event) => onBranch.has(event.source.entryId));
-        return await this.activeContext.compaction(branchEvents, tokensBefore);
+        return await this.activeContext.compaction(branchEvents, tokensBefore, this.committedArchives);
       } catch (error: any) {
         this.observe.emit("active_context_failure", error, "compaction", "degrade", "native_compaction");
         return null;
@@ -268,12 +277,18 @@ export class SyncManager {
       observation: this.observe,
       busyRetrySignal: this.busyRetryController.signal,
     });
+    this.retrievalIndex = new RetrievalIndex(this.client, {
+      userRoot,
+      observation: this.observe,
+      busyRetrySignal: this.busyRetryController.signal,
+    });
     this.checkpoints = new CheckpointManager(this.client, {
       adapter: this.adapter,
       archiveManager: this.archives,
       observation: this.observe,
       notify: this.options.notify,
       onStateChange: () => this.scheduleActiveContextRefresh(),
+      onCheckpoint: (manifest: ArchiveManifestV1, event: any) => this.indexCheckpoint(manifest, event),
     });
     this.activeContext = new ActiveContextManager({
       path: this.options.activeContextPathForSession
@@ -667,7 +682,27 @@ export class SyncManager {
     for (const descriptor of result.archives) {
       this.sessionArchives.set(descriptor.manifest.archiveId, descriptor);
     }
+    await this.indexRawArchives(result.archives, acknowledgedEvents);
     void this.checkpoints?.schedule(this.piSessionId, result.archives, archiveChains);
+  }
+
+  /** 检索索引是可重建派生物：失败不改变 ACK、Archive 或 checkpoint，下一次同步重试。 */
+  private async indexRawArchives(archives: ArchiveDescriptor[], branchEvents: PiRecordedEventV1[]): Promise<void> {
+    if (!this.retrievalIndex || !this.piSessionId) return;
+    try {
+      await this.retrievalIndex.indexArchives(this.piSessionId, archives, branchEvents);
+    } catch {
+      // RetrievalIndex owns the failure record; source facts remain authoritative.
+    }
+  }
+
+  private async indexCheckpoint(manifest: ArchiveManifestV1, event: any): Promise<void> {
+    if (!this.retrievalIndex || !this.piSessionId) return;
+    try {
+      await this.retrievalIndex.indexCheckpoint(this.piSessionId, manifest, event);
+    } catch {
+      // RetrievalIndex owns the failure record; checkpoint publication remains authoritative.
+    }
   }
 
   private setCapability(next: SyncStatus["capability"]): void {

@@ -211,10 +211,13 @@ async function verifyArchives(log, ctx, archiveIds, branch, label) {
       failures.push(`${archiveId}: expanded bytes differ from projected source events`);
       continue;
     }
-    const boundaryStep = source.at(-1).stepId;
+    const boundary = source.at(-1);
     const next = branch[endIndex + 1];
-    if (boundaryStep && next && next.stepId === boundaryStep) {
-      failures.push(`${archiveId}: boundary splits step`);
+    const splitsEntry = typeof boundary?.source?.entryId === "string" &&
+      boundary.source.entryId === next?.source?.entryId;
+    const splitsStep = typeof boundary?.stepId === "string" && boundary.stepId === next?.stepId;
+    if (splitsEntry || splitsStep) {
+      failures.push(`${archiveId}: boundary splits atomic group`);
       continue;
     }
     ranges.push({ archiveId, startIndex, endIndex });
@@ -237,14 +240,31 @@ async function verifyArchives(log, ctx, archiveIds, branch, label) {
   log.check(w, `${label}.multi-event-step-present`, ">=1", multiEventSteps, multiEventSteps >= 1,
     "分支必须含跨事件 step，否则边界不拆 step 的断言恒真");
 
-  // 独立于计划器的结果检查：保留的 raw tail 压力不得低于配置预算。
+  // rawTailTokenBudget 是目标保留量；已封闭原子组本身超过 chunk 预算时，
+  // 计划器可整体归档该组，但必须保留至少一个由后继事件证明的独立 raw-tail 组。
   const budgets = archiveBudgets(ctx);
   let running = 0;
   const series = branch.map((event) => (running += eventTokenWeight(event)));
-  const lastEnd = ranges.at(-1)?.endIndex ?? -1;
+  const lastRange = ranges.at(-1);
+  const lastEnd = lastRange?.endIndex ?? -1;
   const retained = (series.at(-1) ?? 0) - (lastEnd >= 0 ? series[lastEnd] : 0);
-  log.check(w, `${label}.raw-tail-retained`, `>=${budgets.rawTailTokenBudget}`, retained,
-    retained >= budgets.rawTailTokenBudget, "归档必须保留配置要求的最近原始上下文预算");
+  const lastArchive = lastRange ? branch.slice(lastRange.startIndex, lastRange.endIndex + 1) : [];
+  const lastArchiveWeight = lastArchive.reduce((sum, event) => sum + eventTokenWeight(event), 0);
+  const lastArchiveIsAtomic = lastArchive.every((event, index) => {
+    if (index === 0) return true;
+    const previous = lastArchive[index - 1];
+    const sameEntry = typeof previous?.source?.entryId === "string" &&
+      previous.source.entryId === event?.source?.entryId;
+    const sameStep = typeof previous?.stepId === "string" && previous.stepId === event?.stepId;
+    return sameEntry || sameStep;
+  });
+  const oversizedAtomicAdvance = lastArchiveIsAtomic && lastArchiveWeight > budgets.chunkTokenBudget;
+  const tailValid = lastEnd < branch.length - 1 &&
+    (retained >= budgets.rawTailTokenBudget || oversizedAtomicAdvance);
+  log.check(w, `${label}.raw-tail-retained`,
+    `>=${budgets.rawTailTokenBudget} or successor after oversized atomic Archive`,
+    `${retained} (last Archive ${lastArchiveWeight})`, tailValid,
+    "保留目标服从原子边界；超大原子组整体归档后仍须保留独立 raw tail");
 }
 
 /** /viking 输出中的 Archive 行：当前分支本轮已验证数、最近 archiveId 与失败提示。 */

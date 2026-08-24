@@ -5,7 +5,7 @@
   "mechanism": {
     "selected": "Pi context hook + 两字段 ActiveContext 原子替换 + checkpoint/anchor/raw-tail provider messages + session_before_compact 自包含 checkpoint",
     "highWater": "contextTokenThreshold>0 时对首次接管与活动 epoch 直接使用配置高水位；为 0 时，首次接管使用 Pi 报告 usable tokens 减去候选 payload 的余量，活动 epoch 使用全部 usable tokens，避免把候选 payload 同时计入 usage 又从阈值扣除。候选是否装得下只由 contextWindow-maxTokens-payloadTokens 判定，高水位不改变模型容量。epoch workload 先以不接管的真实请求校准 Pi provider usage 与 ActiveContext payload，再固定两者之间的显式高水位。",
-    "cacheEpoch": "ActiveContext 身份固定期间，provider payload 的 system、tools、checkpoint、anchor 和既有 raw tail 保持逐项稳定，后续 user/assistant/tool 消息只追加在该前缀之后。若 provider payload 暴露显式 cache key 则要求同一 ActiveContext 内不变；否则以稳定前缀和 Pi 持久化 usage.cacheRead/cacheWrite 作为可机器验证的 cache 证据。",
+    "cacheEpoch": "ActiveContext 身份固定期间，provider payload 在一次性 recall 之前的 system、tools、checkpoint、anchor 和既有 raw tail 前缀保持逐项稳定，后续 user/assistant/tool 消息只追加在其后。若 provider payload 暴露显式 cache key 则要求同一 ActiveContext 内不变；稳定前缀边界与 Pi 持久化 usage.cacheRead/cacheWrite 共同提供可机器验证的 cache 证据。",
     "compaction": "Pi 是唯一 compaction 触发方。eligible ActiveContext 可读时 session_before_compact 返回 checkpoint 正文与来源身份，并以 rawTailStartEventId 对应 Pi entry 作为 firstKeptEntryId；不可用时不返回结果，由 Pi 原生 split-turn compaction 继续。",
     "falsifiedAlternatives": [
       "把 contextTokenThreshold 当候选容量上限：它会改变模型事实并混淆触发策略与装载安全",
@@ -82,18 +82,19 @@
         "A1": "TAKEOVER_ARCHIVED_ASSISTANT",
         "P2": "TAKEOVER_FIRST：请只回复 ONE，不要调用工具。",
         "P3": "TAKEOVER_SECOND：请只回复 TWO，不要调用工具。",
-        "P4": "TAKEOVER_ADVANCE：请只回复 THREE，不要调用工具。"
+        "P4": "TAKEOVER_ADVANCE：请只回复 THREE，不要调用工具。",
+        "P5": "TAKEOVER_ADVANCE_CONFIRMED：请只回复 FOUR，不要调用工具。"
       },
       "successCriteria": [
         "两个实际 provider payload 都包含同一 checkpoint 身份和原始用户指令 anchor，且不含已归档的非 anchor 原文",
-        "第二个 payload 在当前 user message 之前以第一个 payload 的 provider input 为稳定前缀；当前 user 可携带一次性 recall，新增历史只追加在稳定前缀之后",
+        "剔除每轮只属于当前 query 的一次性 recall 后，两个 payload 的 checkpoint+原始 anchor 保持同位置、字节稳定且各自当前请求可见；后续 omission/raw-tail 可按精确来源事实重算",
         "显式 cache key 若存在则两次相同；第二次 assistant usage 的 cacheRead 必须大于 0，cacheWrite 保留实测值",
         "首轮后必须已生成不同的后台 checkpoint B，但第二个 payload 与持久 ActiveContext 仍使用 A；checkpoint、anchor 与 raw-tail step 可由源事件重算",
-        "A payload 追加压力后再次越过同一高水位，下一次真实 provider 请求与持久 ActiveContext 必须共同推进到同一最新可用 checkpoint，且不再使用 A",
+        "A source pressure 追加后再次越过同一高水位；已有更新 checkpoint 时立即推进，否则保持有界 A 到后台 checkpoint 赶上，随后真实请求与持久 ActiveContext 共同推进且不再使用 A",
         "RPC compact 由扩展提供 compaction，entry.fromHook=true，details 自证推进后 checkpoint 的 hash、Archive 身份和 raw-tail 边界"
       ],
       "falsification": [
-        "provider payload 缺少原始用户指令 anchor、仍含已归档非 anchor 原文、缺少 checkpoint 或第二次改写稳定前缀",
+        "provider payload 缺少原始用户指令 anchor、仍含已归档非 anchor 原文、缺少 checkpoint、改写 checkpoint+anchor 结构前缀或遗漏当前请求",
         "后台 checkpoint B 未在第二次请求前就绪，A payload 未再次达到高水位时 provider epoch 已漂移到 B，或达到高水位后仍永久冻结 A",
         "compaction 调用模型生成第二份摘要，或 entry 缺少自证字段"
       ]
@@ -121,24 +122,23 @@
     },
     {
       "id": "w3-capacity-compaction-fail-open",
-      "summary": "同一真实模型先以低 checkpoint budget 证明超预算时 context hook 保持完整 Pi 上下文且 compaction 使用原生路径，再追加超过 takeover 可用容量的原子输入证明 capacity mismatch 具有相同 fail-open 边界。",
+      "summary": "同一真实模型先以低 checkpoint budget 证明 provider 与 owner observation 使用有界 checkpoint/Archive 身份引用，再追加不可归档的超容量 trailing user，证明无 provider 状态检查与 manual compact 都保持 Pi 原生路径。",
       "inputs": {
         "P1": "请将 CAPACITY_ARCHIVED_ 与 ASSISTANT 拼接，只回复拼接结果，不要调用工具。",
         "A1": "CAPACITY_ARCHIVED_ASSISTANT",
-        "P2": "CAPACITY_FULL_CONTEXT：请只回复 FIT，不要调用工具。",
-        "P3": "CHECKPOINT_OVER_BUDGET_FULL_CONTEXT：请只回复 SAFE，不要调用工具。"
+        "P2": "CAPACITY_COMPACTABLE_TURN：请只回复 FIT，不要调用工具。",
+        "P3": "CHECKPOINT_OVER_BUDGET_REFERENCE：请只回复 SAFE，不要调用工具。"
       },
       "successCriteria": [
-        "checkpointTokenBudget=100 时 eligibility=checkpoint_over_budget，真实 provider payload 保留完整 Pi 归档前缀且不含 checkpoint",
-        "同一超预算状态下真实 context 与 session_before_compact hook 分别记录 keep_full_context 和 native_compaction",
+        "checkpointTokenBudget=100 时 eligibility=checkpoint_over_budget，真实 provider payload 使用精确 checkpoint/Archive 身份引用且不含归档正文",
+        "同一超预算状态下真实 provider payload 与 owner observation 都记录 exact reference_context/checkpoint_over_budget",
         "候选 payloadTokens>=contextWindow-maxTokens，eligibility=capacity_mismatch",
-        "真实 provider payload 不含 checkpoint 且保留大型原子来源的标记",
-        "没有可用 ActiveContext 的 manual compact 使用 Pi 原生 compaction，fromHook=false，扩展不主动触发或取消 compaction"
+        "容量失配的状态命令保持 provider 捕获为零；owner observation 记录 payloadTokens>=usableTokens 的 capacity_mismatch，验证阶段不发起会静默恢复完整消息列表的 provider 请求",
+        "capacity_mismatch 状态下 manual compact 的 owner observation 记录 native_compaction，entry.fromHook=false，扩展不主动触发或取消 compaction"
       ],
       "falsification": [
-        "checkpoint 超预算仍替换 provider 上下文、提供 ActiveContext compaction，或 owner 观察记录缺失",
-        "容量不匹配仍替换 provider 上下文或删除 ActiveContext",
-        "大型原子来源在 fail-open payload 中丢失",
+        "checkpoint 超预算时 provider 缺少精确引用、暴露归档正文、提供 ActiveContext compaction，或 owner 观察记录缺失",
+        "容量不匹配时扩展替换 provider 上下文、删除 ActiveContext，或 verifier 发起可能恢复完整消息列表的 provider 请求",
         "无 ActiveContext 时扩展伪造 compaction 或中止 agent"
       ]
     },

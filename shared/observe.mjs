@@ -337,13 +337,21 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
     usable: NULLABLE_INTEGER,
     payload: NULLABLE_INTEGER,
     headroom: NULLABLE_SIGNED_INTEGER,
+    pressure: NULLABLE_INTEGER,
+    inlineEvents: INTEGER(),
+    omittedEvents: INTEGER(),
+    omittedTokens: INTEGER(),
   })),
   active_context_takeover: stage("index.ts", "decision", schema({
-    branch: ENUM(["replace_context", "reuse_context", "below_high_water", "keep_full_context"]),
+    branch: ENUM(["replace_context", "reference_context", "reuse_context", "below_high_water", "keep_full_context"]),
     eligibility: ENUM(ACTIVE_CONTEXT_STATES),
     usageTokens: NULLABLE_INTEGER,
     highWaterTokens: NULLABLE_INTEGER,
     messages: INTEGER(),
+    previousPayload: NULLABLE_INTEGER,
+    selectedPayload: NULLABLE_INTEGER,
+    pressure: NULLABLE_INTEGER,
+    capacity: NULLABLE_INTEGER,
   })),
   active_context_compaction: stage("index.ts", "decision", schema({
     branch: ENUM(["provide_context", "native_compaction"]),
@@ -413,6 +421,22 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
     accepted: INTEGER(),
     rejected: INTEGER(),
   })),
+  archive_retrieval: stage("tools.ts", "decision", schema({
+    branch: ENUM(["list", "index", "direct", "chunk"]),
+    requested: INTEGER(),
+    emitted: INTEGER(),
+    total: INTEGER(),
+  })),
+  retrieval_index: stage("shared/retrieval-index.mjs", "decision", schema({
+    sourceType: ENUM(["raw_event", "checkpoint"]),
+    records: INTEGER(),
+  })),
+  retrieval_index_failure: stage("shared/retrieval-index.mjs", "failure", schema({
+    ...FAILURE_BASE,
+    errorCode: ENUM(["write"]),
+    sourceType: ENUM(["raw_event", "checkpoint"]),
+    branch: ENUM(["retry_on_sync"]),
+  }, FAILURE_OPTIONAL)),
 });
 
 /** index.ts 的注入种类到白名单 operation 的映射；未知名种不允许静默归入他类。 */
@@ -592,19 +616,31 @@ const ENCODERS = Object.freeze({
     archives: safeInteger(archives),
     events: safeInteger(events),
   }),
-  active_context_eligibility: (eligibility, capacity, usable, payload, headroom) => ({
+  active_context_eligibility: (
+    eligibility, capacity, usable, payload, headroom, pressure, inlineEvents, omittedEvents, omittedTokens,
+  ) => ({
     branch: eligibility,
     capacity: nullableInteger(capacity),
     usable: nullableInteger(usable),
     payload: nullableInteger(payload),
     headroom: nullableInteger(headroom),
+    pressure: nullableInteger(pressure),
+    inlineEvents: safeInteger(inlineEvents),
+    omittedEvents: safeInteger(omittedEvents),
+    omittedTokens: safeInteger(omittedTokens),
   }),
-  active_context_takeover: (branch, eligibility, usageTokens, highWaterTokens, messages) => ({
+  active_context_takeover: (
+    branch, eligibility, usageTokens, highWaterTokens, messages, previousPayload, selectedPayload, pressure, capacity,
+  ) => ({
     branch,
     eligibility: ACTIVE_CONTEXT_STATES.includes(eligibility) ? eligibility : "no_context",
     usageTokens: nullableInteger(usageTokens),
     highWaterTokens: nullableInteger(highWaterTokens),
     messages: safeInteger(messages),
+    previousPayload: nullableInteger(previousPayload),
+    selectedPayload: nullableInteger(selectedPayload),
+    pressure: nullableInteger(pressure),
+    capacity: nullableInteger(capacity),
   }),
   active_context_compaction: (branch, eligibility) => ({
     branch,
@@ -658,6 +694,20 @@ const ENCODERS = Object.freeze({
     branch,
     accepted: safeInteger(accepted),
     rejected: safeInteger(rejected),
+  }),
+  archive_retrieval: (branch, requested, emitted, total) => ({
+    branch,
+    requested: safeInteger(requested),
+    emitted: safeInteger(emitted),
+    total: safeInteger(total),
+  }),
+  retrieval_index: (sourceType, records) => ({
+    sourceType,
+    records: safeInteger(records),
+  }),
+  retrieval_index_failure: (error, sourceType) => ({
+    ...failureData(error, "write", "degrade", "retry_on_sync"),
+    sourceType,
   }),
 });
 

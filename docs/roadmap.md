@@ -44,24 +44,22 @@ fail-open、字节一致性、进程 run 下的 session producer 隔离与会话
 `test/live/checkpoint.workloads.json` 及其固定 hash 承载；`verify:observability:live` 覆盖现行 registry。
 
 
-**活动上下文构造的出口已关闭。** `ActiveContext` 只持久化 `docs/spec.md` 定义的两个字段，选自当前分支上最后一个
-已消费的 checkpoint；anchor 由 raw tail 起点的 turn 身份重算。deterministic checks 证明候选选择、跨重启复用、来源边界
-离开祖先链后的失效、anchor 重算、dry-run payload、容量判定、缺失 checkpoint 权重事实的 fail-open，以及同一两字段候选
-只 materialize 一次。`verify:context:live` 按收敛后的单份 eligibility 公式 manifest 在真实 Pi、Archive 与 VLM checkpoint
-上通过 143/143。
+**活动上下文构造的出口已关闭。** `ActiveContext` 仍只持久化两个字段；候选从当前分支最后一个已消费 checkpoint
+派生。provider payload 省略 checkpoint 来源之后已提交的 Archive 并保留有界索引，raw tail 从最后一个省略 Archive
+之后开始；容量由有界 payload 判定，高水位推进由完整来源 pressure 判定。deterministic checks 与当前固定
+`verify:context:live` manifest 共同覆盖分支/重启、entry/step/anchor、Archive 省略、压力推进、事故容量边界和身份引用。
 
-**上下文切换与 fail-open 的出口已关闭。** `context` hook 在 eligible `ActiveContext` 到达高水位时原子替换 provider
-messages；`session_before_compact` 只在事实可读且 eligible 时提供自包含 checkpoint，否则由 Pi 使用完整上下文和原生
-compaction。`verify:takeover:live` 通过 277/277，覆盖稳定前缀与 checkpoint 推进、跨重启与分支失效、checkpoint 超预算
-和容量不匹配时的完整上下文降级、Pi compaction，以及超 raw-tail 预算原子事件经 Archive/VLM checkpoint 后恢复接管；
-checkpoint 块与原生压缩后的下一轮分别提供固定和一次性的归档恢复路径。
+**上下文切换与发布预算的出口已关闭。** `context` hook 对完整候选的容量不匹配和 checkpoint 超预算使用
+checkpoint/Archive 身份引用，不恢复完整消息前缀；已建立 epoch 在事实暂不可读时按最后一个精确交点追加后缀。
+权威 checkpoint 保持完整，Pi 独立拥有 compaction。`verify:takeover:live` 与 `verify:budget:live` 按当前固定 manifest
+覆盖引用 fallback、后缀延续、pressure 推进、分支/重启/降级、原生 compaction 与三类独立 100k+ workload；
+发布默认预算保持 Archive chunk 50000、raw tail 20000、checkpoint 16000。
 
-**发布预算校准的出口已关闭。** 发布默认预算保持 Archive chunk 50000、raw tail 20000、checkpoint 16000。
-`verify:budget:live` 在现行最小 checkpoint schema、统一 Working Memory 接受门和完整装载 fail-open 下，对 tool-loop、
-单轮原子输入与 sibling branch 三类独立 100k+ workload 各重复三次并通过 748/748；session 启动先刷新已有 checkpoint
-事实及对应 ActiveContext，shutdown 在同一 500ms grace 内停止 checkpoint 后台并动态排空派生更新，九次 provider/branch
-compaction observation 均完整。accepted baseline、模型身份、实测阈值、结果及适用范围由
-`test/live/budget.workloads.json` 及固定 hash 承载。
+**检索与恢复的出口已关闭。** 已提交 Archive 的 raw events 与已验证 checkpoint 写入同一套可删除、可重建的
+有界派生索引；`viking_search` 只返回来源类型、Archive/event/checkpoint locator 与有界 abstract，详情沿既有权威链
+分页或切片回读。`verify:retrieval:live` 在真实 Pi 重启、受管 OpenViking 和生产工具循环上通过 71/71，证明一个
+已归档 raw fact 的语义发现与 locator、Archive 分页、direct URI、8 MiB 事件 code-point 切片、search scope clamp、
+checkpoint 同形状索引观察、完整脱敏 observation 和 ownership 清理；单次 Pi run 与通知等待分别限制为 180000ms 和 120000ms。
 
 ## 实施顺序
 
@@ -273,23 +271,25 @@ compaction observation 均完整。accepted baseline、模型身份、实测阈�
 - gate manifest/summary 中的模型身份、实测证据和适用范围一致，发布配置中的通用预算默认值与验收结果一致；
   每个运行时任务模型按自身容量获得独立 eligibility 判定。
 
-### 检索与诊断体验
+### 检索与恢复
 
-- 语义搜索 raw events 与 checkpoint，并显示来源类型；
-- 支持按 session、branch、Archive 和 event ID 的组合过滤、browse 和 expand；
-- 每个检索结果都能展开到原始事件，并显示 checkpoint 的模型、prompt 版本和来源 Archive；
-- 按 event → Archive → checkpoint → `ActiveContext` 来源链提供组合诊断，呈现对象身份、边界和
-  派生关系。
+本阶段只负责一件事：当前 provider 上下文缺少早期事实时，在进程重启后语义发现相关来源，并沿现有
+Archive/event 权威链有界恢复。它不重复验收 provider payload、通用 browse、组合诊断或 transport fallback。
+
+- 从 committed Archive raw events 与 verified checkpoint 投影同形状、不可变、可重建的最小索引；
+- 搜索结果只暴露来源类型、Archive/event/checkpoint locator 与有界 abstract；
+- raw event 详情通过 Archive 列举、事件索引分页、direct URI 或 code-point 切片恢复；
+- search 越界 scope 夹回当前 session，精确 URI 越界仍拒绝；当前 checkpoint/raw-tail/Archive backlog 继续由 `/viking` 诊断。
 
 **验收**：
 
-- raw events 与 checkpoint 可语义检索，结果明确显示来源类型；
-- Archive manifest 可按 session、branch、Archive 和 event ID 确定性过滤、browse 和 expand；
-- 每个检索结果都能展开到原始事件，event → Archive → checkpoint → `ActiveContext` 来源链的
-  身份、hash、边界和版本信息一致；
-- 组合诊断能够定位当前 checkpoint、raw-tail 边界及对应的内部状态。
+- 新进程可语义发现一个缺失的已归档 raw event，并把服务端派生 face 还原为稳定 locator；
+- event 规范字节、Archive manifest/hash 与 checkpoint provenance 可从权威对象独立复算；
+- Archive 分页和事件切片均受上限约束，8 MiB 原子事件可用连续 code-point 切片按需恢复；
+- 派生索引失败不改变 ACK、Archive 或 checkpoint，观察记录完整且不包含 query、正文、URI 或凭证；
+- 随机 namespace 的 marker、产品对象、派生索引和 task resources 经 ownership 证明后删除，等待清理窗口后不复活。
 
 ## 下一实施入口
 
-当前入口是检索与诊断体验：建立 `verify:retrieval:live` manifest，并验证语义搜索、过滤、browse/expand、来源链和
-所属资源清理。此前待验证的三条 live 出口（observability、context、takeover）已全部按当前固定 hash 重跑通过。
+当前入口是阶段关闭后的发布复核：运行完整 deterministic/type/package checks，重复 retrieval live gate 验证稳定性，
+并依次执行“少就是多”挑战、独立实现审查与主会话业务链审查；只修复由当前变更引入且属于本阶段责任的问题。

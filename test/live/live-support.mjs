@@ -379,10 +379,13 @@ export async function runPi(ctx, {
           const includesOk = !action.untilNotifyIncludes || String(action.notifyEvent.message).includes(action.untilNotifyIncludes);
           const excludesOk = !action.untilNotifyExcludes || !String(action.notifyEvent.message).includes(action.untilNotifyExcludes);
           if (includesOk && excludesOk) break;
-          if (Date.now() + 50 >= deadline) {
+          const retryIntervalMs = Number.isFinite(action.retryIntervalMs)
+            ? Math.max(0, action.retryIntervalMs)
+            : 50;
+          if (Date.now() + retryIntervalMs >= deadline) {
             throw new PiRunError(`${action.command} notify did not reach the expected state before the run deadline`);
           }
-          await new Promise((resolve) => setTimeout(resolve, 50));
+          await new Promise((resolve) => setTimeout(resolve, retryIntervalMs));
         } while (true);
         action.attempts = attempt;
       }
@@ -529,7 +532,7 @@ const TERMINAL_TASK_STATES = ["completed", "failed", "cancelled"];
  * task 自身声明的 resource_id/task_type 与该身份一致后才发出 cancel。列表过滤条件不作为
  * 归属证明——归属只由回读结果确定。
  */
-async function cancelOwnedTasks(client, resourceIds) {
+export async function cancelOwnedTasks(client, resourceIds) {
   const cancelled = [];
   const residuals = [];
   for (const resourceId of resourceIds) {

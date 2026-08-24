@@ -64,7 +64,7 @@ export function parseObservationRun(bytes) {
       }
     }
   }
-  for (const op of open.keys()) errors.push(`op_${op}_unfinished`);
+  for (const [op, opened] of open) errors.push(`op_${op}_${opened.stage}_unfinished`);
 
   const stageCounts = {};
   const kindCounts = {};

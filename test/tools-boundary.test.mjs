@@ -17,6 +17,7 @@ const OUTSIDE = "viking://user/dev--pi-OTHER/memories/secret.md";
 /** 桩服务器故意忽略 target_uri 并返回越界命中，用于验证扩展自身的核验。 */
 async function harness({
   sessionScopedMemory = true, sync = { sessionId: "pi-x" }, foundUri = OUTSIDE, resourceRoot = OUTSIDE,
+  searchResults = null,
 } = {}) {
   const requests = [];
   const server = createServer(async (req, res) => {
@@ -34,9 +35,13 @@ async function harness({
     };
     if (req.url === "/health") return json({ status: "ok", result: { healthy: true } });
     if (req.url === "/api/v1/search/find") {
+      const body = requests.at(-1)?.body ?? {};
+      const memories = typeof searchResults === "function"
+        ? searchResults(body)
+        : [{ uri: foundUri, score: 0.95, abstract: "匹配结果" }];
       return json({
         status: "ok",
-        result: { memories: [{ uri: foundUri, score: 0.95, abstract: "匹配结果" }], resources: [], skills: [], total: 1 },
+        result: { memories, resources: [], skills: [], total: memories.length },
       });
     }
     if (req.url === "/api/v1/resources") return json({ status: "ok", result: { root_uri: resourceRoot } });
@@ -131,6 +136,35 @@ test("搜索范围夹回绑定根，且越界结果不返回给模型", async ()
     const result = await run("viking_search", { query: "x", scope: `${MY_ROOT}-EVIL/memories` });
     assert.equal(result.requests[0].body.target_uri, MY_ROOT);
     assert.equal(result.text, "No results found.", "服务端返回的越界命中必须被过滤");
+  } finally {
+    await close();
+  }
+});
+test("搜索把内部派生 face 归一化为来源 locator，并过滤未证明的内部对象", async () => {
+  const retrievalRoot = `${MY_ROOT}/resources/.pi-openviking/retrieval/v1/${"a".repeat(64)}`;
+  const archiveId = `arc_${"b".repeat(64)}`;
+  const eventId = `evt_${"c".repeat(64)}`;
+  const checkpointId = `chk_${"d".repeat(64)}`;
+  const { run, close } = await harness({
+    sync: { sessionId: "pi-x", retrievalRoot },
+    searchResults: ({ target_uri: targetUri }) => targetUri === retrievalRoot ? [
+      { uri: `${retrievalRoot}/raw/${archiveId}/${eventId}/.abstract.md`, score: 0.98, abstract: "raw fact" },
+      { uri: `${retrievalRoot}/checkpoint/${archiveId}/${checkpointId}/content.md`, score: 0.97, abstract: "working memory" },
+    ] : [
+      { uri: `${MY_ROOT}/memories/public.md`, score: 0.9, abstract: "public fact" },
+      { uri: `${MY_ROOT}/resources/.pi-openviking/recorded-events/v1/shard/.abstract.md`, score: 0.99, abstract: "unproven internal" },
+    ],
+  });
+  try {
+    const search = await run("viking_search", { query: "fact" });
+    assert.equal(search.requests.length, 2);
+    assert.match(search.text, /raw_event/);
+    assert.match(search.text, new RegExp(eventId));
+    assert.match(search.text, /checkpoint/);
+    assert.match(search.text, new RegExp(checkpointId));
+    assert.match(search.text, /memories\/public\.md/);
+    assert.doesNotMatch(search.text, /recorded-events|unproven internal|retrieval\/v1/);
+    assert.deepEqual(search.result.details.results.map((result) => result.kind).sort(), ["history", "history", "public"]);
   } finally {
     await close();
   }
@@ -270,7 +304,7 @@ test("Archive 展开只接受本会话命名空间内的合法 archiveId，输�
             {
               eventId: `evt_${"3".repeat(64)}`, occurredAt: "2026-08-24T05:39:18.985Z",
               source: { entryType: "custom" },
-              payload: { entry: { id: "entry-1", customType: "x".repeat(500) }, part: { form: "array", value: { text: "exit 0" } } },
+              payload: { entry: { id: "entry-1", customType: "x".repeat(20000) }, part: { form: "array", value: { text: "exit 0" } } },
             },
           ],
         };
@@ -283,7 +317,9 @@ test("Archive 展开只接受本会话命名空间内的合法 archiveId，输�
       assert.match(result.text, /^Refused:/);
       assert.deepEqual(result.requests, [], "形状非法的 archiveId 不得发出请求");
     }
-    assert.deepEqual(expansions, [], "拒绝路径不得触达 Archive 存储");
+    const invalidEvent = await run("viking_archive_expand", { archive_id: archiveId, event_id: `evt_${"z".repeat(64)}` });
+    assert.match(invalidEvent.text, /^Refused:/);
+    assert.deepEqual(expansions, [], "非法 eventId 不得触达 Archive 存储");
 
     // 无参数是发现路径：列出本会话 Archive，不触达 expand。
     const listing = await run("viking_archive_expand", {});
@@ -302,9 +338,25 @@ test("Archive 展开只接受本会话命名空间内的合法 archiveId，输�
     assert.match(own.text, /custom\/x+… weight≈/);
     assert.doesNotMatch(own.text, new RegExp("x".repeat(500)), "索引标签必须有硬上限");
     assert.doesNotMatch(own.text, /entry-0/, "索引不得包含完整 payload 字段");
-    assert.match(own.text, /oversized chunked entries have no single read URI/);
+    assert.match(own.text, /oversized event without one, pass its event_id/);
     assert.doesNotMatch(own.text, /^\s*read:/m, "没有 direct 表示的事件不得伪造可读 URI");
     assert.deepEqual(expansions, [archiveId]);
+
+    const chunkedEventId = `evt_${"3".repeat(64)}`;
+    const chunk = await run("viking_archive_expand", {
+      archive_id: archiveId, event_id: chunkedEventId, event_offset: 10, event_limit: 40,
+    });
+    assert.match(chunk.text, new RegExp(`^Oversized event ${chunkedEventId}`));
+    assert.match(chunk.text, /Continue with event_offset=50/);
+    assert.ok(chunk.text.length < 500, "单次事件读取必须受 event_limit 约束");
+    const cappedChunk = await run("viking_archive_expand", {
+      archive_id: archiveId, event_id: chunkedEventId, event_limit: 999999,
+    });
+    assert.ok(cappedChunk.text.length < 17000, "事件读取硬上限不得被请求参数绕过");
+    const foreignEvent = await run("viking_archive_expand", {
+      archive_id: archiveId, event_id: `evt_${"4".repeat(64)}`,
+    });
+    assert.match(foreignEvent.text, /is not referenced by archive/);
 
     const page = await run("viking_archive_expand", { archive_id: archiveId, offset: 1, limit: 1 });
     assert.match(page.text, /showing 2-2 of 2/);

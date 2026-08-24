@@ -172,6 +172,21 @@ function snapToAtomicBoundary(events, endIndex) {
   return index;
 }
 
+/** 返回从 start 开始、由 entry/step 相邻关系连接的最小完整原子组末端。 */
+function atomicGroupEnd(events, start) {
+  let end = start;
+  while (end + 1 < events.length) {
+    const current = events[end];
+    const next = events[end + 1];
+    const sameEntry = typeof current?.source?.entryId === "string"
+      && current.source.entryId === next?.source?.entryId;
+    const sameStep = typeof current?.stepId === "string" && current.stepId === next?.stepId;
+    if (!sameEntry && !sameStep) break;
+    end++;
+  }
+  return end;
+}
+
 /**
  * 在一条事件链上确定所有 Archive 边界。
  *
@@ -189,10 +204,17 @@ export function planArchives(events, { chunkTokenBudget, rawTailTokenBudget }) {
   const plans = [];
   let start = 0;
   for (let index = 1; rawTailTokenBudget + index * chunkTokenBudget <= total; index++) {
+    if (start >= events.length) break;
     const candidate = lastIndexAtOrBelow(series, index * chunkTokenBudget);
-    if (candidate < start) continue;
-    const end = snapToAtomicBoundary(events, candidate);
-    if (end < start) continue;
+    let end = candidate >= start ? snapToAtomicBoundary(events, candidate) : -1;
+    if (end < start) {
+      const groupEnd = atomicGroupEnd(events, start);
+      // Pi 会继续向末尾 entry 追加 part；只有后继事件能证明当前原子组已封闭。
+      if (groupEnd === events.length - 1) break;
+      const before = start === 0 ? 0 : series[start - 1];
+      if (series[groupEnd] - before <= chunkTokenBudget) continue;
+      end = groupEnd;
+    }
     plans.push({ startIndex: start, endIndex: end });
     start = end + 1;
   }

@@ -10,6 +10,7 @@ import { calculateContextTokens, SessionManager } from "@earendil-works/pi-codin
 import { readActiveContext } from "../../shared/active-context.mjs";
 import { describeArchives } from "../../shared/archive.mjs";
 import { checkpointEventIdFor, checkpointId as checkpointIdFor, parseCheckpointEventById } from "../../shared/checkpoint.mjs";
+import { eventTokenWeight } from "../../shared/context-weight.mjs";
 import { parsePiSessionJsonl } from "../../shared/pi-session-source.mjs";
 import { projectPiEntries } from "../../shared/recorded-event.mjs";
 import { RecordedEventAdapter } from "../../shared/recorded-event-adapter.mjs";
@@ -55,6 +56,17 @@ function stablePrefixLength(left, right) {
   let index = 0;
   while (index < left.length && index < right.length && JSON.stringify(left[index]) === JSON.stringify(right[index])) index++;
   return index;
+}
+
+function withoutRecallBlocks(value) {
+  if (typeof value === "string") {
+    return value.replace(/<openviking-context>[\s\S]*?<\/openviking-context>\n?/g, "");
+  }
+  if (Array.isArray(value)) return value.map(withoutRecallBlocks);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, withoutRecallBlocks(item)]));
+  }
+  return value;
 }
 
 function explicitCacheFields(payload) {
@@ -135,11 +147,24 @@ function seedCompactionPressure(ctx, sessionFile) {
   );
 }
 
-function seedEpochAdvancePressure(ctx, sessionFile) {
-  appendUserPressure(
-    sessionFile, "TAKEOVER_EPOCH_ADVANCE_PRESSURE", `${ctx.sessionId}/epoch-advance`,
+function sourceTailTokens(sessionFile, sessionId, rawTailStartEventId) {
+  const branch = SessionManager.open(sessionFile).getBranch();
+  const events = projectPiEntries(sessionId, branch);
+  const start = events.findIndex((event) => event.eventId === rawTailStartEventId);
+  if (start < 0) throw new Error("ActiveContext raw tail start is not on the seeded branch");
+  return events.slice(start).reduce((total, event) => total + eventTokenWeight(event), 0);
+}
+
+function seedEpochAdvancePressure(ctx, sessionFile, rawTailStartEventId, minimumTokens) {
+  const currentTokens = sourceTailTokens(sessionFile, ctx.sessionId, rawTailStartEventId);
+  const requiredChars = Math.max(
     ctx.manifest.environment.epochAdvanceChars,
+    Math.max(0, minimumTokens - currentTokens + 1000) * 4,
   );
+  appendUserPressure(
+    sessionFile, "TAKEOVER_EPOCH_ADVANCE_PRESSURE", `${ctx.sessionId}/epoch-advance`, requiredChars,
+  );
+  return sourceTailTokens(sessionFile, ctx.sessionId, rawTailStartEventId);
 }
 
 async function w1(log, ctx) {
@@ -202,11 +227,22 @@ async function w1(log, ctx) {
   log.check(ctx.workloadId, "provider.input-shape", "array", `${Array.isArray(firstInput)}/${Array.isArray(secondInput)}`,
     Array.isArray(firstInput) && Array.isArray(secondInput));
   if (firstInput && secondInput) {
-    const stable = stablePrefixLength(firstInput, secondInput);
-    const expectedStable = Math.max(0, firstInput.length - 1);
+    const normalizedFirst = withoutRecallBlocks(firstInput);
+    const normalizedSecond = withoutRecallBlocks(secondInput);
+    const stable = stablePrefixLength(normalizedFirst, normalizedSecond);
+    const firstCheckpointIndex = normalizedFirst.findIndex((item) => JSON.stringify(item).includes(established.checkpointId));
+    const firstAnchorIndex = normalizedFirst.findIndex((item) => JSON.stringify(item).includes(ctx.anchorMarker));
+    const secondCheckpointIndex = normalizedSecond.findIndex((item) => JSON.stringify(item).includes(established.checkpointId));
+    const secondAnchorIndex = normalizedSecond.findIndex((item) => JSON.stringify(item).includes(ctx.anchorMarker));
+    const expectedStable = Math.max(firstCheckpointIndex, firstAnchorIndex) + 1;
     log.check(ctx.workloadId, "provider.stable-prefix", `>=${expectedStable}`, stable,
-      stable >= expectedStable && secondInput.length > firstInput.length,
-      "当前 user message 可携带一次性 recall；其前全部 provider input 必须稳定，后续消息只追加在其后");
+      firstCheckpointIndex >= 0 && firstCheckpointIndex < firstAnchorIndex &&
+        secondCheckpointIndex === firstCheckpointIndex && secondAnchorIndex === firstAnchorIndex && stable >= expectedStable,
+      "checkpoint 与原始指令 anchor 构成稳定结构前缀；其后的 omission/raw-tail 只按精确来源事实重算");
+    log.check(ctx.workloadId, "provider.current-prompts", "P2/P3 visible",
+      `${JSON.stringify(normalizedFirst).includes(ctx.workload.inputs.P2)}/${JSON.stringify(normalizedSecond).includes(ctx.workload.inputs.P3)}`,
+      JSON.stringify(normalizedFirst).includes(ctx.workload.inputs.P2) &&
+        JSON.stringify(normalizedSecond).includes(ctx.workload.inputs.P3));
   }
   log.check(ctx.workloadId, "provider.instructions-stable", "byte-equal", "compared",
     JSON.stringify(payloads[0].instructions ?? null) === JSON.stringify(payloads[1].instructions ?? null));
@@ -227,7 +263,10 @@ async function w1(log, ctx) {
   const bytesBeforeAdvance = readFileSync(activeContextPathFor(ctx));
   log.check(ctx.workloadId, "epoch.active-context-held", "byte-identical A", `${bytesBeforeAdvance.length}B`,
     bytesBefore.equals(bytesBeforeAdvance));
-  seedEpochAdvancePressure(ctx, run.sessionFile);
+  const activeBeforeAdvance = await readActiveContext(activeContextPathFor(ctx));
+  const sourcePressureTokens = seedEpochAdvancePressure(
+    ctx, run.sessionFile, activeBeforeAdvance.rawTailStartEventId, epochHighWater,
+  );
   const advanceRun = await runPi(ctx, {
     workloadId: ctx.workloadId,
     turn: 5,
@@ -239,26 +278,49 @@ async function w1(log, ctx) {
     ],
   });
   assertRunHealthy(log, ctx, advanceRun, { requireCapture: true });
-  const advanceStatus = vikingActiveContext({ actions: [advanceRun.actions[1]] });
-  log.check(ctx.workloadId, "epoch.advance-pressure", `>=${epochHighWater}`,
-    advanceStatus.payloadTokens,
-    Number.isFinite(advanceStatus.payloadTokens) && advanceStatus.payloadTokens >= epochHighWater,
-    advanceStatus.message);
-  const advancePayloads = providerPayloads(advanceRun);
+  log.check(ctx.workloadId, "epoch.advance-pressure", `source raw tail >=${epochHighWater}`,
+    sourcePressureTokens, sourcePressureTokens >= epochHighWater);
+  let advancePayloads = providerPayloads(advanceRun);
   log.check(ctx.workloadId, "epoch.advance-capture-count", 1, advancePayloads.length, advancePayloads.length === 1);
   if (advancePayloads.length !== 1) return;
-  const activeAfterAdvance = await readActiveContext(activeContextPathFor(ctx));
+  let effectiveAdvanceRun = advanceRun;
+  let activeAfterAdvance = await readActiveContext(activeContextPathFor(ctx));
+  const advanceRuns = [advanceRun];
+  if (activeAfterAdvance?.checkpointId === established.checkpointId) {
+    const followup = await runPi(ctx, {
+      workloadId: ctx.workloadId,
+      turn: 6,
+      endpoint: ctx.endpoint,
+      actions: [
+        { command: "/viking sync" },
+        {
+          command: "/viking",
+          untilNotifyIncludes: "Checkpoint：已赶上",
+          untilNotifyExcludes: `最近 ${backgroundCheckpointId}`,
+        },
+        { prompt: ctx.workload.inputs.P5 },
+      ],
+    });
+    assertRunHealthy(log, ctx, followup, { requireCapture: true });
+    advanceRuns.push(followup);
+    effectiveAdvanceRun = followup;
+    advancePayloads = providerPayloads(followup);
+    log.check(ctx.workloadId, "epoch.followup-capture-count", 1, advancePayloads.length, advancePayloads.length === 1);
+    if (advancePayloads.length !== 1) return;
+    activeAfterAdvance = await readActiveContext(activeContextPathFor(ctx));
+  }
   const bytesAfterAdvance = readFileSync(activeContextPathFor(ctx));
   const advancedCheckpointId = activeAfterAdvance?.checkpointId ?? null;
   log.check(ctx.workloadId, "epoch.active-context-advanced", "checkpoint newer than A", advancedCheckpointId,
     typeof advancedCheckpointId === "string" && CHECKPOINT_ID.test(advancedCheckpointId) &&
       advancedCheckpointId !== established.checkpointId && !bytesBeforeAdvance.equals(bytesAfterAdvance));
   if (!advancedCheckpointId || advancedCheckpointId === established.checkpointId) return;
+  const advanceAnchorMarker = effectiveAdvanceRun === advanceRun ? ctx.workload.inputs.P4 : ctx.workload.inputs.P5;
   assertPayloadUsesCheckpoint(
     log, ctx, advancePayloads[0], advancedCheckpointId, ctx.archivedMarker, "takeover.advance",
-    "TAKEOVER_EPOCH_ADVANCE_PRESSURE",
+    advanceAnchorMarker,
   );
-  const advanceSource = await branchSource(ctx, advanceRun.sessionFile);
+  const advanceSource = await branchSource(ctx, effectiveAdvanceRun.sessionFile);
   recordWrittenObjects(ctx, advanceSource.branch, describeArchives(ctx.sessionId, advanceSource.branch, stableConfig.archive));
   const checkpointAdapter = new RecordedEventAdapter(ctx.client, { userRoot: ctx.userRoot });
   const storedAdvancedCheckpoint = await checkpointAdapter.readEvent(
@@ -271,7 +333,7 @@ async function w1(log, ctx) {
   seedCompactionPressure(ctx, run.sessionFile);
   const compactionRun = await runPi(ctx, {
     workloadId: ctx.workloadId,
-    turn: 6,
+    turn: effectiveAdvanceRun.turn + 1,
     endpoint: ctx.endpoint,
     capture: "observation",
     actions: [
@@ -313,7 +375,7 @@ async function w1(log, ctx) {
     cacheUsage: usages.map((usage) => ({ cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, input: usage.input })),
   };
   ctx.workload.providerEvidence = ctx.providerEvidence;
-  ctx.runs.push(summarizeRun(calibration), summarizeRun(run), summarizeRun(advanceRun), {
+  ctx.runs.push(summarizeRun(calibration), summarizeRun(run), ...advanceRuns.map(summarizeRun), {
     turn: compactionRun.turn,
     ms: compactionRun.ms,
     exitCode: compactionRun.exitCode,
@@ -396,18 +458,17 @@ async function w3(log, ctx) {
   log.check(ctx.workloadId, "checkpoint-budget.status", "checkpoint 超出配置预算", overBudgetStatus.reason,
     overBudgetStatus.reason === "checkpoint 超出配置预算");
   const overBudgetPayload = JSON.stringify(providerPayloads(overBudget)[0]);
-  log.check(ctx.workloadId, "checkpoint-budget.full-context", true, overBudgetPayload.includes(ctx.archivedMarker),
-    overBudgetPayload.includes(ctx.archivedMarker) && !overBudgetPayload.includes(established.checkpointId));
+  const referenceContext = overBudgetPayload.includes("openviking-checkpoint-reference") &&
+    overBudgetPayload.includes(established.checkpointId) &&
+    overBudgetPayload.includes(established.descriptor.manifest.archiveId) &&
+    !overBudgetPayload.includes(ctx.archivedMarker);
+  log.check(ctx.workloadId, "checkpoint-budget.reference-context", true, referenceContext, referenceContext);
 
-  // 先在小会话上用 padding 触发并观察真实原生 compaction，再 seed 容量失配原子 entry：一旦 600k 原子 entry
-  // 成为 compaction 的保留边界，其后的 compact 没有可摘要区间（Pi 拒绝 "Nothing to compact"），顺序不可颠倒。
+  // 先用观察运行证明超预算 checkpoint 选择有界引用；它只完成一个小 turn，不先执行 compaction。
+  // 随后追加不可归档的大 user entry，在无 provider 请求的状态检查后只执行一次 Pi 原生压缩。
   const observed = await runPi(ctx, {
     workloadId: ctx.workloadId, turn: 4, endpoint: ctx.endpoint, capture: "observation",
-    actions: [
-      { rpc: { type: "set_auto_compaction", enabled: false } },
-      { prompt: COMPACTION_PADDING_PROMPT },
-      { rpc: { type: "compact" }, timeoutMs: ctx.manifest.thresholds.agentSettledMs },
-    ],
+    actions: [{ prompt: ctx.workload.inputs.P2 }],
   });
   log.check(ctx.workloadId, "checkpoint-budget.observation-exit", 0, observed.exitCode, observed.exitCode === 0);
   const observedErrors = observed.events.filter((event) => event.type === "extension_error");
@@ -416,55 +477,57 @@ async function w3(log, ctx) {
   log.check(ctx.workloadId, "checkpoint-budget.observation-complete", true, overBudgetObservation.summary.complete,
     overBudgetObservation.summary.complete, overBudgetObservation.errors.join(","));
   const takeoverRecord = overBudgetObservation.records.find((record) =>
-    record.stage === "active_context_takeover" && record.data?.branch === "keep_full_context" &&
+    record.stage === "active_context_takeover" && record.data?.branch === "reference_context" &&
       record.data?.eligibility === "checkpoint_over_budget");
-  log.check(ctx.workloadId, "checkpoint-budget.takeover-observed", "keep_full_context/checkpoint_over_budget",
+  log.check(ctx.workloadId, "checkpoint-budget.takeover-observed", "reference_context/checkpoint_over_budget",
     takeoverRecord ? `${takeoverRecord.data.branch}/${takeoverRecord.data.eligibility}` : null, Boolean(takeoverRecord));
-  const compactionRecord = overBudgetObservation.records.find((record) =>
-    record.stage === "active_context_compaction" && record.data?.branch === "native_compaction" &&
-      record.data?.eligibility === "checkpoint_over_budget");
-  log.check(ctx.workloadId, "checkpoint-budget.compaction-observed", "native_compaction/checkpoint_over_budget",
-    compactionRecord ? `${compactionRecord.data.branch}/${compactionRecord.data.eligibility}` : null, Boolean(compactionRecord));
-  const observedManager = SessionManager.open(observed.sessionFile);
-  const observedEntry = observedManager.getBranch().findLast((candidate) => candidate.type === "compaction");
-  const observedCompaction = observed.actions[2]?.response?.data;
-  log.check(ctx.workloadId, "checkpoint-budget.compaction-native", false, observedEntry?.fromHook ?? false,
-    observedEntry?.fromHook !== true && observedCompaction?.details?.type !== "openviking-active-context" &&
-      Boolean(observedCompaction?.usage));
 
   writeExtensionConfig(ctx, ctx.manifest.environment.extensionConfig.capacityMismatch);
   seedCapacityMismatch(ctx, established.formation.sessionFile);
   const capacity = await runPi(ctx, {
     workloadId: ctx.workloadId, turn: 5, endpoint: ctx.endpoint,
-    actions: [
-      { command: "/viking sync" },
-      { rpc: { type: "set_auto_compaction", enabled: false } },
-      { prompt: ctx.workload.inputs.P2 },
-      { command: "/viking" },
-    ],
+    actions: [{ command: "/viking" }],
   });
-  assertRunHealthy(log, ctx, capacity, { requireCapture: true });
-  const status = vikingActiveContext(capacity);
-  log.check(ctx.workloadId, "capacity.mismatch", "容量不匹配", status.reason,
-    status.reason === "容量不匹配" && status.payloadTokens >= status.usableTokens);
-  const payloadText = JSON.stringify(providerPayloads(capacity)[0]);
-  log.check(ctx.workloadId, "capacity.full-context", true, payloadText.includes(LARGE_MARKER),
-    payloadText.includes(LARGE_MARKER) && !payloadText.includes(established.checkpointId));
+  assertRunHealthy(log, ctx, capacity, { requireCapture: true, expectedCaptureCount: 0 });
+  const capacityPayloads = providerPayloads(capacity);
+  log.check(ctx.workloadId, "capacity.provider-not-invoked", 0, capacityPayloads.length,
+    capacityPayloads.length === 0);
 
   const native = await runPi(ctx, {
-    workloadId: ctx.workloadId, turn: 6, endpoint: ctx.endpoint,
+    workloadId: ctx.workloadId, turn: 6, endpoint: ctx.endpoint, capture: "observation",
     actions: [{ rpc: { type: "compact" }, timeoutMs: ctx.manifest.thresholds.agentSettledMs }],
   });
-  assertRunHealthy(log, ctx, native, { requireCapture: true, expectedCaptureCount: 0 });
+  log.check(ctx.workloadId, "capacity.observation-exit", 0, native.exitCode, native.exitCode === 0);
+  const nativeErrors = native.events.filter((event) => event.type === "extension_error");
+  log.check(ctx.workloadId, "capacity.observation-errors", 0, nativeErrors.length, nativeErrors.length === 0);
+  const nativeObservation = parseObservationRun(readFileSync(native.observationPath));
+  log.check(ctx.workloadId, "capacity.observation-complete", true, nativeObservation.summary.complete,
+    nativeObservation.summary.complete, nativeObservation.errors.join(","));
+  const mismatchRecord = nativeObservation.records.find((record) =>
+    record.stage === "active_context_eligibility" && record.data?.branch === "capacity_mismatch" &&
+      Number.isInteger(record.data?.payload) && Number.isInteger(record.data?.usable) &&
+      record.data.payload >= record.data.usable);
+  log.check(ctx.workloadId, "capacity.mismatch", "capacity_mismatch with payload >= usable",
+    mismatchRecord ? `${mismatchRecord.data.branch}: ${mismatchRecord.data.payload} >= ${mismatchRecord.data.usable}` : null,
+    Boolean(mismatchRecord));
+  const compactionRecord = nativeObservation.records.find((record) =>
+    record.stage === "active_context_compaction" && record.data?.branch === "native_compaction" &&
+      record.data?.eligibility === "capacity_mismatch");
+  log.check(ctx.workloadId, "capacity.compaction-observed", "native_compaction/capacity_mismatch",
+    compactionRecord ? `${compactionRecord.data.branch}/${compactionRecord.data.eligibility}` : null,
+    Boolean(compactionRecord));
   const manager = SessionManager.open(native.sessionFile);
   const entry = manager.getBranch().findLast((candidate) => candidate.type === "compaction");
   const result = native.actions[0]?.response?.data;
   log.check(ctx.workloadId, "compaction.native", false, entry?.fromHook ?? false,
     entry?.fromHook !== true && result?.details?.type !== "openviking-active-context" && Boolean(result?.usage));
 
-  ctx.runs.push(summarizeRun(overBudget), summarizeRun(capacity), summarizeRun(native), {
+  ctx.runs.push(summarizeRun(overBudget), {
     turn: observed.turn, ms: observed.ms, exitCode: observed.exitCode,
     observation: overBudgetObservation.summary, observationPath: observed.observationPath,
+  }, summarizeRun(capacity), {
+    turn: native.turn, ms: native.ms, exitCode: native.exitCode,
+    observation: nativeObservation.summary, observationPath: native.observationPath,
   });
   const parsed = parsePiSessionJsonl(await readFile(native.sessionFile, "utf8"), { sessionId: ctx.sessionId });
   const events = projectPiEntries(ctx.sessionId, parsed.entries);
