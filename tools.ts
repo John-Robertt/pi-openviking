@@ -168,17 +168,19 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
         client.find(params.query, { targetUri: searchScope.targetUri, topK: limit }),
         includeHistory ? client.find(params.query, { targetUri: historyRoot!, topK: limit }) : Promise.resolve([]),
       ]);
+      // rejected 只统计边界拒绝（越界或未证明来源的命中）；去重与 limit 截断不是边界决定，不计入。
+      let scopeRejected = 0;
       const publicResults = publicFound.flatMap((result) => {
         const uri = canonicalVikingUri(result.uri);
-        return uri && insideCanonical(uri, root) && !uri.includes("/.pi-openviking/")
-          ? [{ kind: "public" as const, ...result, uri }]
-          : [];
+        const allowed = Boolean(uri && insideCanonical(uri, root) && !uri.includes("/.pi-openviking/"));
+        if (!allowed) scopeRejected++;
+        return allowed ? [{ kind: "public" as const, ...result, uri }] : [];
       });
       const historyBySource = new Map<string, any>();
       for (const result of historyFound) {
         const uri = canonicalVikingUri(result.uri);
         const locator = uri && historyRoot ? parseRetrievalResultUri(uri, historyRoot) : null;
-        if (!locator || !insideCanonical(uri!, root)) continue;
+        if (!locator || !insideCanonical(uri!, root)) { scopeRejected++; continue; }
         const key = locator.sourceType === "raw_event" ? locator.eventId! : locator.checkpointId!;
         const previous = historyBySource.get(key);
         if (!previous || result.score > previous.score) {
@@ -188,15 +190,14 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
       const results = [...publicResults, ...historyBySource.values()]
         .sort((left, right) => right.score - left.score)
         .slice(0, limit);
-      const foundCount = publicFound.length + historyFound.length;
       observe.emit(
         "tool_scope",
         "viking_search",
         "search_result",
         Boolean(root),
-        results.length === foundCount ? "allow" : "filter",
+        scopeRejected === 0 ? "allow" : "filter",
         results.length,
-        foundCount - results.length,
+        scopeRejected,
       );
       if (results.length === 0) {
         return { content: [{ type: "text", text: "No results found." }] };
@@ -521,8 +522,10 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
           observe.emit("archive_retrieval", "chunk", eventLimit, emitted, points.length);
           return { content: [{
             type: "text",
-            text: `Oversized event ${eventId}; canonical JSON code points ${eventOffset + 1}-${eventOffset + emitted}` +
-              ` of ${points.length}. Continue with event_offset=${eventOffset + emitted} and the smallest needed event_limit.\n\n${slice}`,
+            text: emitted === 0
+              ? `Event ${eventId} is fully read: ${points.length} code points total; event_offset=${eventOffset} is at the end. Do not retry.`
+              : `Oversized event ${eventId}; canonical JSON code points ${eventOffset + 1}-${eventOffset + emitted}` +
+                ` of ${points.length}. Continue with event_offset=${eventOffset + emitted} and the smallest needed event_limit.\n\n${slice}`,
           }] };
         }
         const offset = Math.min(events.length, Math.max(0, Math.floor(Number(params.offset) || 0)));

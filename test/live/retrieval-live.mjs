@@ -48,6 +48,7 @@ import {
 } from "./live-support.mjs";
 import { parseObservationRun } from "./observation-evidence.mjs";
 import { startScriptedProvider } from "./scripted-provider.mjs";
+import { retrievalRecordLocation } from "../../shared/retrieval-index.mjs";
 import {
   recordWrittenObjects,
   writeExtensionConfig,
@@ -339,6 +340,7 @@ async function w1(log, ctx) {
 
   recordWrittenObjects(ctx, oversizedState.branch, allArchives);
   ctx.knownEvents = oversizedState.events;
+  ctx.branchEvents = oversizedState.branch;
   ctx.oversizedEvent = oversizedEvent;
   ctx.archiveChain = allArchives;
   const manager = SessionManager.open(oversizedSync.sessionFile);
@@ -388,10 +390,23 @@ async function w1(log, ctx) {
   const primarySearch = toolText(searches[0]);
   log.check(ctx.workloadId, "search.raw-source-label", true,
     /raw[_ -]?event/i.test(primarySearch), /raw[_ -]?event/i.test(primarySearch), primarySearch.slice(0, 240));
-  const rawLocator = /archive_id: arc_[0-9a-f]{64}/.test(primarySearch)
-    && /event_id: evt_[0-9a-f]{64}/.test(primarySearch);
-  log.check(ctx.workloadId, "search.authoritative-locator", true,
-    rawLocator, rawLocator);
+  // locator 不能只是格式合法：必须沿索引写入时使用的 archive chain 解析回一个真实归档事件，
+  // 且该事件携带 rawMarker（语义发现的目标事实）。
+  const locatorMatch = primarySearch.match(/archive_id: (arc_[0-9a-f]{64})[\s\S]*?event_id: (evt_[0-9a-f]{64})/);
+  const branchEvents = ctx.branchEvents ?? [];
+  const locatorEvent = locatorMatch
+    ? branchEvents.find((event) => event.eventId === locatorMatch[2]) : null;
+  const locatorIndex = locatorEvent
+    ? branchEvents.findIndex((event) => event.eventId === locatorEvent.eventId) : -1;
+  const locatorArchive = locatorMatch
+    ? (ctx.archiveChain ?? []).find((descriptor) => descriptor.manifest.archiveId === locatorMatch[1]) : null;
+  const locatorResolved = Boolean(
+    locatorEvent && locatorArchive &&
+    locatorIndex >= locatorArchive.startIndex && locatorIndex <= locatorArchive.endIndex &&
+    JSON.stringify(locatorEvent.payload).includes(ctx.workload.inputs.rawMarker),
+  );
+  log.check(ctx.workloadId, "search.authoritative-locator", "locator 解析回携带 rawMarker 的已归档事件",
+    locatorMatch ? `${locatorMatch[1]}/${locatorMatch[2]}` : null, locatorResolved);
   const clampedSearch = toolText(searches[1]);
   log.check(ctx.workloadId, "search.foreign-clamped", "current namespace results only",
     /Refused/i.test(clampedSearch) ? "refused" : clampedSearch.includes(foreignRoot) ? "foreign result" : "current namespace",
@@ -407,9 +422,12 @@ async function w1(log, ctx) {
   log.check(ctx.workloadId, "archive.restart-list", firstArchive.manifest.archiveId,
     expandTexts[0]?.includes(firstArchive.manifest.archiveId) ? firstArchive.manifest.archiveId : null,
     expandTexts[0]?.includes(firstArchive.manifest.archiveId));
-  log.check(ctx.workloadId, "archive.pagination", "page 1 then bounded page 2",
-    `${expandTexts[0]?.includes("showing 1-1")}/${expandTexts[1]?.includes("showing")}`,
-    expandTexts[0]?.includes("showing 1-1") && expandTexts[1]?.includes("showing"));
+  const pageOneId = expandTexts[0]?.match(/arc_[0-9a-f]{64}/)?.[0] ?? null;
+  const pageTwoId = expandTexts[1]?.match(/arc_[0-9a-f]{64}/)?.[0] ?? null;
+  log.check(ctx.workloadId, "archive.pagination", "list page 1 then page 2 with a distinct archive",
+    `${expandTexts[0]?.includes("showing 1-1")}/${pageOneId}→${expandTexts[1]?.match(/showing [\d-]+/)?.[0]}/${pageTwoId}`,
+    expandTexts[0]?.includes("showing 1-1") && expandTexts[1]?.includes("showing 2-2") &&
+      Boolean(pageTwoId) && pageOneId !== pageTwoId);
   log.check(ctx.workloadId, "archive.index", firstArchive.manifest.contentHash,
     expandTexts[2]?.includes(firstArchive.manifest.contentHash) ? firstArchive.manifest.contentHash : null,
     expandTexts[2]?.includes(firstArchive.manifest.contentHash));
@@ -468,6 +486,24 @@ async function collectObjectUris(ctx) {
         if (status.exists) uris.push(uri);
       }
     }
+  }
+  // 检索派生索引记录也是所属资源：raw 记录必须存在（索引写入已由 gate 证明），
+  // checkpoint 记录存在才纳入删除核验。
+  for (const descriptor of ctx.archiveChain ?? []) {
+    const archiveId = descriptor.manifest.archiveId;
+    for (const event of (ctx.branchEvents ?? []).slice(descriptor.startIndex, descriptor.endIndex + 1)) {
+      const uri = retrievalRecordLocation(ctx.userRoot, ctx.sessionId, "raw_event", archiveId, event.eventId).contentUri;
+      const status = await ctx.client.statUri(uri);
+      if (!status.ok) throw new Error(`retrieval record stat failed: ${status.status}`);
+      if (!status.exists) throw new Error(`retrieval record missing before cleanup: ${uri}`);
+      uris.push(uri);
+    }
+    const checkpointUri = retrievalRecordLocation(
+      ctx.userRoot, ctx.sessionId, "checkpoint", archiveId, checkpointId(descriptor.manifest),
+    ).contentUri;
+    const status = await ctx.client.statUri(checkpointUri);
+    if (!status.ok) throw new Error(`retrieval record stat failed: ${status.status}`);
+    if (status.exists) uris.push(checkpointUri);
   }
   return [...new Set(uris)];
 }

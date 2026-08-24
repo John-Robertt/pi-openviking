@@ -100,7 +100,7 @@
     "发布默认预算保持 archive=50000/20000、checkpoint=16000、自动高水位；workload 仅用显式高水位稳定触发，模型容量不进入生产配置",
     "每个重复的 checkpoint 在追加下一段 Archive 压力前完成；task/VLM token 和墙钟来自真实 RPC/OpenViking task",
     "每个 provider 请求逐项包含请求边界内的 takeover 文本；策略量与真实 provider headroom 均不低于阈值",
-    "tool-loop 在旧候选容量不匹配且更新 checkpoint 可用时，经真实 context hook 原子推进到可装入候选",
+    "tool-loop 在更新 checkpoint 可用而 epoch 仍持旧 checkpoint 时，经真实 context hook 原子推进到更新候选",
     "全部远端对象与 task 由随机 ownership marker 约束并持续删除；provider payload/观察记录通过后随 run 目录删除"
   ],
   "thresholds": {

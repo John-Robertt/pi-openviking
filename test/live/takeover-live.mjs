@@ -481,6 +481,14 @@ async function w3(log, ctx) {
       record.data?.eligibility === "checkpoint_over_budget");
   log.check(ctx.workloadId, "checkpoint-budget.takeover-observed", "reference_context/checkpoint_over_budget",
     takeoverRecord ? `${takeoverRecord.data.branch}/${takeoverRecord.data.eligibility}` : null, Boolean(takeoverRecord));
+  // 引用 fallback 的观察证据：provider payload 必须确实收缩，pressure 与容量在场。
+  log.check(ctx.workloadId, "checkpoint-budget.reference-payload-shrinks", "selectedPayload < previousPayload",
+    takeoverRecord ? `${takeoverRecord.data.previousPayload}→${takeoverRecord.data.selectedPayload}` : null,
+    Number.isInteger(takeoverRecord?.data?.previousPayload) &&
+      Number.isInteger(takeoverRecord?.data?.selectedPayload) &&
+      takeoverRecord.data.selectedPayload > 0 &&
+      takeoverRecord.data.selectedPayload < takeoverRecord.data.previousPayload &&
+      Number.isInteger(takeoverRecord?.data?.pressure) && Number.isInteger(takeoverRecord?.data?.capacity));
 
   writeExtensionConfig(ctx, ctx.manifest.environment.extensionConfig.capacityMismatch);
   seedCapacityMismatch(ctx, established.formation.sessionFile);

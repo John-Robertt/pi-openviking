@@ -49,6 +49,16 @@ test("索引正文只投影有界语义文本，不复制完整超大事件", ()
   assert.ok(Array.from(text).length <= RETRIEVAL_INDEX_TEXT_CHARS);
 });
 
+test("checkpoint 索引正文按 code point 截断，不劈开代理对", () => {
+  const event = {
+    source: { system: "pi-openviking", sourceType: "checkpoint", sourceId: CHECKPOINT },
+    payload: { checkpoint: { narrative: `${"a".repeat(RETRIEVAL_INDEX_TEXT_CHARS - 1)}\u{1F600}zz` } },
+  };
+  const text = retrievalText(event);
+  assert.equal(Array.from(text).length, RETRIEVAL_INDEX_TEXT_CHARS);
+  assert.ok(text.endsWith("\u{1F600}"), "边界上的增补平面字符必须完整保留");
+});
+
 test("raw event 与 checkpoint 共用一套不可变、可重建索引", async () => {
   const transport = new MemoryContentTransport(USER_ROOT);
   const observe = observation();
@@ -71,12 +81,13 @@ test("raw event 与 checkpoint 共用一套不可变、可重建索引", async (
 
   const checkpointEvent = {
     source: { system: "pi-openviking", sourceType: "checkpoint", sourceId: CHECKPOINT },
-    payload: { checkpoint: { narrative: "A bounded working-memory fact" } },
+    payload: { checkpoint: { narrative: "A bounded working-memory fact", sourceArchiveId: ARCHIVE } },
   };
   assert.equal(await index.indexCheckpoint(SESSION, { archiveId: ARCHIVE }, checkpointEvent), 1);
   assert.equal(await index.indexCheckpoint(SESSION, { archiveId: ARCHIVE }, checkpointEvent), 0);
   const checkpointLocation = retrievalRecordLocation(USER_ROOT, SESSION, "checkpoint", ARCHIVE, CHECKPOINT);
   assert.match(transport.files.get(checkpointLocation.contentUri).toString("utf8"), /bounded working-memory fact/);
 
-  assert.deepEqual(observe.records.map((record) => record.values[0]), ["raw_event", "raw_event", "checkpoint"]);
+  // 没有新增记录时不发空点位；只有实际写入才产生 decision 记录。
+  assert.deepEqual(observe.records.map((record) => record.values[0]), ["raw_event", "checkpoint"]);
 });

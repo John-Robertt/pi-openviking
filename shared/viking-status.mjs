@@ -88,11 +88,14 @@ function formatActiveContextLines(context) {
     return [`活动上下文：${ACTIVE_CONTEXT_STATES[context?.eligibility] ?? "尚未形成"}`];
   }
   const rawTailStart = typeof context?.rawTailStartEventId === "string" ? context.rawTailStartEventId : "未知";
-  const events = Math.max(0, Math.floor(Number(context?.rawTailEvents) || 0));
+  const inline = Math.max(0, Math.floor(Number(context?.inlineTailEvents ?? context?.rawTailEvents) || 0));
+  const omitted = Math.max(0, Math.floor(Number(context?.omittedTailEvents) || 0));
   const state = context?.eligibility === "eligible"
     ? `可接管（余量 ${Math.floor(Number(context.headroomTokens) || 0)} tokens）`
     : `inactive：${ACTIVE_CONTEXT_STATES[context?.eligibility] ?? "未知"}`;
-  const lines = [`活动上下文：${state}，checkpoint ${checkpointId}，raw tail 起点 ${rawTailStart}（${events} 个事件）`];
+  const tail = omitted > 0 ? `${inline} 个内联事件 + ${omitted} 个已归档省略` : `${inline} 个事件`;
+  const form = context?.payloadForm === "reference" ? "，provider 使用 checkpoint 身份引用" : "";
+  const lines = [`活动上下文：${state}，checkpoint ${checkpointId}，raw tail 起点 ${rawTailStart}（${tail}）${form}`];
   if (Number.isFinite(context?.capacityTokens) && Number.isFinite(context?.reserveTokens)) {
     const usable = Number.isFinite(context?.usableTokens) ? context.usableTokens : "未知";
     const payload = Number.isFinite(context?.payloadTokens) ? context.payloadTokens : "未知";

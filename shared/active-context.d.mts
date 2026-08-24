@@ -29,6 +29,7 @@ export type ActiveContextEligibility =
   | "capacity_mismatch"
   | "takeover_disabled";
 
+export const BOUNDED_REFERENCE_ELIGIBILITY: readonly ["capacity_mismatch", "checkpoint_over_budget"];
 export interface ActiveContextStatus {
   checkpointId: string | null;
   rawTailStartEventId: string | null;
@@ -41,6 +42,7 @@ export interface ActiveContextStatus {
   reserveTokens: number | null;
   usableTokens: number | null;
   payloadTokens: number | null;
+  payloadForm: "full" | "reference" | null;
   pressureTokens: number | null;
   headroomTokens: number | null;
   lastFailure: string | null;

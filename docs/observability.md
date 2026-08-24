@@ -109,9 +109,12 @@ verifier 或读取者完成。进程崩溃、写入失败、队列丢弃或缺�
 规范明确要求的其他分支。错误处置已经由同一条 `failure` 的 `disposition`/`branch` 完整表达时不再记录 `decision`；只有
 错误之外的安全输入共同决定分支时才增加 `decision`。普通循环条件、格式选择和不会改变结果的局部分支不设点位。
 `active_context_eligibility` 同时记录 provider `payload`、完整来源 `pressure` 与省略事件/权重；
-`active_context_takeover.branch=reference_context` 表示 provider 使用 checkpoint 身份引用。`archive_retrieval` 只记录
+`active_context_takeover` 在 `branch` 之外记录替换前后的 provider payload、完整来源 `pressure` 与容量，
+使“从哪一步开始偏离预期”可以沿 payload/pressure 重算；`branch=reference_context` 表示 provider 使用 checkpoint
+身份引用，此时 `selectedPayload` 必须小于 `previousPayload`。`archive_retrieval` 只记录
 `list/index/direct/chunk` 分支及 requested/emitted/total 计数，不记录查询、内容、事件或 URI。`retrieval_index` 只记录
-`raw_event`/`checkpoint` 来源类型与成功记录数；`retrieval_index_failure` 只记录安全错误分类、来源类型和下次同步重试分支。
+`raw_event`/`checkpoint` 来源类型与成功记录数，没有新增记录时不发空点位；`retrieval_index_failure` 只记录安全错误分类、来源类型和下次同步重试分支。
+`archive_failure` 的 `return_error` 分支表示显式回读（expand）失败已作为错误文本返回给调用方，不携带 committed/pending 计数。
 
 ### `state`
 

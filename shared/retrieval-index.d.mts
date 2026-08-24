@@ -19,7 +19,7 @@ export function retrievalRecordLocation(
   sourceType: RetrievalLocator["sourceType"],
   archiveId: string,
   sourceId: string,
-): { sessionRoot: string; recordRoot: string; contentUri: string };
+): { recordRoot: string; contentUri: string };
 export function parseRetrievalResultUri(uri: string, sessionRoot: string): RetrievalLocator | null;
 export function retrievalText(event: RecordedEventV1): string;
 

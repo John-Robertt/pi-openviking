@@ -35,6 +35,7 @@ export class CheckpointManager {
     observation = processObservation,
     notify = () => {},
     onStateChange = () => {},
+    // 派生物回调：实现方必须自行保证 fail-open（不抛出），checkpoint 权威流程不为派生物兜底。
     onCheckpoint = async () => {},
     pollIntervalMs = 2000,
     // 上游连接中断会让 provider task 永远停在非终态（OpenViking 0.4.15 不终态化 WM 创建失败）；
@@ -303,7 +304,7 @@ export class CheckpointManager {
       const acceptedCheckpoint = this.validateCheckpointEvent(
         storedCheckpoint, scan.current.descriptor, requestEvent,
       );
-      try { await this.onCheckpoint(scan.current.descriptor.manifest, storedCheckpoint); } catch { /* derived index is fail-open */ }
+      await this.onCheckpoint(scan.current.descriptor.manifest, storedCheckpoint);
       this.observe.emit("checkpoint_request", "complete", request.attempt, Math.max(0, scan.pending.length - 1));
       const remaining = scan.pending.slice(1);
       this.publishState({
@@ -504,7 +505,7 @@ export class CheckpointManager {
         const validated = await this.validateStoredCheckpoint(sessionId, descriptor, previousCheckpoint, stored.event);
         terminalTaskIds.push(...validated.terminalTaskIds);
         previousCheckpoint = validated.checkpoint;
-        try { await this.onCheckpoint(descriptor.manifest, stored.event); } catch { /* derived index is fail-open */ }
+        await this.onCheckpoint(descriptor.manifest, stored.event);
         consumed.push({ descriptor, checkpoint: validated.checkpoint });
       } else {
         sawPending = true;

@@ -132,7 +132,7 @@ export class SyncManager {
       inlineTailEvents: 0, omittedTailEvents: 0, omittedTailTokens: 0,
       eligibility: "no_context",
       capacityTokens: null, reserveTokens: null, usableTokens: null,
-      payloadTokens: null, pressureTokens: null, headroomTokens: null, lastFailure: null,
+      payloadTokens: null, payloadForm: null, pressureTokens: null, headroomTokens: null, lastFailure: null,
     },
   };
 

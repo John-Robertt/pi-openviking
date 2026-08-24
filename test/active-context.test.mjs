@@ -214,6 +214,28 @@ test("dry-run payload 用 Archive 引用过滤已归档 backlog，并逐项保�
   assert.equal(payloadSegment(payload, "anchor").events.length, 1);
 });
 
+test("已提交 Archive 链存在缺口时退化为完整 raw tail，不省略不可发现的事件", () => {
+  const { events, archives } = fixture();
+  const consumed = archives[0];
+  const context = selectActiveContext(events, archives, checkpointId(consumed.manifest));
+  const checkpoint = checkpointEventFor(consumed.manifest).payload.checkpoint;
+  const startIndex = events.findIndex((event) => event.eventId === context.rawTailStartEventId);
+
+  // 控制组：完整链上省略成立。
+  const full = materializeActiveContext({ context, checkpoint, branchEvents: events, archives });
+  assert.ok(payloadSegment(full, "omitted"));
+
+  // 完整性冲突跳过一个 Archive 后，缺口内的事件不能从 provider 上下文静默消失。
+  const gapped = materializeActiveContext({
+    context, checkpoint, branchEvents: events, archives: [archives[0], archives[2]],
+  });
+  assert.equal(payloadSegment(gapped, "omitted"), null);
+  assert.deepEqual(
+    payloadSegment(gapped, "raw-tail").events.map((event) => event.eventId),
+    events.slice(startIndex).map((event) => event.eventId),
+  );
+});
+
 test("takeover messages 渲染 checkpoint、anchor、omitted 引用和最近 raw tail", async () => {
   const { events, archives } = fixture();
   const consumed = archives[1];
@@ -259,6 +281,17 @@ test("已激活 epoch 在事实暂不可读时按精确交点延续有界投影�
   const advanced = advanceActiveContextMessages([checkpoint, anchor, prior], full);
   assert.deepEqual(advanced, [checkpoint, anchor, prior, next]);
   assert.equal(advanced.some((message) => message.content === "large historical prefix"), false);
+
+  // 分支回退：rendered 尾部是已放弃分支的消息时，更老的共享交点不能把它复活，
+  // 必须拒绝猜测，由调用方回退到完整重算或完整上下文。
+  const abandoned = { role: "assistant", content: [{ type: "text", text: "step 2 (abandoned)" }], timestamp: 4 };
+  const reverted = [
+    { role: "user", content: "large historical prefix", timestamp: 0 },
+    anchor,
+    prior,
+    { role: "user", content: "new direction", timestamp: 5 },
+  ];
+  assert.equal(advanceActiveContextMessages([checkpoint, anchor, prior, abandoned], reverted), null);
   assert.equal(advanceActiveContextMessages([checkpoint, { role: "assistant", content: "missing" }], full), null);
 });
 

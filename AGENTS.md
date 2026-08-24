@@ -60,8 +60,13 @@ committed Archives
 
 consumed checkpoint + current branch
   → ActiveContext (checkpointId + raw-tail start)
-  → dry-run candidate payload (system / checkpoint / anchor / raw tail)
+  → dry-run candidate payload (system / checkpoint / anchor / bounded omission note / raw tail)
   → takeover eligibility from Pi-reported capacity
+
+committed Archives + verified checkpoints
+  → rebuildable per-session retrieval index
+  → viking_search locator (source type + archive/event/checkpoint id)
+  → viking_archive_expand paging / direct URI / bounded code-point slice
 
 user prompt
   → recall search
@@ -108,6 +113,7 @@ gate 共同证明；配置字段只表达其权威文档定义的策略。
 | checkpoint 身份、VLM、重试、恢复或积压 | `docs/spec.md`“Checkpoint 生成与消费状态”       | `shared/checkpoint*.mjs`、`shared/recorded-event*.mjs`、`sync.ts`                               | `test/checkpoint*.test.mjs`、`verify:checkpoint:live`                           |
 | 活动上下文边界、分支复用或容量判定     | `docs/spec.md`“活动上下文与 prompt cache 稳定性” | `shared/active-context.mjs`、`shared/context-weight.mjs`、`sync.ts`、`index.ts`                 | `test/active-context.test.mjs`、`verify:context:live`                           |
 | recall、profile 或 provider context     | `docs/spec.md` 检索/上下文边界                | `recall.ts`、`shared/recall-core.mjs`、`shared/profile-inject.mjs`                             | `test/recall.test.mjs`、阶段 provider payload gate                             |
+| 检索索引、search locator 或事件切片     | `docs/spec.md`“检索与恢复”                     | `shared/retrieval-index.mjs`、`tools.ts`、`sync.ts`                                             | `test/retrieval-index.test.mjs`、`verify:retrieval:live`                        |
 | 观察 registry、sink、脱敏或点位        | `docs/observability.md`                       | `shared/observe.mjs` 与 registry 声明的 owner                                                   | `test/observe.test.mjs`、`test/observability-integration.test.mjs`、observability gate |
 | `viking_*` 工具及 URI 权限              | `docs/usage.md`“会话隔离与数据位置”、“工具”   | `tools.ts`、`lib/uri-guard-adapter.mjs`、`shared/uri-guard.mjs`                                | `test/tools-boundary.test.mjs`                                                 |
 | 配置、用户空间、peer 或凭证解析         | `docs/spec.md`“目标配置”、`docs/usage.md`     | `config.ts`、`shared/config-schema.mjs`、`shared/credentials.mjs`、`shared/workspace-peer.mjs` | `test/config-schema.test.mjs` 及对应新增测试                                   |

@@ -279,24 +279,34 @@ export class ArchiveManager {
     // An explicit read is a new integrity proof. Never let an earlier proof survive a
     // contradictory or incomplete expansion attempt.
     this.provenArchives.delete(archiveId);
-    const manifest = await this.read(sessionId, archiveId);
-    const reversed = [];
-    let cursor = manifest.lastEventId;
-    for (let index = 0; index < manifest.eventCount; index++) {
-      if (typeof cursor !== "string") {
-        throw new ArchiveIntegrityError("archived event chain ends before the manifest event count", archiveId);
+    try {
+      const manifest = await this.read(sessionId, archiveId);
+      const reversed = [];
+      let cursor = manifest.lastEventId;
+      for (let index = 0; index < manifest.eventCount; index++) {
+        if (typeof cursor !== "string") {
+          throw new ArchiveIntegrityError("archived event chain ends before the manifest event count", archiveId);
+        }
+        const { event } = await this.adapter.readEvent(sessionId, cursor);
+        reversed.push(event);
+        cursor = event.parentId;
       }
-      const { event } = await this.adapter.readEvent(sessionId, cursor);
-      reversed.push(event);
-      cursor = event.parentId;
+      const events = reversed.reverse();
+      assertEventChain(events, manifest);
+      if (archiveContentHash(events) !== manifest.contentHash) {
+        throw new ArchiveIntegrityError("expanded events do not recompute the manifest content hash", archiveId);
+      }
+      this.rememberProof(manifest, archiveManifestBytes(manifest));
+      return { manifest, events };
+    } catch (error) {
+      // 恢复链路的失败必须留痕：工具层只把错误名返回给模型，这里记录一次处置。
+      this.observe.emit(
+        "archive_failure", error,
+        error instanceof ArchiveIntegrityError ? "manifest_integrity" : "read",
+        "abort_operation", "return_error",
+      );
+      throw error;
     }
-    const events = reversed.reverse();
-    assertEventChain(events, manifest);
-    if (archiveContentHash(events) !== manifest.contentHash) {
-      throw new ArchiveIntegrityError("expanded events do not recompute the manifest content hash", archiveId);
-    }
-    this.rememberProof(manifest, archiveManifestBytes(manifest));
-    return { manifest, events };
   }
 }
 

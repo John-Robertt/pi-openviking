@@ -66,9 +66,7 @@ schema version、run、seq 范围、stage/kind/outcome 计数、accepted/dropped
 
 ## 真实验收门禁
 
-每条系统保证交付一个由 `package.json` 暴露的 live verifier，以所验证的保证命名：`verify:sync:live`、
-`verify:archive:live`、`verify:checkpoint:live`、`verify:context:live`、`verify:takeover:live`、`verify:budget:live`；
-尚未建立的检索保证按同一职责命名预留为 `verify:retrieval:live`。横切能力使用常驻的
+每条系统保证交付一个由 `package.json` 暴露的 live verifier，以所验证的保证命名：`verify:sync:live`、`verify:archive:live`、`verify:checkpoint:live`、`verify:context:live`、`verify:takeover:live`、`verify:budget:live`、`verify:retrieval:live`。横切能力使用常驻的
 `verify:observability:live`，其当前 manifest 覆盖 active stage 全集：会改变产品行为且可由真实边界稳定触发的 stage
 由 workload `expectedRecords` 验证，其余内部 failure stage 由 manifest 的 `deterministicStages` 指向实际记录测试；两者必须与
 registry 双向一致且一个 stage 只有一条权威验证路径。各阶段 gate 引用同一 registry，只增加本阶段 workload 的预期，

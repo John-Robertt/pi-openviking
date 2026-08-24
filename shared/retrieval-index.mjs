@@ -22,9 +22,14 @@ function requireId(value, pattern, name) {
   return value;
 }
 
-export function retrievalSessionRoot(userRoot, sessionId) {
+function requireUserRoot(userRoot) {
   const root = String(userRoot || "").replace(/\/+$/, "");
   if (!/^viking:\/\/user\/[^/]+$/.test(root)) throw new TypeError("Retrieval index requires a bound user root");
+  return root;
+}
+
+export function retrievalSessionRoot(userRoot, sessionId) {
+  const root = requireUserRoot(userRoot);
   if (typeof sessionId !== "string" || sessionId.length === 0) throw new TypeError("sessionId must be a non-empty string");
   const sessionKey = createHash("sha256")
     .update(canonicalJsonBytes([STORAGE_DOMAIN, RETRIEVAL_INDEX_VERSION, "session", sessionId]))
@@ -39,7 +44,7 @@ export function retrievalRecordLocation(userRoot, sessionId, sourceType, archive
   if (!kind) throw new TypeError(`invalid retrieval sourceType: ${sourceType}`);
   requireId(sourceId, kind === "raw" ? EVENT_ID : CHECKPOINT_ID, kind === "raw" ? "eventId" : "checkpointId");
   const recordRoot = `${sessionRoot}/${kind}/${archiveId}/${sourceId}`;
-  return { sessionRoot, recordRoot, contentUri: `${recordRoot}/content.md` };
+  return { recordRoot, contentUri: `${recordRoot}/content.md` };
 }
 
 /** Search may return the source file or a server-derived face inside its per-record directory. */
@@ -85,7 +90,7 @@ function appendText(value, output, budget, path = "") {
 
 export function retrievalText(event) {
   if (event?.source?.system === "pi-openviking" && event.source.sourceType === "checkpoint") {
-    return String(event?.payload?.checkpoint?.narrative ?? "").trim().slice(0, RETRIEVAL_INDEX_TEXT_CHARS);
+    return Array.from(String(event?.payload?.checkpoint?.narrative ?? "").trim()).slice(0, RETRIEVAL_INDEX_TEXT_CHARS).join("");
   }
   if (event?.source?.system !== "pi") return "";
   const source = event?.payload?.part?.value ?? event?.payload?.entry ?? event?.payload;
@@ -104,8 +109,7 @@ function recordBytes(locator, text) {
 export class RetrievalIndex {
   constructor(transport, { userRoot, observation = processObservation, busyRetrySignal } = {}) {
     this.transport = transport;
-    this.userRoot = String(userRoot || "").replace(/\/+$/, "");
-    retrievalSessionRoot(this.userRoot, "probe");
+    this.userRoot = requireUserRoot(userRoot);
     this.observe = observation;
     this.busyRetrySignal = busyRetrySignal;
     this.createdDirectories = new Set();
@@ -118,10 +122,7 @@ export class RetrievalIndex {
   }
 
   async writeRecords(sessionId, sourceType, records) {
-    if (records.length === 0) {
-      this.observe.emit("retrieval_index", sourceType, 0);
-      return 0;
-    }
+    if (records.length === 0) return 0;
     const objects = [];
     for (const record of records) {
       const sourceId = sourceType === "raw_event" ? record.eventId : record.checkpointId;
@@ -143,7 +144,6 @@ export class RetrievalIndex {
     const records = [];
     for (const descriptor of archives ?? []) {
       const archiveId = descriptor?.manifest?.archiveId;
-      requireId(archiveId, ARCHIVE_ID, "archiveId");
       for (const event of (branchEvents ?? []).slice(descriptor.startIndex, descriptor.endIndex + 1)) {
         if (this.indexedRawEvents.has(event.eventId)) continue;
         const text = retrievalText(event);
@@ -161,10 +161,14 @@ export class RetrievalIndex {
   }
 
   async indexCheckpoint(sessionId, manifest, event) {
-    const archiveId = requireId(manifest?.archiveId, ARCHIVE_ID, "archiveId");
-    const checkpointId = requireId(event?.source?.sourceId, CHECKPOINT_ID, "checkpointId");
+    const archiveId = manifest?.archiveId;
+    const checkpointId = event?.source?.sourceId;
     if (event?.source?.system !== "pi-openviking" || event.source.sourceType !== "checkpoint") {
       throw new TypeError("retrieval checkpoint source is invalid");
+    }
+    // 纵深防御：调用方在 checkpoint 验证通过后才触发本回调，来源一致性仍在这里断言一次。
+    if (event?.payload?.checkpoint?.sourceArchiveId !== archiveId) {
+      throw new TypeError("checkpoint source archive does not match the manifest");
     }
     if (this.indexedCheckpoints.has(checkpointId)) return 0;
     const text = retrievalText(event);

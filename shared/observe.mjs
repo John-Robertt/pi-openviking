@@ -272,11 +272,9 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
   })),
   archive_failure: stage("shared/archive-store.mjs", "failure", schema({
     ...FAILURE_BASE,
-    errorCode: ENUM(["commit", "manifest_integrity"]),
-    branch: ENUM(["pending_retry", "skip_archive"]),
-    committed: INTEGER(),
-    pending: INTEGER(),
-  }, FAILURE_OPTIONAL)),
+    errorCode: ENUM(["commit", "manifest_integrity", "read"]),
+    branch: ENUM(["pending_retry", "return_error", "skip_archive"]),
+  }, { ...FAILURE_OPTIONAL, committed: INTEGER(), pending: INTEGER() })),
   checkpoint_request: stage("shared/checkpoint-store.mjs", "decision", schema({
     branch: ENUM(["submit", "resume", "complete", "obsolete"]),
     attempt: INTEGER(1, 3),
@@ -565,8 +563,8 @@ const ENCODERS = Object.freeze({
       },
   archive_failure: (error, errorCode, disposition, branch, committed, pending) => ({
     ...failureData(error, errorCode, disposition, branch),
-    committed: safeInteger(committed),
-    pending: safeInteger(pending),
+    ...(committed === undefined ? {} : { committed: safeInteger(committed) }),
+    ...(pending === undefined ? {} : { pending: safeInteger(pending) }),
   }),
   checkpoint_request: (branch, attempt, pending) => ({
     branch,

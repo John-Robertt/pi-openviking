@@ -12,7 +12,7 @@ import { OVClient } from "./client.js";
 import { RecallManager } from "./recall.js";
 import { SyncManager, type TaskModelContext } from "./sync.js";
 import { buildProfileBlock } from "./shared/profile-inject.mjs";
-import { advanceActiveContextMessages, evaluateTakeoverTrigger, renderCompactionPointer } from "./shared/active-context.mjs";
+import { advanceActiveContextMessages, BOUNDED_REFERENCE_ELIGIBILITY, evaluateTakeoverTrigger, renderCompactionPointer } from "./shared/active-context.mjs";
 import { observation as processObservation, type Observation } from "./shared/observe.mjs";
 import { createStatusRefresh } from "./shared/status-refresh.mjs";
 import { clearVikingFooter, formatVikingCommand, setVikingFooter } from "./shared/viking-status.mjs";
@@ -338,7 +338,7 @@ export default async function (pi: ExtensionAPI) {
           observation.emit(
             "active_context_takeover", "keep_full_context", sync.status.activeContext.eligibility,
             contextUsageTokens(ctx), takeoverHighWaterTokens(), Array.isArray(event.messages) ? event.messages.length : 0,
-            sync.status.activeContext.payloadTokens, sync.status.activeContext.payloadTokens,
+            null, null,
             sync.status.activeContext.pressureTokens, sync.status.activeContext.capacityTokens,
           );
         }
@@ -362,7 +362,7 @@ export default async function (pi: ExtensionAPI) {
       }
       const needsBoundedFallback = Boolean(
         sync.status.activeContext.checkpointId &&
-        ["capacity_mismatch", "checkpoint_over_budget"].includes(sync.status.activeContext.eligibility),
+        (BOUNDED_REFERENCE_ELIGIBILITY as readonly string[]).includes(sync.status.activeContext.eligibility),
       );
       if (takeover.render || lastTakeoverMessages ||
           (!taskModel.factsAvailable && sync.status.activeContext.checkpointId) || needsBoundedFallback) {
@@ -372,24 +372,18 @@ export default async function (pi: ExtensionAPI) {
           takeover.epochActive ? takeover.highWaterTokens : null,
         );
         if (replacement) {
-          const checkpointAfter = sync.status.activeContext.checkpointId;
-          const retained = lastTakeoverMessages && takeover.epochActive && !takeover.allowAdvance &&
-            checkpointBefore === checkpointAfter && sync.status.activeContext.eligibility === "eligible"
-            ? advanceActiveContextMessages(lastTakeoverMessages, event.messages)
-            : null;
-          messages = retained ?? replacement;
+          // manager 的重算是当前分支上的唯一产出机制；payloadForm 由 manager 在渲染时确定。
+          messages = replacement;
           lastTakeoverMessages = structuredClone(messages);
-          takeoverBranch = retained
-            ? "reuse_context"
-            : messages.some((message: any) =>
-              message?.customType === "openviking-checkpoint" &&
-              String(message?.content ?? "").includes("<openviking-checkpoint-reference"))
-              ? "reference_context"
-              : takeover.epochActive && checkpointBefore === checkpointAfter
-                ? "reuse_context"
-                : "replace_context";
+          const checkpointAfter = sync.status.activeContext.checkpointId;
+          takeoverBranch = sync.status.activeContext.payloadForm === "reference"
+            ? "reference_context"
+            : takeover.epochActive && checkpointBefore === checkpointAfter
+              ? "reuse_context"
+              : "replace_context";
           appliedTakeoverCheckpointId = checkpointAfter;
         } else if (lastTakeoverMessages) {
+          // 旧候选暂时无法重算（事实不可读或已离开当前分支）时，按最后一个精确交点续后缀。
           const advanced = advanceActiveContextMessages(lastTakeoverMessages, event.messages);
           if (advanced) {
             messages = advanced;

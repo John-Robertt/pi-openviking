@@ -21,14 +21,14 @@ workload、身份与阈值由 `test/live/sync.workloads.json` 及其固定 hash 
 
 **可观测性的出口已关闭。** `shared/observe.mjs` 的 active stage registry 是现行点位唯一清单；关闭零工作、sink/schema
 fail-open、字节一致性、进程 run 下的 session producer 隔离与会话替换注销由 deterministic checks 证明。
-`active_context_compaction` 只由真实 `session_before_compact` hook 证明。`verify:observability:live` 通过 107/107：
+`active_context_compaction` 只由真实 `session_before_compact` hook 证明。`verify:observability:live` 通过 108/108：
 成功 recall 的 `filter_internal` 命中由与 query 同文的内部 fixture 确定性保证（不再依赖 session 事件恰好被语义索引），
 原生 compaction 由 compact 前的确定性 padding prompt 触发（Pi 默认 keepRecentTokens=20000，小会话会被拒绝）；
 断线、409 冲突和 URI 拒绝 workload 同步通过。registry 随 `task_timeout` 失败分类扩展，manifest 与 registry hash 已同步固定。
 
 **原子 Archive 的出口已关闭。** Archive 的原子机制由真实 0.4.15 上的基线调查选定，机制、实测证据与
 被证伪的候选记录在 `test/live/archive.workloads.json` 的 `mechanism`。`npm test` 提供 deterministic 证据，
-`verify:archive:live` 在真实 Pi lifecycle 与受管 OpenViking 上通过 118/118，覆盖 Archive 形成、完整 Pi entry/step
+`verify:archive:live` 在真实 Pi lifecycle 与受管 OpenViking 上通过 119/119，覆盖 Archive 形成、完整 Pi entry/step
 边界、崩溃残留恢复、受管重启幂等和完整性冲突 fail-open；常驻 `verify:observability:live` 覆盖现行 registry。
 
 **checkpoint 生产的出口已关闭。** checkpoint request、代码拥有的明确 failure 与结构化 checkpoint 作为自产
@@ -52,7 +52,8 @@ fail-open、字节一致性、进程 run 下的 session producer 隔离与会话
 **上下文切换与发布预算的出口已关闭。** `context` hook 对完整候选的容量不匹配和 checkpoint 超预算使用
 checkpoint/Archive 身份引用，不恢复完整消息前缀；已建立 epoch 在事实暂不可读时按最后一个精确交点追加后缀。
 权威 checkpoint 保持完整，Pi 独立拥有 compaction。`verify:takeover:live` 与 `verify:budget:live` 按当前固定 manifest
-覆盖引用 fallback、后缀延续、pressure 推进、分支/重启/降级、原生 compaction 与三类独立 100k+ workload；
+覆盖引用 fallback、pressure 推进、分支/重启/降级、原生 compaction 与三类独立 100k+ workload；
+精确交点后缀延续由 deterministic checks 覆盖（live 场景每轮都是新进程，无法触发进程内延续）；
 发布默认预算保持 Archive chunk 50000、raw tail 20000、checkpoint 16000。
 
 **检索与恢复的出口已关闭。** 已提交 Archive 的 raw events 与已验证 checkpoint 写入同一套可删除、可重建的
@@ -64,7 +65,7 @@ checkpoint 同形状索引观察、完整脱敏 observation 和 ownership 清理
 ## 实施顺序
 
 可靠同步建立事件与同步事实；原子 Archive 建立原子对象；checkpoint 与上下文接管依次建立 checkpoint、
-`ActiveContext` 和真实上下文切换；预算校准校准多 workload/model 组合；检索与诊断建立检索与诊断体验。
+`ActiveContext` 和真实上下文切换；预算校准校准多 workload/model 组合；检索与恢复建立语义发现与有界回读。
 每一阶段只消费已通过上一阶段 deterministic checks 与 live gate 的状态。
 
 每个阶段按同一调查闭环执行：
@@ -212,20 +213,22 @@ checkpoint 同形状索引观察、完整脱敏 observation 和 ownership 清理
 
 #### 活动上下文构造
 
-- 选择已确认 checkpoint 和原子的 raw-tail 边界，形成并持久化最小 `ActiveContext`；
+- 选择当前分支最后一个已消费 checkpoint 和原子的 raw-tail 起点，形成并持久化最小 `ActiveContext`；
 - 跨重启恢复 `ActiveContext`，分支变化时只复用来源边界仍在当前祖先链上的上下文；
-- dry-run 从 checkpoint、原始用户指令 anchor、raw tail 和未归档事件 materialize 候选 task payload，
-  对照源事件验证内容与 tool call/result step；
+- dry-run 候选由 system、tools、完整 checkpoint、原始用户指令 anchor、有界省略说明和最近 raw tail 组成；
+  checkpoint 来源 Archive 之后已提交的 Archive 以固定大小的省略说明表达身份、事件边界和数量，
+  raw tail 从最后一个省略 Archive 之后开始；
+- 容量判定使用 provider 可见 `payload`，高水位推进使用完整来源 `pressure`；
 - dry-run 期间 provider 使用完整 Pi 上下文；
-- 使用 Pi 报告的任务模型容量计算 takeover eligibility；容量不匹配时保持 inactive，并由
-  `/viking` 显示 capacity mismatch、checkpoint ID 和 raw-tail 边界。
+- 使用 Pi 报告的任务模型容量计算 takeover eligibility；完整候选容量不匹配或 checkpoint 超预算时由
+  `/viking` 显示成因、checkpoint ID 和 raw-tail 边界；已提交 Archive 链存在完整性缺口时省略退化为完整 raw tail。
 
 **验收**：
 
-- `ActiveContext` 固定来源 checkpoint、原始用户指令 anchor 和原子的 raw-tail 起点，并能跨重启
-  恢复；
+- `ActiveContext` 只持久化 checkpoint 与 raw-tail 起点两个字段，并能跨重启恢复；
 - 分支变化时，仅复用来源 Archive 边界仍在当前祖先链上的 `ActiveContext`；
-- dry-run payload 完整包含 system、checkpoint、原始用户指令 anchor、raw tail 和全部未归档事件；
+- dry-run payload 的每个分段都可由源事件逐项重算，entry/step/anchor 完整，省略说明携带 Archive 身份、
+  事件边界与数量，且 `payload` 与 `pressure` 可分别重算；
 - tool call/result 在 raw-tail 边界保持原子；
 - Pi 报告的 `contextWindow-maxTokens` 能在安全余量内完整装载候选 payload；
 - 显式高水位配置不改变模型容量、候选 payload、headroom 或 eligibility。
@@ -233,8 +236,12 @@ checkpoint 同形状索引观察、完整脱敏 observation 和 ownership 清理
 #### 上下文切换与 fail-open
 
 - 通过 `context` hook 原子切换 provider 可见上下文，并冻结到下一次接管；
-- 每次高水位只替换一次 `ActiveContext`，后续事件追加在稳定前缀之后；
-- 无有效 `ActiveContext`、OpenViking/VLM 降级或容量不匹配时继续使用完整 Pi 上下文；
+- 每次高水位只替换一次 `ActiveContext`，后续事件追加在稳定前缀之后；epoch 内的高水位按完整来源
+  `pressure` 判定，避免已归档内容移出 provider 后冻结旧 checkpoint；
+- 完整候选容量不匹配或 checkpoint 超预算时，provider 请求改用 checkpoint/Archive 身份引用，
+  权威 checkpoint 不截断、不改写；
+- 已建立 epoch 事实暂不可读时按最后一个精确交点续后缀；找不到交点或旧候选离开当前分支时拒绝猜测；
+- 无有效 `ActiveContext`、OpenViking/VLM 降级且无法延续时继续使用完整 Pi 上下文；
 - Pi 原生 compaction 提供运行时 fail-open，扩展只提供生命周期钩子结果；
 - 用 golden 回归和独立生成场景验证切换不变量；用开发模型身份中的 task provider 真实请求验证高水位、
   分支、重启、compaction 和 fail-open payload。
@@ -243,7 +250,9 @@ checkpoint 同形状索引观察、完整脱敏 observation 和 ownership 清理
 
 - 每次上下文高水位原子替换一次 `ActiveContext`，并保持到下一次上下文高水位；
 - provider 实际 payload 与活动上下文构造验证的构造一致，后续事件追加在稳定前缀之后；
-- 无有效 `ActiveContext`、OpenViking/VLM 降级或容量不匹配时，provider 使用完整 Pi 上下文；
+- 引用 fallback 时 provider 只收到 checkpoint/Archive 身份引用、anchor、省略说明与最近 raw tail；
+- 后缀延续只追加当前分支上的新消息，不重复、不遗漏，也不复活已放弃分支的消息；
+- 无有效 `ActiveContext`、OpenViking/VLM 降级且无法延续时，provider 使用完整 Pi 上下文；
 - 单个用户指令后的长工具循环能够安全归档和接管；
 - Pi 是 compaction 的唯一触发方；`ActiveContext` 不可用时执行原生 split-turn compaction，扩展
   仅返回生命周期钩子结果并保持运行中的 agent 可用。
@@ -291,5 +300,7 @@ Archive/event 权威链有界恢复。它不重复验收 provider payload、通�
 
 ## 下一实施入口
 
-当前入口是阶段关闭后的发布复核：运行完整 deterministic/type/package checks，重复 retrieval live gate 验证稳定性，
-并依次执行“少就是多”挑战、独立实现审查与主会话业务链审查；只修复由当前变更引入且属于本阶段责任的问题。
+发布复核的审查与修复已完成：deterministic/type/package checks 全绿，“少就是多”挑战、独立实现审查与业务链综合审查
+的确认发现已修复并由对应测试固定；sync/observability/context/takeover/budget/retrieval/archive 七个 live gate
+已按当前代码重跑通过。当前唯一待办：`verify:checkpoint:live` 的 w2 多媒体媒体路径在当前 provider 状态下
+两次复现 720s 超时（该路径代码与本次变更无关，同日早些时候亦有失败基线），需在 provider 正常时复跑确认。

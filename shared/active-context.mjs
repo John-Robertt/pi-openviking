@@ -24,6 +24,9 @@ const ACTIVE_CONTEXT_DOMAIN = "pi-openviking/active-context";
 const CHECKPOINT_ID_PATTERN = /^chk_[0-9a-f]{64}$/;
 const EVENT_ID_PATTERN = /^evt_[0-9a-f]{64}$/;
 
+/** 完整候选不适配、允许改用 checkpoint 身份引用的 eligibility 状态。 */
+export const BOUNDED_REFERENCE_ELIGIBILITY = Object.freeze(["capacity_mismatch", "checkpoint_over_budget"]);
+
 export function activeContextFileKey(target, sessionId) {
   return stateFileKey(ACTIVE_CONTEXT_DOMAIN, ACTIVE_CONTEXT_IDENTITY_VERSION, target, sessionId);
 }
@@ -148,6 +151,14 @@ function omittedArchiveContext(checkpoint, branchEvents, archives, rawTailStart)
   if (end < rawTailStart) return null;
 
   const events = branchEvents.slice(rawTailStart, end + 1);
+  // 完整性冲突会让已提交 Archive 链出现缺口；缺口内的事件不属于任何已提交 Archive，
+  // 既不能检索也不能展开。连续性不成立时退化为完整 raw tail，不静默省略不可发现的事件。
+  const archivedEvents = omittedArchives.reduce(
+    (sum, descriptor) => sum + (descriptor?.manifest?.eventCount ?? Number.NaN), 0,
+  );
+  if (archivedEvents !== events.length || omittedArchives[0]?.manifest?.firstEventId !== events[0]?.eventId) {
+    return null;
+  }
   const first = omittedArchives[0].manifest;
   const last = omittedArchives.at(-1).manifest;
   const text = [
@@ -284,15 +295,17 @@ function checkpointReferencePayload(payload) {
  */
 export function advanceActiveContextMessages(rendered, current) {
   if (!Array.isArray(rendered) || rendered.length === 0 || !Array.isArray(current)) return null;
-  for (let left = rendered.length - 1; left >= 0; left--) {
-    if (rendered[left]?.role === "custom") continue;
-    const expected = JSON.stringify(rendered[left]);
-    for (let right = current.length - 1; right >= 0; right--) {
-      if (JSON.stringify(current[right]) !== expected) continue;
-      return [...structuredClone(rendered), ...structuredClone(current.slice(right + 1))];
-    }
+  // 只有 rendered 的最后一个非 custom 消息能作交点：分支回退后，更老的交点会把
+  // rendered 尾部已放弃分支的消息重新带回 provider 上下文；找不到精确交点就拒绝猜测。
+  let tail = -1;
+  for (let index = rendered.length - 1; index >= 0; index--) {
+    if (rendered[index]?.role !== "custom") { tail = index; break; }
   }
-  return null;
+  if (tail < 0) return null;
+  const expected = JSON.stringify(rendered[tail]);
+  const right = current.map((message) => JSON.stringify(message)).lastIndexOf(expected);
+  if (right < 0) return null;
+  return [...structuredClone(rendered), ...structuredClone(current.slice(right + 1))];
 }
 
 /**
@@ -408,6 +421,7 @@ const initialState = () => ({
   reserveTokens: null,
   usableTokens: null,
   payloadTokens: null,
+  payloadForm: null,
   pressureTokens: null,
   headroomTokens: null,
   lastFailure: null,
@@ -517,6 +531,7 @@ export class ActiveContextManager {
       omittedTailEvents: omitted?.eventCount ?? 0,
       omittedTailTokens: omitted?.eventTokens ?? 0,
       pressureTokens: candidate?.tokens.pressure ?? null,
+      payloadForm: null,
       ...verdict,
       lastFailure: this.roundFailure,
     });
@@ -578,6 +593,7 @@ export class ActiveContextManager {
       this.applyState({
         ...this.state,
         eligibility: "facts_unavailable",
+        payloadForm: null,
         lastFailure: "Pi task model context facts unavailable",
       });
       return null;
@@ -607,8 +623,10 @@ export class ActiveContextManager {
       });
 
       let rendered = null;
+      let payloadForm = null;
       if (verdict.eligibility === "eligible") {
         rendered = renderActiveContextMessages(payload);
+        payloadForm = "full";
         if (latest && !candidateIsCurrent) {
           if (this.path) await writeActiveContext(this.path, latest);
           this.context = latest;
@@ -632,8 +650,9 @@ export class ActiveContextManager {
       }
       if (!rendered && statusVerdict.eligibility === "eligible") {
         rendered = renderActiveContextMessages(statusPayload);
+        payloadForm = "full";
       }
-      if (!rendered && ["capacity_mismatch", "checkpoint_over_budget"].includes(statusVerdict.eligibility)) {
+      if (!rendered && BOUNDED_REFERENCE_ELIGIBILITY.includes(statusVerdict.eligibility)) {
         const referencePayload = checkpointReferencePayload(statusPayload);
         const referenceVerdict = referencePayload ? evaluateEligibility({
           capacity,
@@ -643,6 +662,7 @@ export class ActiveContextManager {
         }) : null;
         if (referenceVerdict?.eligibility === "eligible") {
           rendered = renderActiveContextMessages(referencePayload);
+          payloadForm = "reference";
           statusPayload = referencePayload;
           statusVerdict = {
             ...statusVerdict,
@@ -660,13 +680,14 @@ export class ActiveContextManager {
         omittedTailEvents: payloadSegment(statusPayload, "omitted")?.eventCount ?? 0,
         omittedTailTokens: payloadSegment(statusPayload, "omitted")?.eventTokens ?? 0,
         pressureTokens: statusPayload.tokens.pressure,
+        payloadForm,
         ...statusVerdict,
         lastFailure: null,
       });
       return rendered;
     } catch (error) {
       this.recordFailure(error, "materialize", "degrade");
-      this.applyState({ ...this.state, eligibility: "facts_unavailable", lastFailure: this.roundFailure });
+      this.applyState({ ...this.state, eligibility: "facts_unavailable", payloadForm: null, lastFailure: this.roundFailure });
       return null;
     }
   }
@@ -679,8 +700,8 @@ export class ActiveContextManager {
       const payload = materializeActiveContext({ context: this.context, checkpoint, branchEvents, archives });
       const rawTail = payloadSegment(payload, "raw-tail").events;
       const omitted = payloadSegment(payload, "omitted");
-      const firstKept = rawTail[0] ?? branchEvents.find((event) => event.eventId === omitted?.lastEventId) ??
-        branchEvents.find((event) => event.eventId === this.context.rawTailStartEventId);
+      // raw tail 为空（分支 leaf 恰在省略区间末尾）时没有可保留的完整 entry，交给 Pi 原生压缩。
+      const firstKept = rawTail[0];
       if (!firstKept?.source?.entryId) return null;
       const summary = [renderCheckpointBlock(checkpoint), omitted?.text].filter(Boolean).join("\n\n");
       return {

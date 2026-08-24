@@ -14,7 +14,7 @@ import { buildCheckpointEvent, buildCheckpointRequestEvent, checkpointId } from 
 import { OpenVikingCheckpointProcessor } from "../shared/checkpoint-processor.mjs";
 import { CheckpointManager } from "../shared/checkpoint-store.mjs";
 import { OBSERVATION_STAGE_REGISTRY, createObservation, validateObservationRecord } from "../shared/observe.mjs";
-import { RecordedEventAdapter } from "../shared/recorded-event-adapter.mjs";
+import { RecordedEventAdapter, recordedEventStorageLocation } from "../shared/recorded-event-adapter.mjs";
 import { RetrievalIndex } from "../shared/retrieval-index.mjs";
 import { ARCHIVE_USER_ROOT, MemoryContentTransport, archiveEvents } from "./fixtures/archive-fixtures.mjs";
 import { checkpointOverview } from "./fixtures/checkpoint-fixtures.mjs";
@@ -289,6 +289,18 @@ test("Archive 提交与失败由同一责任模块解释，只记录分支、计
   const failed = await conflicting.formArchives(sessionId, events);
   // 冲突只停下它自己的那一个 Archive，其余独立 Archive 照常提交。
   assert.equal(failed.pending, 1);
+
+  // 显式回读失败（expand）必须留下 return_error 处置记录，而不是只在工具文本里出现。
+  const tampered = events[0];
+  const tamperedLocation = recordedEventStorageLocation(ARCHIVE_USER_ROOT, sessionId, tampered.eventId);
+  const tamperedUri = transport.files.has(tamperedLocation.directUri)
+    ? tamperedLocation.directUri
+    : tamperedLocation.chunkUri(0);
+  transport.files.set(tamperedUri, Buffer.from("tampered"));
+  const tamperedArchive = committed.archives.find(
+    (descriptor) => descriptor.manifest.firstEventId === tampered.eventId,
+  );
+  await assert.rejects(manager.expand(sessionId, tamperedArchive.manifest.archiveId));
   manager.observeFinalState();
   await observation.finish();
 
@@ -305,6 +317,9 @@ test("Archive 提交与失败由同一责任模块解释，只记录分支、计
   assert.equal(failure.data.errorCode, "manifest_integrity");
   assert.equal(failure.data.errorClass, "integrity");
   assert.equal(failure.data.branch, "skip_archive");
+  const expandFailure = records.find((record) => record.stage === "archive_failure" && record.data.branch === "return_error");
+  assert.ok(expandFailure, "expand 失败必须记录 return_error 处置");
+  assert.equal("committed" in expandFailure.data, false, "显式回读失败不携带提交计数");
 });
 
 test("recall 只记录来源、数量与注入结果，不记录 query、内容或 URI", async () => {
@@ -578,7 +593,7 @@ test("检索索引只记录来源类型、数量和可重试降级，不记录�
     { archiveId },
     {
       source: { system: "pi-openviking", sourceType: "checkpoint", sourceId: `chk_${"b".repeat(64)}` },
-      payload: { checkpoint: { narrative: "private checkpoint retrieval text" } },
+      payload: { checkpoint: { narrative: "private checkpoint retrieval text", sourceArchiveId: archiveId } },
     },
   ));
   await observation.finish();
