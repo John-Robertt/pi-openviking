@@ -36,6 +36,9 @@ export class CheckpointManager {
     notify = () => {},
     onStateChange = () => {},
     pollIntervalMs = 2000,
+    // 上游连接中断会让 provider task 永远停在非终态（OpenViking 0.4.15 不终态化 WM 创建失败）；
+    // 超过该时限未到终态的 task 按 task_timeout 记入 failure 事实并进入既有重试链。
+    taskTimeoutMs = 600_000,
     now = () => new Date().toISOString(),
   }) {
     this.adapter = adapter;
@@ -45,6 +48,7 @@ export class CheckpointManager {
     this.notify = notify;
     this.onStateChange = onStateChange;
     this.pollIntervalMs = pollIntervalMs;
+    this.taskTimeoutMs = taskTimeoutMs;
     this.now = now;
     this.sessionId = null;
     this.archives = [];
@@ -202,7 +206,7 @@ export class CheckpointManager {
         scan.current.attempt,
       );
       this.cleanedTaskIds.delete(request.taskId);
-      const result = await this.processor.advance({
+      let result = await this.processor.advance({
         taskId: request.taskId,
         manifest: expanded.manifest,
         events: expanded.events,
@@ -213,6 +217,14 @@ export class CheckpointManager {
         this.pendingCleanupTaskIds.add(request.taskId);
         await this.cleanupAttempt(request.taskId);
         return;
+      }
+      // task 年龄以服务器侧创建时刻为准（不含媒体准备）；超时未到终态即转入既有的 failure 事实与重试链。
+      if (result.status === "processing" && Number.isFinite(result.taskCreatedAtMs) &&
+        Date.parse(this.now()) - result.taskCreatedAtMs > this.taskTimeoutMs) {
+        result = {
+          status: "failed",
+          error: { errorClass: "protocol", errorCode: "task_timeout", message: "checkpoint VLM task timed out" },
+        };
       }
       if (result.status === "processing" || result.status === "pending") {
         if (result.error) this.recordOperationalFailure(result.error, result.error.errorCode, "pending_retry");

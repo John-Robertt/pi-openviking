@@ -286,6 +286,14 @@ export class OVClient {
     );
   }
 
+  async cancelTask(taskId: string): Promise<OVResponse<any>> {
+    return this.fetchJSON<any>(
+      openVikingApiPath(`/tasks/${encodeURIComponent(taskId)}/cancel`),
+      { method: "POST", body: JSON.stringify({}) },
+      10000,
+    );
+  }
+
   async listTasks(resourceId: string): Promise<OVResponse<any[]>> {
     return this.fetchJSON<any[]>(
       openVikingApiPath(`/tasks?task_type=session_commit&resource_id=${encodeURIComponent(resourceId)}&limit=20`),

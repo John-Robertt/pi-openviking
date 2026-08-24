@@ -28,6 +28,7 @@ import {
   writeExtensionConfig,
 } from "./context-live.mjs";
 import {
+  COMPACTION_PADDING_PROMPT,
   LIVE_REPO as REPO,
   assertRunHealthy,
   runLiveGate,
@@ -174,15 +175,15 @@ async function w1(log, ctx) {
     actions: [
       { prompt: `${ctx.workload.inputs.P2}\n${growth}` },
       { command: "/viking sync" },
-      { delayMs: ctx.manifest.environment.epochCheckpointWaitMs },
-      { command: "/viking" },
+      // 后台 checkpoint 是异步 VLM 消费，固定等待不可靠：轮询 /viking 直到“最近 checkpoint”不再是上一代。
+      { command: "/viking", untilNotifyExcludes: `最近 ${established.checkpointId}` },
       { prompt: ctx.workload.inputs.P3 },
     ],
   });
   assertRunHealthy(log, ctx, run, { requireCapture: true });
   const latestSource = await branchSource(ctx, run.sessionFile);
   recordWrittenObjects(ctx, latestSource.branch, describeArchives(ctx.sessionId, latestSource.branch, stableConfig.archive));
-  const checkpointMessage = String(run.actions[3]?.notifyEvent?.message ?? "");
+  const checkpointMessage = String(run.actions[2]?.notifyEvent?.message ?? "");
   const backgroundCheckpointId = checkpointMessage.match(/Checkpoint：[^\n]*最近 (chk_[0-9a-f]{64})/)?.[1] ?? null;
   log.check(ctx.workloadId, "epoch.background-checkpoint-ready", "new checkpoint before second request",
     backgroundCheckpointId, Boolean(backgroundCheckpointId) && backgroundCheckpointId !== established.checkpointId);
@@ -395,42 +396,13 @@ async function w3(log, ctx) {
   log.check(ctx.workloadId, "checkpoint-budget.full-context", true, overBudgetPayload.includes(ctx.archivedMarker),
     overBudgetPayload.includes(ctx.archivedMarker) && !overBudgetPayload.includes(established.checkpointId));
 
-  writeExtensionConfig(ctx, ctx.manifest.environment.extensionConfig.capacityMismatch);
-  seedCapacityMismatch(ctx, established.formation.sessionFile);
-  const capacity = await runPi(ctx, {
-    workloadId: ctx.workloadId, turn: 4, endpoint: ctx.endpoint,
-    actions: [
-      { command: "/viking sync" },
-      { rpc: { type: "set_auto_compaction", enabled: false } },
-      { prompt: ctx.workload.inputs.P2 },
-      { command: "/viking" },
-    ],
-  });
-  assertRunHealthy(log, ctx, capacity, { requireCapture: true });
-  const status = vikingActiveContext(capacity);
-  log.check(ctx.workloadId, "capacity.mismatch", "容量不匹配", status.reason,
-    status.reason === "容量不匹配" && status.payloadTokens >= status.usableTokens);
-  const payloadText = JSON.stringify(providerPayloads(capacity)[0]);
-  log.check(ctx.workloadId, "capacity.full-context", true, payloadText.includes(LARGE_MARKER),
-    payloadText.includes(LARGE_MARKER) && !payloadText.includes(established.checkpointId));
-
-  const native = await runPi(ctx, {
-    workloadId: ctx.workloadId, turn: 5, endpoint: ctx.endpoint,
-    actions: [{ rpc: { type: "compact" }, timeoutMs: ctx.manifest.thresholds.agentSettledMs }],
-  });
-  assertRunHealthy(log, ctx, native, { requireCapture: true, expectedCaptureCount: 0 });
-  const manager = SessionManager.open(native.sessionFile);
-  const entry = manager.getBranch().findLast((candidate) => candidate.type === "compaction");
-  const result = native.actions[0]?.response?.data;
-  log.check(ctx.workloadId, "compaction.native", false, entry?.fromHook ?? false,
-    entry?.fromHook !== true && result?.details?.type !== "openviking-active-context" && Boolean(result?.usage));
-
-  writeExtensionConfig(ctx, ctx.manifest.environment.extensionConfig.checkpointOverBudget);
+  // 先在小会话上用 padding 触发并观察真实原生 compaction，再 seed 容量失配原子 entry：一旦 600k 原子 entry
+  // 成为 compaction 的保留边界，其后的 compact 没有可摘要区间（Pi 拒绝 "Nothing to compact"），顺序不可颠倒。
   const observed = await runPi(ctx, {
-    workloadId: ctx.workloadId, turn: 6, endpoint: ctx.endpoint, capture: "observation",
+    workloadId: ctx.workloadId, turn: 4, endpoint: ctx.endpoint, capture: "observation",
     actions: [
       { rpc: { type: "set_auto_compaction", enabled: false } },
-      { prompt: ctx.workload.inputs.P3 },
+      { prompt: COMPACTION_PADDING_PROMPT },
       { rpc: { type: "compact" }, timeoutMs: ctx.manifest.thresholds.agentSettledMs },
     ],
   });
@@ -457,11 +429,41 @@ async function w3(log, ctx) {
     observedEntry?.fromHook !== true && observedCompaction?.details?.type !== "openviking-active-context" &&
       Boolean(observedCompaction?.usage));
 
+  writeExtensionConfig(ctx, ctx.manifest.environment.extensionConfig.capacityMismatch);
+  seedCapacityMismatch(ctx, established.formation.sessionFile);
+  const capacity = await runPi(ctx, {
+    workloadId: ctx.workloadId, turn: 5, endpoint: ctx.endpoint,
+    actions: [
+      { command: "/viking sync" },
+      { rpc: { type: "set_auto_compaction", enabled: false } },
+      { prompt: ctx.workload.inputs.P2 },
+      { command: "/viking" },
+    ],
+  });
+  assertRunHealthy(log, ctx, capacity, { requireCapture: true });
+  const status = vikingActiveContext(capacity);
+  log.check(ctx.workloadId, "capacity.mismatch", "容量不匹配", status.reason,
+    status.reason === "容量不匹配" && status.payloadTokens >= status.usableTokens);
+  const payloadText = JSON.stringify(providerPayloads(capacity)[0]);
+  log.check(ctx.workloadId, "capacity.full-context", true, payloadText.includes(LARGE_MARKER),
+    payloadText.includes(LARGE_MARKER) && !payloadText.includes(established.checkpointId));
+
+  const native = await runPi(ctx, {
+    workloadId: ctx.workloadId, turn: 6, endpoint: ctx.endpoint,
+    actions: [{ rpc: { type: "compact" }, timeoutMs: ctx.manifest.thresholds.agentSettledMs }],
+  });
+  assertRunHealthy(log, ctx, native, { requireCapture: true, expectedCaptureCount: 0 });
+  const manager = SessionManager.open(native.sessionFile);
+  const entry = manager.getBranch().findLast((candidate) => candidate.type === "compaction");
+  const result = native.actions[0]?.response?.data;
+  log.check(ctx.workloadId, "compaction.native", false, entry?.fromHook ?? false,
+    entry?.fromHook !== true && result?.details?.type !== "openviking-active-context" && Boolean(result?.usage));
+
   ctx.runs.push(summarizeRun(overBudget), summarizeRun(capacity), summarizeRun(native), {
     turn: observed.turn, ms: observed.ms, exitCode: observed.exitCode,
     observation: overBudgetObservation.summary, observationPath: observed.observationPath,
   });
-  const parsed = parsePiSessionJsonl(await readFile(observed.sessionFile, "utf8"), { sessionId: ctx.sessionId });
+  const parsed = parsePiSessionJsonl(await readFile(native.sessionFile, "utf8"), { sessionId: ctx.sessionId });
   const events = projectPiEntries(ctx.sessionId, parsed.entries);
   const onBranch = new Set(parsed.branch.map((branchEntry) => branchEntry.id));
   const branch = events.filter((event) => onBranch.has(event.source.entryId));

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { existsSync, globSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
+  TEMPLATE_GUIDANCE,
   buildCheckpointEvent,
   buildCheckpointFailureEvent,
   buildCheckpointRequestEvent,
@@ -28,6 +32,7 @@ import {
 } from "./fixtures/archive-fixtures.mjs";
 import { CHECKPOINT_IMAGE_PNG_BASE64 } from "./fixtures/checkpoint-fixtures.mjs";
 
+const REPO = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const SESSION = "checkpoint-session";
 
 test("多模态 live fixture 是可辨识尺寸的 PNG", () => {
@@ -250,32 +255,32 @@ test("每代 checkpoint 只保存当前统一状态，退化局部摘要不可�
   assert.equal(validateCheckpointOverview(OVERVIEW.replaceAll("\n", "\r\n")), validateCheckpointOverview(OVERVIEW));
 });
 
-test("真实为空的记录章节可消费，模板指引按结构剥离而不按措辞", () => {
-  // OpenViking 模板在每个标题下发出一行斜体指引，措辞由服务端拥有。
+test("真实为空的记录章节可消费，模板指引按 pin 模板原文逐字剥离", () => {
+  // 指引行与 OpenViking 0.4.15 的 compression.ov_wm_v2 模板逐字一致（由模板一致性用例守护）。
   const guided = `# Working Memory
 
 ## Task & Goals
-_What is the purpose or topic of this conversation?_
+_What is the purpose or topic of this conversation? Key objectives, design decisions, or context that frames the discussion._
 
 - Complete a constrained response-format test
 
 ## Current State
-_2-5 sentences MAX: What is the latest status? NOT a fact dump._
+_2-5 sentences MAX: What is the latest status? What is unresolved or pending? Immediate next steps. NOT a fact dump._
 
 The requested reply was produced and nothing is pending.
 
 ## Key Facts & Decisions
-_Stable facts about the user's world._
+_Stable facts about the user's world: conclusions, relationships, preferences, constraints, technical choices with rationale, commitments, dates, quantities. One bullet per fact._
 
 - The user asked for exactly two letters and no tool calls
 
 ## Files & Context
-_Referenced resources that future answers might depend on._
+_Referenced resources that future answers may depend on: file paths, document links, key URLs — each with why it matters. Omit bulk media/search dumps._
 
 - No files, links, or external resources were referenced.
 
 ## Errors & Corrections
-_Mistakes, misunderstandings, or failed approaches._
+_Mistakes, misunderstandings, or failed approaches — and how they were corrected. User corrections to assistant's assumptions._
 
 - No errors or corrections recorded.
 
@@ -289,10 +294,9 @@ _Unresolved questions, blockers, follow-ups, risks, or topics to revisit._
   assert.match(normalized, /## Next Action\n- No open issue remains/);
   assert.equal(validateCheckpointOverview(normalized), normalized);
 
-  // 仅有斜体指引仍表示记录章节存在且真实为空；协议以统一空值消费，指引不得进入正文。
+  // 仅有斜体占位仍表示记录章节存在且真实为空；协议以统一空值消费。
   const italicOnly = validateCheckpointOverview(guided.replace("- None.", "_None_"));
   assert.match(italicOnly, /## Open Issues\n- None\./);
-  assert.doesNotMatch(italicOnly, /Unresolved questions/);
 
   const guidanceOnlyRecords = validateCheckpointOverview(guided
     .replace("\n\n- No files, links, or external resources were referenced.", "")
@@ -316,6 +320,51 @@ _Unresolved questions, blockers, follow-ups, risks, or topics to revisit._
     () => validateCheckpointOverview(guided.replace(/\n\n## Open Issues[\s\S]*$/, "")),
     /missing Open Issues/,
   );
+});
+
+test("VLM 自己写的整行斜体是正文而非模板指引，不得剥除", () => {
+  // live gate 实测失败模式：VLM 未保留模板指引，改用斜体写正文；按格式猜测会把真实续接状态删成空章节。
+  const italicContent = `# Working Memory
+
+## Session Title
+_Archived Restart Token Concatenation_
+
+## Current State
+_The requested string operation was completed and no active task remains._
+
+## Task & Goals
+_The conversation concerned a one-step exact-string concatenation request._
+
+## Key Facts & Decisions
+_The required output was exactly RESTART_ARCHIVED_ASSISTANT._
+
+## Files & Context
+_No files, links, or external resources were referenced._
+
+## Errors & Corrections
+_No errors, misunderstandings, or corrections were recorded._
+
+## Open Issues
+_None._`;
+  const normalized = validateCheckpointOverview(italicContent);
+  assert.match(normalized, /## Task & Goals\n_The conversation concerned a one-step exact-string concatenation request\._/);
+  assert.match(normalized, /## Current State\n_The requested string operation was completed/);
+  assert.match(normalized, /## Key Facts & Decisions\n_The required output was exactly RESTART_ARCHIVED_ASSISTANT\._/);
+});
+
+test("指引剥离表与 pin 的 OpenViking 模板原文一致", (t) => {
+  // 指引措辞由 OpenViking 拥有并随版本固定；升级 shared/toolchain.mjs 的 pin 后本用例直接比对
+  // 安装包内的模板原文，措辞漂移在此暴露而不是静默失效。
+  const venv = join(REPO, ".dev/toolchain/venv");
+  if (!existsSync(venv)) return t.skip("需要先 npm run dev -- bootstrap 安装受管 OpenViking");
+  const matches = globSync("lib/python*/site-packages/openviking/prompts/templates/compression/ov_wm_v2.yaml", { cwd: venv });
+  assert.equal(matches.length, 1, "pin 的 OpenViking 安装包必须包含唯一的 ov_wm_v2 模板");
+  const template = readFileSync(join(venv, matches[0]), "utf8");
+  const expected = new Map();
+  for (const match of template.matchAll(/^  ## ([^\n]+)\n  (_[^\n]+_)$/gm)) {
+    expected.set(match[1], match[2]);
+  }
+  assert.deepEqual(TEMPLATE_GUIDANCE, expected);
 });
 
 test("checkpoint-failure 只持久化代码拥有的错误分类与消息", async () => {
@@ -437,6 +486,94 @@ test("失败重试、积压恢复与重放只产生一个有效 checkpoint", asy
   assert.equal(replay.status.consumed, descriptors.length);
 });
 
+test("task 超过生成时限未到终态时记录 task_timeout 事实并以新 attempt 重试", async () => {
+  const { adapter, archives, descriptors } = await archiveFixture();
+  const manifest = descriptors[0].manifest;
+  const createdAtMs = Date.parse("2026-08-20T00:00:00.000Z");
+  let nowMs = createdAtMs;
+  const attempts = [];
+  let secondEntered;
+  const secondAdvanceEntered = new Promise((resolve) => { secondEntered = resolve; });
+  let releaseSecond;
+  const secondAdvanceGate = new Promise((resolve) => { releaseSecond = resolve; });
+  const processor = {
+    async advance(input) {
+      attempts.push(input);
+      if (attempts.length <= 2) {
+        if (attempts.length === 2) {
+          secondEntered();
+          await secondAdvanceGate;
+        }
+        return { status: "processing", taskCreatedAtMs: createdAtMs };
+      }
+      return { status: "completed", overview: OVERVIEW };
+    },
+    async cleanup() { return true; },
+  };
+  const manager = new CheckpointManager({}, {
+    adapter,
+    archiveManager: archives,
+    processor,
+    pollIntervalMs: 1,
+    taskTimeoutMs: 60_000,
+    now: () => new Date(nowMs).toISOString(),
+  });
+  await manager.schedule(SESSION, [descriptors[0]]);
+  await secondAdvanceEntered;
+  nowMs += 61_000;
+  releaseSecond();
+  for (let i = 0; i < 200 && manager.status.mode !== "caught_up"; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(manager.status.mode, "caught_up");
+  assert.equal(attempts.length, 3);
+  assert.equal(attempts[0].taskId, attempts[1].taskId, "同一 request 事实的轮询不重复提交");
+  assert.notEqual(attempts[1].taskId, attempts[2].taskId, "超时后以新 attempt 身份重试");
+  const failure = await adapter.readEventIfExists(SESSION, checkpointFailureEventId(manifest, null, 1));
+  assert.equal(failure?.event?.payload?.error?.errorClass, "protocol");
+  assert.equal(failure?.event?.payload?.error?.errorCode, "task_timeout");
+  assert.equal(failure?.event?.payload?.error?.message,
+    "checkpoint VLM task did not reach a terminal state before the task timeout");
+  assert.ok(await adapter.readEventIfExists(SESSION, checkpointRequestEventId(manifest, null, 2)));
+  assert.ok(await adapter.readEventIfExists(SESSION, checkpointEventId(manifest)));
+  await manager.stop();
+});
+
+test("task 连续三次超时后进入 failed 并保留逐 attempt 超时事实", async () => {
+  const { adapter, archives, descriptors } = await archiveFixture();
+  const manifest = descriptors[0].manifest;
+  const createdAtMs = Date.parse("2026-08-20T00:00:00.000Z");
+  const nowMs = createdAtMs + 120_000;
+  let advances = 0;
+  const notifications = [];
+  const processor = {
+    async advance() { advances++; return { status: "processing", taskCreatedAtMs: createdAtMs }; },
+    async cleanup() { return true; },
+  };
+  const manager = new CheckpointManager({}, {
+    adapter,
+    archiveManager: archives,
+    processor,
+    notify: (message, level) => notifications.push({ message, level }),
+    pollIntervalMs: 1,
+    taskTimeoutMs: 60_000,
+    now: () => new Date(nowMs).toISOString(),
+  });
+  await manager.schedule(SESSION, [descriptors[0]]);
+  for (let i = 0; i < 200 && manager.status.mode !== "failed"; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(manager.status.mode, "failed");
+  assert.equal(advances, 3);
+  assert.equal(manager.status.lastFailure,
+    "checkpoint VLM task did not reach a terminal state before the task timeout");
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const failure = await adapter.readEventIfExists(SESSION, checkpointFailureEventId(manifest, null, attempt));
+    assert.equal(failure?.event?.payload?.error?.errorCode, "task_timeout");
+  }
+  assert.ok(notifications.some((item) => item.message.includes("重试已耗尽")));
+  await manager.stop();
+});
 test("进程重启从 request 事实恢复同一 task 并完成 checkpoint", async () => {
   const { adapter, archives, descriptors } = await archiveFixture();
   const manifest = descriptors[0].manifest;

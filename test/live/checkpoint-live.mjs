@@ -267,7 +267,13 @@ async function w2(log, ctx) {
       factParts.length === 2 && !factBytes.includes(CHECKPOINT_IMAGE_PNG_BASE64));
     const taskId = fact.request.taskId;
     const taskRoot = `${ctx.userRoot}/resources/.pi-openviking/checkpoint-inputs/v1/${taskId}`;
-    const temp = await client.statUri(taskRoot);
+    // 状态发布先于临时媒体清理（设计如此：派生消费者无需等待清理），此处轮询至清理落地。
+    const settleDeadline = Date.now() + ctx.manifest.thresholds.cleanupSettleMs;
+    let temp = await client.statUri(taskRoot);
+    while (temp.ok && temp.exists && Date.now() < settleDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      temp = await client.statUri(taskRoot);
+    }
     log.check(ctx.workloadId, "media-temp-cleaned", false, temp.exists, temp.ok && !temp.exists);
     ctx.extraUris = [`${taskRoot}/image-0000.png`];
     await sourceStillIntact(log, ctx, fixture.adapter, fixture.manager, [descriptor], "after");

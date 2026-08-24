@@ -278,7 +278,7 @@ Key Facts & Decisions 保存当前有效的稳定约束和决定，Current State
 状态和新 Archive 生成一个新的当前状态，只保留未完成目标与仍有效的事实，删除已完成、已失效和重复表述。
 Task & Goals、Current State 与 Key Facts & Decisions 承载续接状态，其中任一退化为占位或容器计数式输出即不表示消费完成；
 Open Issues、Files & Context 与 Errors & Corrections 是记录性章节，必须存在而真实为空是有效事实。原生模板紧跟标题发出的
-整行斜体指引按结构剥离，不进入注入正文。Next Action 在协议边界从 Open Issues 规范化生成，没有未解决问题时表达
+指引行按 pin 版本模板原文逐字识别并剥离，不进入注入正文；VLM 自己写的整行斜体是正文，必须保留。Next Action 在协议边界从 Open Issues 规范化生成，没有未解决问题时表达
 等待下一条用户指令。checkpoint 不再保存
 从 narrative 重复投影出的数组或字段。checkpoint 作为新事件追加，来源 Archive 和之前的 checkpoint 始终保持不可变。
 VLM 失败由后台异步重试，raw Archive 的持久状态保持有效。
@@ -293,7 +293,10 @@ provider/task 错误正文保留在受管 OpenViking 边界内。checkpoint 只�
 checkpoint 下连续 attempt 中存在、匹配且没有 failure 的 request 时才表示消费完成；来源 Archive 身份和
 hash 必须同时匹配。并发进程写入同一事实身份时采用首个通过该完整事实链校验的已提交对象。
 多模态输入只有在每个媒体对象都得到非空语义摘要后才提交 VLM；终态 request/failure/checkpoint 跨重启
-派生临时 Session 与 attempt 媒体根的清理义务，二者都确认不存在才算清理完成。每次协调调度从既有 request
+派生临时 Session 与 attempt 媒体根的清理义务，二者都确认不存在才算清理完成；清理时先取消仍处非终态的
+provider task 再删除，避免在受管服务上留下悬挂占用。provider task 提交后超过生成时限（默认 600 秒）仍未到
+终态时按 task_timeout 记录明确失败并进入同一 attempt 重试链，时限从服务器侧 task 创建时刻起算，不含媒体准备。
+每次协调调度从既有 request
 事实发现一次失效 task，随后只重试已发现的正向义务，不形成第二份持久队列。
 
 VLM 消费状态由上述事实派生。最新 checkpoint 之后没有 Archive 时表示已经赶上；只有

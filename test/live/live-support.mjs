@@ -120,6 +120,10 @@ const DEV_PID_FILE = join(DEV_RUN_DIR, "server.pid");
 
 export class PiRunError extends Error {}
 
+// Pi 默认 keepRecentTokens=20000（用户消息按 chars/4 估算）；验证真实原生 compaction 的 workload 必须先让会话
+// 超过该规模，否则 Pi 拒绝 "Nothing to compact (session too small)"。本 prompt 提供确定性的足量内容。
+export const COMPACTION_PADDING_PROMPT = `请忽略下面的填充内容，只回复 OK 两个字母。\n${"Pi OpenViking live gate padding block. ".repeat(2400)}`;
+
 export function commandNotifyMatches(command, message) {
   const text = String(message ?? "");
   if (command.trim() === "/viking sync") {
@@ -270,12 +274,6 @@ export async function runPi(ctx, {
         const resp = await waitFor((m) => m.type === "response" && m.id === id, timeoutMs, `${command} response ${id}`);
         if (resp.success !== true) throw new PiRunError(`${command} rejected: ${JSON.stringify(resp).slice(0, 200)}`);
         action.response = resp;
-      } else if (action.delayMs !== undefined) {
-        const delayMs = Number(action.delayMs);
-        if (!Number.isFinite(delayMs) || delayMs < 0 || Date.now() + delayMs >= deadline) {
-          throw new PiRunError(`invalid delay ${action.delayMs}`);
-        }
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
       } else if (action.command !== undefined) {
         let attempt = 0;
         do {
@@ -296,9 +294,11 @@ export async function runPi(ctx, {
             attemptMark,
           );
           attempt++;
-          if (!action.untilNotifyIncludes || String(action.notifyEvent.message).includes(action.untilNotifyIncludes)) break;
+          const includesOk = !action.untilNotifyIncludes || String(action.notifyEvent.message).includes(action.untilNotifyIncludes);
+          const excludesOk = !action.untilNotifyExcludes || !String(action.notifyEvent.message).includes(action.untilNotifyExcludes);
+          if (includesOk && excludesOk) break;
           if (Date.now() + 50 >= deadline) {
-            throw new PiRunError(`${action.command} notify did not include ${action.untilNotifyIncludes}`);
+            throw new PiRunError(`${action.command} notify did not reach the expected state before the run deadline`);
           }
           await new Promise((resolve) => setTimeout(resolve, 50));
         } while (true);

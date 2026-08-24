@@ -19,6 +19,7 @@ import { projectPiEntries, recordedEventBytes } from "../../shared/recorded-even
 import { recordedEventStorageLocation } from "../../shared/recorded-event-adapter.mjs";
 import { readSyncAck } from "../../shared/sync-ack.mjs";
 import {
+  COMPACTION_PADDING_PROMPT,
   LIVE_REPO as REPO,
   ackFileKey,
   conflictBytesOf,
@@ -185,6 +186,11 @@ async function wSuccessRecallSync(log, ctx) {
   await mkdirChain(ctx.client, `${ctx.userRoot}/resources`, ownerRoot);
   await createObject(ctx.client, ownerRoot, recallUri, Buffer.from(ctx.workload.prompt, "utf8"));
   (ctx.extraUris ??= []).push(recallUri);
+  // 预期记录要求 recall_filter 命中 filter_internal：种入一个与 query 完全同文的内部 fixture 并等待其可被检索，
+  // 使命中内部对象成为确定性前置条件，而不是依赖 session 事件是否恰好被语义索引（时序敏感、 flaky）。
+  const internalUri = `${ctx.userRoot}/resources/.pi-openviking/observability-internal-fixture.md`;
+  await createObject(ctx.client, `${ctx.userRoot}/resources/.pi-openviking`, internalUri, Buffer.from(ctx.workload.prompt, "utf8"));
+  (ctx.extraUris ??= []).push(internalUri);
   const fixture = await waitForRecallFixture(ctx.client, {
     query: ctx.workload.prompt,
     targetUri: ownerRoot,
@@ -192,15 +198,23 @@ async function wSuccessRecallSync(log, ctx) {
     timeoutMs: ctx.manifest.thresholds.fixtureMs,
     pollMs: ctx.manifest.thresholds.fixturePollMs,
   });
+  const internalFixture = fixture.ready ? await waitForRecallFixture(ctx.client, {
+    query: ctx.workload.prompt,
+    targetUri: `${ctx.userRoot}/resources/.pi-openviking`,
+    expectedUri: internalUri,
+    timeoutMs: ctx.manifest.thresholds.fixtureMs,
+    pollMs: ctx.manifest.thresholds.fixturePollMs,
+  }) : { ready: false, attempts: 0, elapsedMs: 0, match: null, diagnostics: null };
   ctx.runs.push({
     label: "recall-fixture",
-    ready: fixture.ready,
-    attempts: fixture.attempts,
-    elapsedMs: fixture.elapsedMs,
+    ready: fixture.ready && internalFixture.ready,
+    attempts: fixture.attempts + internalFixture.attempts,
+    elapsedMs: fixture.elapsedMs + internalFixture.elapsedMs,
     score: fixture.match?.score ?? null,
-    diagnostics: fixture.diagnostics ?? null,
+    diagnostics: fixture.diagnostics ?? internalFixture.diagnostics ?? null,
   });
   if (!fixture.ready) throw new FixtureError("FIXTURE_RECALL_TIMEOUT");
+  if (!internalFixture.ready) throw new FixtureError("FIXTURE_INTERNAL_RECALL_TIMEOUT");
   const run = await runPi(ctx, {
     workloadId: ctx.workloadId,
     turn: "success",
@@ -208,6 +222,7 @@ async function wSuccessRecallSync(log, ctx) {
     actions: [
       { prompt: ctx.workload.prompt },
       { command: "/viking sync" },
+      { prompt: COMPACTION_PADDING_PROMPT },
       { rpc: { type: "compact" }, timeoutMs: ctx.manifest.thresholds.agentSettledMs },
       { command: "/viking sync" },
     ],
@@ -222,7 +237,7 @@ async function wSuccessRecallSync(log, ctx) {
   const sessionText = await readFile(run.sessionFile, "utf8");
   const parsed = parsePiSessionJsonl(sessionText, { sessionId: ctx.sessionId });
   const compactionEntry = parsed.branch.findLast((entry) => entry.type === "compaction");
-  const compaction = run.actions[2]?.response?.data;
+  const compaction = run.actions[3]?.response?.data;
   log.check(ctx.workloadId, "compaction-native", false, compactionEntry?.fromHook ?? false,
     compactionEntry?.fromHook !== true && compaction?.details?.type !== "openviking-active-context" && Boolean(compaction?.usage));
   await assertRemoteEvents(log, ctx, parsed.entries);

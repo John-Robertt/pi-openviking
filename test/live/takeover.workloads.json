@@ -64,7 +64,6 @@
     "compactionChars": 100000,
     "epochGrowthChars": 8000,
     "epochAdvanceChars": 120000,
-    "epochCheckpointWaitMs": 30000,
     "providerCaptureRule": "scripts/e2e-probe.ts 最后加载；每个实际 task provider 请求恰有一条 providerPayload 记录。"
   },
   "observationPoints": {

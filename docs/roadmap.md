@@ -18,12 +18,12 @@
 提供真实边界证据。该门禁断言的范围见 [`docs/verification.md`](./verification.md) 的门禁表；
 workload、身份与阈值由 `test/live/sync.workloads.json` 及其固定 hash 承载。
 
-**可观测性的 deterministic 保证成立，当前 live 出口待验证。** `shared/observe.mjs` 的 active stage registry 是现行
-点位唯一清单；关闭零工作、sink/schema fail-open、字节一致性、进程 run 下的 session producer 隔离与会话替换注销由
-deterministic checks 证明。现行 manifest 已让 `active_context_compaction` 只由真实 `session_before_compact` hook 证明，
-不再用非 owner 手工生成记录。当前 `verify:observability:live` 的成功 recall fixture 受 OpenViking semantic 队列积压影响，
-在统一 deadline 内未变为可检索；其余断线、409 冲突和 URI 拒绝 workload 通过。队列恢复后必须按当前固定 hash 重跑，
-通过前该常驻出口保持打开。
+**可观测性的出口已关闭。** `shared/observe.mjs` 的 active stage registry 是现行点位唯一清单；关闭零工作、sink/schema
+fail-open、字节一致性、进程 run 下的 session producer 隔离与会话替换注销由 deterministic checks 证明。
+`active_context_compaction` 只由真实 `session_before_compact` hook 证明。`verify:observability:live` 通过 107/107：
+成功 recall 的 `filter_internal` 命中由与 query 同文的内部 fixture 确定性保证（不再依赖 session 事件恰好被语义索引），
+原生 compaction 由 compact 前的确定性 padding prompt 触发（Pi 默认 keepRecentTokens=20000，小会话会被拒绝）；
+断线、409 冲突和 URI 拒绝 workload 同步通过。registry 随 `task_timeout` 失败分类扩展，manifest 与 registry hash 已同步固定。
 
 **原子 Archive 的出口已关闭。** Archive 的原子机制由真实 0.4.15 上的基线调查选定，机制、实测证据与
 被证伪的候选记录在 `test/live/archive.workloads.json` 的 `mechanism`。`npm test` 提供 deterministic 证据，
@@ -33,7 +33,7 @@ deterministic checks 证明。现行 manifest 已让 `active_context_compaction`
 **checkpoint 生产的出口已关闭。** checkpoint request、代码拥有的明确 failure 与结构化 checkpoint 作为自产
 `RecordedEventV1` 进入既有 immutable event namespace；消费状态、完整 parent/attempt 链、积压和终态清理
 义务只从 Archive 与这些事实派生。deterministic checks 证明孤立 checkpoint 拒绝、并发首写者收敛、逐 Archive
-三次 attempt、媒体失败 pending、外部错误脱敏和跨重启清理。
+三次 attempt、媒体失败 pending、外部错误脱敏、provider task 悬挂超时（task_timeout）转入重试链和跨重启清理。
 
 `verify:checkpoint:live` 在当前开发模型身份和受管 OpenViking 上覆盖文本、多模态、明确失败后的真实 VLM 重试、
 双 Archive 重启恢复及当前 Archive 范围失效，并分别以 480000ms 和 240000ms 约束媒体语义处理与 checkpoint 生成，
@@ -42,18 +42,19 @@ deterministic checks 证明。现行 manifest 已让 `active_context_compaction`
 `test/live/checkpoint.workloads.json` 及其固定 hash 承载；`verify:observability:live` 覆盖现行 registry。
 
 
-**活动上下文构造的 deterministic 保证成立，当前 live 出口待验证。** `ActiveContext` 只持久化
-`docs/spec.md` 定义的两个字段，选自当前分支上最后一个已消费的 checkpoint；anchor 由 raw tail 起点的 turn 身份重算。
-deterministic checks 证明候选选择、跨重启复用、来源边界离开祖先链后的失效、anchor 重算、dry-run payload、容量判定、
-缺失 checkpoint 权重事实的 fail-open，以及同一两字段候选只 materialize 一次。现行 `verify:context:live` manifest 已收敛为
-一份 eligibility 公式并固定新 hash，必须在真实 Pi、Archive 与 VLM checkpoint 上重跑后关闭出口。
+**活动上下文构造的出口已关闭。** `ActiveContext` 只持久化 `docs/spec.md` 定义的两个字段，选自当前分支上最后一个
+已消费的 checkpoint；anchor 由 raw tail 起点的 turn 身份重算。deterministic checks 证明候选选择、跨重启复用、来源边界
+离开祖先链后的失效、anchor 重算、dry-run payload、容量判定、缺失 checkpoint 权重事实的 fail-open，以及同一两字段候选
+只 materialize 一次。`verify:context:live` 按收敛后的单份 eligibility 公式 manifest 在真实 Pi、Archive 与 VLM checkpoint
+上通过 143/143。
 
-**上下文切换与 fail-open 的 deterministic 保证成立，当前 live 出口待验证。** `context` hook 在 eligible
-`ActiveContext` 到达高水位时原子替换 provider messages；`session_before_compact` 只在事实可读且 eligible 时提供自包含
-checkpoint，否则由 Pi 使用完整上下文和原生 compaction。现行 `verify:takeover:live` 已加入 checkpoint 超预算的真实 provider
-payload、owner 观察记录与 compaction 断言。当前受管 VLM 在部分 workload 返回了不满足统一 continuation 契约的 Working Memory，
-使这些 workload 无法形成前置 checkpoint；能够形成 checkpoint 的 workload 通过既有重启、分支和 fail-open 断言。VLM 恢复后
-必须按当前固定 hash 完整重跑，证明超预算、容量不匹配、稳定前缀、checkpoint 推进与 compaction 后再关闭出口。
+**上下文切换与 fail-open 的出口已关闭。** `context` hook 在 eligible `ActiveContext` 到达高水位时原子替换 provider
+messages；`session_before_compact` 只在事实可读且 eligible 时提供自包含 checkpoint，否则由 Pi 使用完整上下文和原生
+compaction。`verify:takeover:live` 通过 218/218，覆盖超预算、容量不匹配、稳定前缀、checkpoint 推进与 compaction：
+w1 的后台 checkpoint 等待从固定 delay 改为按状态轮询（VLM 生成延迟不确定）；w3 调整为先在小会话上完成并观察原生
+compaction 再 seed 容量失配原子 entry（600k 原子 entry 一旦成为 compaction 保留边界，其后的 compact 没有可摘要区间）。
+VLM 把整段正文写成整行斜体导致 `invalid_output` 的实测失败模式由 `shared/checkpoint.mjs` 的指引识别修复：模板指引
+按 pin 模板原文逐字匹配，斜体正文保留。
 
 **发布预算校准的出口已关闭。** 发布默认预算保持 Archive chunk 50000、raw tail 20000、checkpoint 16000。
 `verify:budget:live` 在现行最小 checkpoint schema、统一 Working Memory 接受门和完整装载 fail-open 下，对 tool-loop、
@@ -290,6 +291,5 @@ compaction observation 均完整。accepted baseline、模型身份、实测阈�
 
 ## 下一实施入口
 
-当前入口是重新关闭现行 live 出口：OpenViking semantic 队列恢复后先运行 `verify:observability:live`；受管 VLM 能稳定生成
-满足统一 continuation 契约的 Working Memory 后，按当前固定 hash 运行 `verify:context:live` 与 `verify:takeover:live`。三者通过后
-继续检索与诊断体验：建立 `verify:retrieval:live` manifest，并验证语义搜索、过滤、browse/expand、来源链和所属资源清理。
+当前入口是检索与诊断体验：建立 `verify:retrieval:live` manifest，并验证语义搜索、过滤、browse/expand、来源链和
+所属资源清理。此前待验证的三条 live 出口（observability、context、takeover）已全部按当前固定 hash 重跑通过。

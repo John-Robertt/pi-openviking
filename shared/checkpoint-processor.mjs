@@ -79,7 +79,14 @@ export class OpenVikingCheckpointProcessor {
         return { status: "pending", error: { errorClass: "transport", errorCode: "task_read", message: "checkpoint task status is unavailable" } };
       }
       const task = taskResponse.result;
-      if (!TERMINAL_TASK_STATES.has(task.status)) return { status: "processing" };
+      if (!TERMINAL_TASK_STATES.has(task.status)) {
+        const taskCreatedAtMs = Number(task.created_at) * 1000;
+        return {
+          status: "processing",
+          // 服务器侧 task 创建时刻是悬挂判定的起点：媒体准备发生在 task 创建前，不计入生成超时。
+          taskCreatedAtMs: Number.isFinite(taskCreatedAtMs) ? taskCreatedAtMs : null,
+        };
+      }
       if (task.status !== "completed") {
         outcome = "failed";
         return { status: "failed", error: taskError(task) };
@@ -163,6 +170,18 @@ export class OpenVikingCheckpointProcessor {
     const userRoot = String(this.client.userRoot || "").replace(/\/+$/, "");
     if (!/^viking:\/\/user\/[^/]+$/.test(userRoot)) throw new TypeError("checkpoint cleanup requires a bound user root");
     const taskRoot = `${userRoot}/resources/.pi-openviking/checkpoint-inputs/v1/${taskId}`;
+    // 被放弃的非终态 provider task（如上游连接中断后悬挂的 session_commit）先取消再删除，
+    // 避免在服务器上留下永不终态的占用；取消是 best-effort，删除与回读才是清理的判定。
+    try {
+      const listed = await this.client.listTasks(taskId);
+      if (listed.ok && Array.isArray(listed.result)) {
+        for (const task of listed.result) {
+          if (typeof task?.task_id === "string" && !TERMINAL_TASK_STATES.has(task.status)) {
+            await this.client.cancelTask?.(task.task_id);
+          }
+        }
+      }
+    } catch { /* 取消失败不阻断删除 */ }
     await this.client.deleteSession(taskId);
     await this.client.delete(taskRoot, true);
     const [session, media] = await Promise.all([

@@ -34,6 +34,7 @@ export class CheckpointManager {
     notify?: (message: string, level: "info" | "warning") => void;
     onStateChange?: (status: CheckpointStatus) => void;
     pollIntervalMs?: number;
+    taskTimeoutMs?: number;
     now?: () => string;
   });
   readonly status: CheckpointStatus;

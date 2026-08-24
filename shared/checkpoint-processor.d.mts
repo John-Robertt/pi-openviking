@@ -5,7 +5,8 @@ import type { Observation } from "./observe.mjs";
 import type { PiRecordedEventV1 } from "./recorded-event.mjs";
 
 export type CheckpointProcessResult =
-  | { status: "processing" | "pending"; error?: { errorClass: string; errorCode: string; message: string } }
+  | { status: "processing"; taskCreatedAtMs?: number | null; error?: { errorClass: string; errorCode: string; message: string } }
+  | { status: "pending"; error?: { errorClass: string; errorCode: string; message: string } }
   | { status: "failed"; error: { errorClass: string; errorCode: string; message: string } }
   | { status: "completed"; overview: string };
 

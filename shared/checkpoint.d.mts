@@ -5,6 +5,7 @@ export const CHECKPOINT_SCHEMA_VERSION: 2;
 export const CHECKPOINT_IDENTITY_VERSION: 2;
 export const CHECKPOINT_PROMPT_VERSION: "checkpoint-v2";
 export const CHECKPOINT_MODEL: "openviking/session-working-memory-v2";
+export const TEMPLATE_GUIDANCE: Map<string, string>;
 export const CHECKPOINT_MAX_ATTEMPTS: 3;
 
 export interface CheckpointV2 {

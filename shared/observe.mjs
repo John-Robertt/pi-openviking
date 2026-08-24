@@ -320,7 +320,7 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
     ...FAILURE_BASE,
     errorCode: ENUM([
       "cleanup", "empty_output", "invalid_output", "media_prepare", "message_add", "reconcile", "session_commit", "session_create",
-      "session_read", "task_cancelled", "task_failed", "task_list", "task_missing", "task_read",
+      "session_read", "task_cancelled", "task_failed", "task_list", "task_missing", "task_read", "task_timeout",
     ]),
     branch: ENUM(["pending_retry", "retry_attempt", "retry_exhausted", "retain_fact"]),
     pending: INTEGER(),

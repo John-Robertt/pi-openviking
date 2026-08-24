@@ -19,6 +19,7 @@ const CHECKPOINT_FAILURE_MESSAGES = Object.freeze({
   invalid_output: "checkpoint VLM completed without a valid unified continuation",
   task_cancelled: "checkpoint VLM task was cancelled",
   task_failed: "checkpoint VLM task failed",
+  task_timeout: "checkpoint VLM task did not reach a terminal state before the task timeout",
 });
 
 const sha256Hex = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -187,17 +188,32 @@ function sectionItems(value) {
 }
 
 /**
- * 章节正文 = 章节内容去掉紧跟标题的模板指引。
+ * OpenViking 0.4.15 的 compression.ov_wm_v2 模板要求"7 个章节标题与斜体描述原样出现"，VLM 输出因此
+ * 可能携带这些指引行；它们是会话事实之外的模板样板，注入上下文前必须剥除。
  *
- * 指引由 OpenViking 的 Working Memory 模板发出，本仓库不拥有其措辞；唯一稳定的信号是
- * 它以整行斜体紧跟标题。按措辞匹配会随模板改写而静默失效，把样板当成正文注入上下文。
+ * 判别只能按模板原文逐字匹配：按"整行斜体"猜测会把 VLM 自己写的斜体正文误删（live gate 实测命中，
+ * 导致 checkpoint 被误判为 invalid_output）。指引措辞随 OpenViking pin 版本固定（shared/toolchain.mjs），
+ * 版本升级时由 test/checkpoint.test.mjs 的模板一致性用例比对模板原文。
  */
-function sectionBody(value) {
+export const TEMPLATE_GUIDANCE = new Map([
+  ["Session Title", "_A short and distinctive 5-10 word descriptive title for the session. Info-dense, no filler._"],
+  ["Current State", "_2-5 sentences MAX: What is the latest status? What is unresolved or pending? Immediate next steps. NOT a fact dump._"],
+  ["Task & Goals", "_What is the purpose or topic of this conversation? Key objectives, design decisions, or context that frames the discussion._"],
+  ["Key Facts & Decisions", "_Stable facts about the user's world: conclusions, relationships, preferences, constraints, technical choices with rationale, commitments, dates, quantities. One bullet per fact._"],
+  ["Files & Context", "_Referenced resources that future answers may depend on: file paths, document links, key URLs — each with why it matters. Omit bulk media/search dumps._"],
+  ["Errors & Corrections", "_Mistakes, misunderstandings, or failed approaches — and how they were corrected. User corrections to assistant's assumptions._"],
+  ["Open Issues", "_Unresolved questions, blockers, follow-ups, risks, or topics to revisit._"],
+]);
+
+/**
+ * 章节正文 = 章节内容去掉紧跟标题的模板指引。指引只按 TEMPLATE_GUIDANCE 的逐字匹配识别；
+ * 其他任何整行斜体都是 VLM 写的正文，必须保留。
+ */
+function sectionBody(value, sectionName) {
   const lines = String(value ?? "").split("\n");
   const dropLeadingBlank = () => { while (lines.length > 0 && !lines[0].trim()) lines.shift(); };
   dropLeadingBlank();
-  // 标题后的首个整行斜体是模板指引；正文为空时记录章节由协议统一规范化为 `- None.`。
-  if (lines.length > 0 && /^_.+_$/.test(lines[0].trim())) {
+  if (lines.length > 0 && lines[0].trim() === TEMPLATE_GUIDANCE.get(sectionName)) {
     lines.shift();
     dropLeadingBlank();
   }
@@ -246,7 +262,7 @@ export function validateCheckpointOverview(overview) {
   const body = new Map();
   for (const name of [...CONTINUATION_SECTIONS, ...RECORD_SECTIONS]) {
     if (!sections.has(name)) throw new TypeError(`checkpoint overview is missing ${name}`);
-    const value = sectionBody(sections.get(name));
+    const value = sectionBody(sections.get(name), name);
     if (RECORD_SECTIONS.includes(name) &&
         (!value || !sectionItems(value).some(continuationItem))) {
       body.set(name, "- None.");
