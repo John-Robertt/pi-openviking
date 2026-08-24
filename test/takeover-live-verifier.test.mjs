@@ -26,6 +26,7 @@ test("takeover workloads 固定接管、重启/分支与容量/compaction fail-o
     "w1-takeover-stable-prefix",
     "w2-restart-branch-fail-open",
     "w3-capacity-compaction-fail-open",
+    "w4-oversized-checkpoint-recovery",
   ]);
   for (const workload of manifest.workloads) {
     assert.ok(workload.summary);
@@ -34,5 +35,6 @@ test("takeover workloads 固定接管、重启/分支与容量/compaction fail-o
   }
   assert.equal(manifest.environment.extensionConfig.content.takeover.contextTokenThreshold, 1);
   assert.ok(manifest.environment.capacityMismatchChars > 0);
+  assert.equal(manifest.environment.oversizedAtomicChars, 30000);
   assert.ok(manifest.thresholds.baseline.fullContextUsageTokens < manifest.thresholds.baseline.automaticHighWaterTokens);
 });

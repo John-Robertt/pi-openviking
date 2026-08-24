@@ -200,6 +200,32 @@ export function renderActiveContextMessages(payload) {
 }
 
 /**
+ * Pi 原生压缩后的恢复指引块。原生压缩的摘要不含归档指针；该块把“早期上下文已被压缩、
+ * 完整历史仍可按身份找回”表达为模型可执行的下一步。takeover 激活时 checkpoint 块已携带
+ * 同类指引，调用方只在没有 takeover 替换时注入本块。清单最多列最近 5 个 Archive，
+ * 避免长会话的清单本身成为上下文负担。
+ */
+export function renderCompactionPointer(archives) {
+  const lines = [
+    "<openviking-compaction>",
+    "Pi compacted the earlier context of this session. The full history remains archived in OpenViking and is recoverable:",
+  ];
+  if (archives.length === 0) {
+    lines.push("- No committed archives are currently known to this process; use viking_search or the compaction summary above.");
+  } else {
+    lines.push(`- ${archives.length} committed archive(s) currently known in this session process:`);
+    for (const descriptor of archives.slice(-5)) {
+      lines.push(`  - ${descriptor.manifest.archiveId} (${descriptor.manifest.eventCount} events)`);
+    }
+  }
+  lines.push(
+    "- Recover details with viking_search (keywords), viking_archive_expand (an archive id above, or omit it to list archives known now), or viking_read (when an event index exposes a read URI).",
+    "</openviking-compaction>",
+  );
+  return lines.join("\n");
+}
+
+/**
  * takeover eligibility。
  *
  * 容量与安全余量都取自 Pi 报告的任务模型元数据：`contextWindow` 是可用窗口，`maxTokens` 是

@@ -11,7 +11,7 @@ import {
   planArchives,
 } from "../shared/archive.mjs";
 import { ArchiveManager, archiveStorageLocation } from "../shared/archive-store.mjs";
-import { ContentBusyError, ContentConflictError } from "../shared/content-objects.mjs";
+import { ContentConflictError } from "../shared/content-objects.mjs";
 import { eventTokenWeight } from "../shared/context-weight.mjs";
 import { RecordedEventAdapter } from "../shared/recorded-event-adapter.mjs";
 import { recordedEventBytes } from "../shared/recorded-event.mjs";
@@ -456,19 +456,13 @@ test("另一进程写入完全相同的字节时，unchanged 是接受证明而�
   assert.deepEqual(transport.files.get(location.manifestUri), archiveManifestBytes(expected));
 });
 
-test("路径占用是可重试失败：Archive 保持待提交，已确认事件不受影响", async () => {
+test("路径占用在 Archive 操作内重试，恢复后不残留失败状态", async () => {
   const events = eventsOf();
   const { transport, manager } = await storedManager(events);
   const first = planArchives(events, BUDGETS)[0];
   const range = events.slice(first.startIndex, first.endIndex + 1);
   const location = archiveStorageLocation(USER_ROOT, SESSION, buildArchiveManifest(SESSION, range).archiveId);
   transport.busyOnce = location.manifestUri;
-
-  const busy = await manager.formArchives(SESSION, events);
-  assert.equal(busy.reconciled, false);
-  assert.equal(busy.committed, 0);
-  assert.match(busy.lastFailure, /ContentBusyError/);
-  assert.equal([...transport.files.keys()].filter((uri) => uri.includes("/archives/v1/")).length, 0);
 
   const recovered = await manager.formArchives(SESSION, events);
   assert.equal(recovered.reconciled, true);

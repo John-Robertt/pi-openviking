@@ -148,12 +148,12 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
   pi_entry_append: stage("index.ts", "boundary", variants("phase", {
     begin: schema({
       phase: PHASE_BEGIN,
-      operation: ENUM(["profile_injection", "recall_injection"]),
+      operation: ENUM(["profile_injection", "recall_injection", "compaction_pointer"]),
       entryType: ENUM(["ov-observation"]),
     }),
     end: schema({
       phase: PHASE_END,
-      operation: ENUM(["profile_injection", "recall_injection"]),
+      operation: ENUM(["profile_injection", "recall_injection", "compaction_pointer"]),
       entryType: ENUM(["ov-observation"]),
       outcome: ENUM(["appended", "error"]),
       durationMs: NUMBER(),
@@ -415,6 +415,14 @@ export const OBSERVATION_STAGE_REGISTRY = deepFreeze({
   })),
 });
 
+/** index.ts 的注入种类到白名单 operation 的映射；未知名种不允许静默归入他类。 */
+function piEntryAppendOperation(kind) {
+  if (kind === "profile-injection") return "profile_injection";
+  if (kind === "recall-injection") return "recall_injection";
+  if (kind === "compaction-pointer") return "compaction_pointer";
+  throw new TypeError(`unknown pi_entry_append kind: ${kind}`);
+}
+
 const ENCODERS = Object.freeze({
   observe_run_start: () => ({ mode: "snapshot", status: "ready" }),
   observe_run_end: (accepted, dropped) => ({ mode: "snapshot", status: "ready", accepted, dropped }),
@@ -427,12 +435,12 @@ const ENCODERS = Object.freeze({
   pi_entry_append: {
     begin: (kind) => ({
       phase: "begin",
-      operation: kind === "profile-injection" ? "profile_injection" : "recall_injection",
+      operation: piEntryAppendOperation(kind),
       entryType: "ov-observation",
     }),
     end: (kind, outcome, durationMs) => ({
       phase: "end",
-      operation: kind === "profile-injection" ? "profile_injection" : "recall_injection",
+      operation: piEntryAppendOperation(kind),
       entryType: "ov-observation",
       outcome,
       durationMs,

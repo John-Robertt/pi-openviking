@@ -11,7 +11,7 @@ import {
   parseCheckpointFailureEvent,
   parseCheckpointRequestEvent,
 } from "./checkpoint.mjs";
-import { ContentConflictError } from "./content-objects.mjs";
+import { ContentConflictError, withBusyRetry } from "./content-objects.mjs";
 import { OpenVikingCheckpointProcessor } from "./checkpoint-processor.mjs";
 import { observation as processObservation } from "./observe.mjs";
 
@@ -58,11 +58,15 @@ export class CheckpointManager {
     this.publicationVersion = 0;
     this.cleanedTaskIds = new Set();
     this.pendingCleanupTaskIds = new Set();
+    // 事实不可变且身份由规范字节决定：已验证的事件内容在进程内缓存，轮询只重新探测缺失；
+    // 键含 sessionId，同身份事件跨会话存放于不同位置，不可混用。
+    this.factCache = new Map();
     this.state = initialState();
     this.current = null;
     this.timer = null;
     this.dirty = false;
     this.stopped = false;
+    this.busyRetryController = new AbortController();
     this.observe.emit("checkpoint_state", "snapshot", this.state, null);
   }
 
@@ -125,6 +129,7 @@ export class CheckpointManager {
 
   async stop() {
     this.stopped = true;
+    this.busyRetryController.abort();
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     try { await Promise.all([this.current, this.refreshTail]); } catch { /* status already records the failure */ }
@@ -178,17 +183,29 @@ export class CheckpointManager {
       if (!currentScope() || !scan.current || scan.exhausted) return;
 
       const { manifest } = scan.current.descriptor;
-      const expanded = await this.archiveManager.expand(scope.sessionId, manifest.archiveId);
-      if (!currentScope()) return;
-      if (expanded.manifest.contentHash !== manifest.contentHash) {
-        throw new Error("checkpoint source Archive changed after scheduling");
-      }
+      // Archive 展开是消费前最重的一次读取；任务事实（request/failure/session/task 状态）未要求
+      // 事件正文时不得展开——处理中轮询每轮全量展开会把 stat/download 放大到会话级热点。
+      const readExpanded = async () => {
+        const source = await this.archiveManager.expand(scope.sessionId, manifest.archiveId);
+        if (!currentScope()) return null;
+        if (source.manifest.contentHash !== manifest.contentHash) {
+          throw new Error("checkpoint source Archive changed after scheduling");
+        }
+        return source;
+      };
+      let expanded = null;
+      const loadExpanded = async () => {
+        if (!expanded) expanded = await readExpanded();
+        return expanded;
+      };
 
       let requestEvent = scan.current.requestEvent;
       let requestBranch = "resume";
       if (!requestEvent) {
+        const stored = await loadExpanded();
+        if (!stored) return;
         requestEvent = buildCheckpointRequestEvent({
-          manifest: expanded.manifest,
+          manifest: stored.manifest,
           previousCheckpointId: scan.previousCheckpoint?.checkpointId ?? null,
           attempt: scan.current.attempt,
           submittedAt: this.now(),
@@ -208,8 +225,8 @@ export class CheckpointManager {
       this.cleanedTaskIds.delete(request.taskId);
       let result = await this.processor.advance({
         taskId: request.taskId,
-        manifest: expanded.manifest,
-        events: expanded.events,
+        manifest,
+        loadEvents: async () => (await loadExpanded())?.events ?? null,
         previousCheckpoint: scan.previousCheckpoint,
       });
       if (!currentScope()) {
@@ -262,8 +279,15 @@ export class CheckpointManager {
         continue;
       }
 
+      // 完成路径重新展开 Archive，不能复用提交输入前的证明：checkpoint 只能引用 task 完成时仍自证的来源。
+      const storedSource = await readExpanded();
+      if (!storedSource || !currentScope()) {
+        this.pendingCleanupTaskIds.add(request.taskId);
+        await this.cleanupAttempt(request.taskId);
+        return;
+      }
       const checkpointEvent = buildCheckpointEvent({
-        manifest: expanded.manifest,
+        manifest: storedSource.manifest,
         requestEvent,
         overview: result.overview,
         completedAt: this.now(),
@@ -298,20 +322,39 @@ export class CheckpointManager {
 
   async writeFact(sessionId, event) {
     try {
-      const result = await this.adapter.writeEvents(sessionId, [event]);
+      const result = await withBusyRetry(
+        () => this.adapter.writeEvents(sessionId, [event]),
+        {
+          signal: this.busyRetryController.signal,
+          onRetry: (error) => this.observe.emit(
+            "checkpoint_failure", error, "reconcile", "retry", "pending_retry",
+            this.state.pending, this.state.backlogTokens,
+          ),
+        },
+      );
       if (result.acceptedEventIds.length !== 1 || result.acceptedEventIds[0] !== event.eventId) {
         throw new Error("OpenViking did not accept the checkpoint fact");
       }
     } catch (error) {
       if (!(error instanceof ContentConflictError)) throw error;
-      const raced = await this.adapter.readEventIfExists(sessionId, event.eventId);
+      const raced = await this.readFact(sessionId, event.eventId);
       if (!raced) throw error;
       return raced.event;
     }
     // 回读本身就是接受证明：事实缺失时 readEvent 抛出，字节与 eventId 不符时
     // verifyRecordedEventBytes 抛出，因此这里不需要再复述同一判据。
     const stored = await this.adapter.readEvent(sessionId, event.eventId);
+    this.factCache.set(`${sessionId}:${event.eventId}`, stored);
     return stored.event;
+  }
+
+  /** 读取并验证一条事实；已验证内容按身份缓存，缺失不缓存（轮询要发现后到的追加）。 */
+  async readFact(sessionId, eventId) {
+    const key = `${sessionId}:${eventId}`;
+    if (this.factCache.has(key)) return this.factCache.get(key);
+    const stored = await this.adapter.readEventIfExists(sessionId, eventId);
+    if (stored) this.factCache.set(key, stored);
+    return stored;
   }
 
   async cleanupAttempt(taskId) {
@@ -348,7 +391,7 @@ export class CheckpointManager {
         if (!currentIds.has(descriptor.manifest.archiveId)) {
           for (const previousCheckpointId of previousCheckpointIds) {
             for (let attempt = 1; attempt <= CHECKPOINT_MAX_ATTEMPTS; attempt++) {
-              const stored = await this.adapter.readEventIfExists(
+              const stored = await this.readFact(
                 sessionId, checkpointRequestEventId(descriptor.manifest, previousCheckpointId, attempt),
               );
               if (!currentScope()) return true;
@@ -412,11 +455,11 @@ export class CheckpointManager {
     let matchedRequest = null;
     for (let attempt = 1; attempt <= CHECKPOINT_MAX_ATTEMPTS; attempt++) {
       const [requestStored, failureStored] = await Promise.all([
-        this.adapter.readEventIfExists(
+        this.readFact(
           sessionId,
           checkpointRequestEventId(descriptor.manifest, previousId, attempt),
         ),
-        this.adapter.readEventIfExists(
+        this.readFact(
           sessionId,
           checkpointFailureEventId(descriptor.manifest, previousId, attempt),
         ),
@@ -452,7 +495,7 @@ export class CheckpointManager {
     let previousCheckpoint = null;
     let sawPending = false;
     for (const descriptor of archives) {
-      const stored = await this.adapter.readEventIfExists(sessionId, checkpointEventId(descriptor.manifest));
+      const stored = await this.readFact(sessionId, checkpointEventId(descriptor.manifest));
       if (stored) {
         if (sawPending) throw new Error("checkpoint chain contains a consumed Archive after an unconsumed gap");
         const validated = await this.validateStoredCheckpoint(sessionId, descriptor, previousCheckpoint, stored.event);
@@ -476,11 +519,11 @@ export class CheckpointManager {
     let lastFailure = null;
     for (let attempt = 1; attempt <= CHECKPOINT_MAX_ATTEMPTS; attempt++) {
       const [requestStored, failureStored] = await Promise.all([
-        this.adapter.readEventIfExists(
+        this.readFact(
           sessionId,
           checkpointRequestEventId(descriptor.manifest, previousId, attempt),
         ),
-        this.adapter.readEventIfExists(
+        this.readFact(
           sessionId,
           checkpointFailureEventId(descriptor.manifest, previousId, attempt),
         ),

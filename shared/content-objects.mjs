@@ -4,6 +4,8 @@
 // 协议层事实——请求怎么拆、目录是否就绪、响应是否可信、失败属于哪一类——
 // 收录规则（例如事件命名空间是否允许 updated）留在各自的领域模块。
 
+import { setTimeout as delay } from "node:timers/promises";
+
 export const BATCH_MAX_OPERATIONS = 128;
 export const BATCH_MAX_FILE_BYTES = 8 * 1024 * 1024;
 export const BATCH_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
@@ -41,7 +43,6 @@ export class ContentBusyError extends Error {
     this.retryable = true;
   }
 }
-
 export class ContentWriteError extends Error {
   constructor(message, details = {}) {
     super(message);
@@ -50,11 +51,40 @@ export class ContentWriteError extends Error {
   }
 }
 
+/**
+ * busy 重试的默认退避序列。语义刷新的争用窗口实测为秒级；预算刻意保持在数秒量级，
+ * 更长的争用仍交给调用方的整组重放，避免 shutdown 等生命周期被长睡眠阻塞。
+ */
+export const BUSY_RETRY_DELAYS_MS = Object.freeze([500, 1000, 2000]);
+
+/**
+ * 对同一操作做有界 busy 重试：只有 ContentBusyError 触发重试，其余错误立即抛出。
+ * 每次重试前经 `onRetry` 上报；重试耗尽或 signal 中止时保留最后一次 busy 错误，
+ * 是否中止仍由调用方决定。
+ */
+export async function withBusyRetry(operation, { onRetry, delaysMs = BUSY_RETRY_DELAYS_MS, signal } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!(error instanceof ContentBusyError) || attempt >= delaysMs.length || signal?.aborted) throw error;
+      onRetry?.(error, attempt + 1);
+      try {
+        await delay(delaysMs[attempt], undefined, { signal });
+      } catch (delayError) {
+        if (signal?.aborted) throw error;
+        throw delayError;
+      }
+    }
+  }
+}
+
 function raiseBatchFailure(response, fallbackUri) {
   if (response?.status === 409) {
     const details = response.error?.details;
     const uri = details?.resource || response.error?.resource || fallbackUri;
-    if (details?.conflict_type === "path_busy" || details?.retryable === true) {
+    const conflictType = details?.conflict_type;
+    if (conflictType === "path_busy" || (conflictType == null && details?.retryable === true)) {
       throw new ContentBusyError("OpenViking path is busy; retry the same request", uri);
     }
     throw new ContentConflictError("OpenViking object bytes conflict with an existing object", uri);

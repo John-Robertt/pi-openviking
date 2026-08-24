@@ -370,4 +370,23 @@ test("记录校验拒绝不兼容版本、未知顶层字段和非法 traceId", 
   assert.equal(validateObservationRecord({ ...base, parentOp: 1 }).ok, false);
 });
 
+test("pi_entry_append 白名单接受 compaction_pointer 并拒绝未知名种", () => {
+  const base = {
+    schemaVersion: OBSERVATION_SCHEMA_VERSION,
+    ts: "2026-08-19T00:00:00.000Z",
+    run: FIXED_RUN,
+    seq: 1,
+    session: observationSessionHash("s"),
+    kind: "boundary",
+    stage: "pi_entry_append",
+    op: 1,
+    data: { phase: "begin", operation: "compaction_pointer", entryType: "ov-observation" },
+  };
+  assert.equal(validateObservationRecord(base).ok, true);
+  assert.equal(
+    validateObservationRecord({ ...base, data: { ...base.data, operation: "unknown_injection" } }).ok,
+    false,
+  );
+});
+
 test.after(() => rmSync(ROOT, { recursive: true, force: true }));

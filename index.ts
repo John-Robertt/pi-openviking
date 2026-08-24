@@ -12,6 +12,7 @@ import { OVClient } from "./client.js";
 import { RecallManager } from "./recall.js";
 import { SyncManager, type TaskModelContext } from "./sync.js";
 import { buildProfileBlock } from "./shared/profile-inject.mjs";
+import { renderCompactionPointer } from "./shared/active-context.mjs";
 import { observation as processObservation } from "./shared/observe.mjs";
 import { createStatusRefresh } from "./shared/status-refresh.mjs";
 import { clearVikingFooter, formatVikingCommand, setVikingFooter } from "./shared/viking-status.mjs";
@@ -58,6 +59,25 @@ export default async function (pi: ExtensionAPI) {
     }
   };
 
+  /** 把一次性指引块前置到最后一条用户消息；没有用户消息时返回 false，保留到下一轮。 */
+  const prependToLastUserMessage = (messages: any[], block: string): boolean => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role !== "user") continue;
+      if (typeof msg.content === "string") {
+        msg.content = `${block}\n${msg.content}`;
+      } else if (Array.isArray(msg.content)) {
+        const textBlocks = msg.content.filter((b: any) => b.type === "text");
+        if (textBlocks.length > 0) (textBlocks[0] as any).text = `${block}\n${textBlocks[0].text}`;
+        else msg.content.unshift({ type: "text", text: block });
+      } else {
+        msg.content = block;
+      }
+      return true;
+    }
+    return false;
+  };
+
   // Session state
   let bypassed = false;
   let profileBlock = "";
@@ -66,6 +86,8 @@ export default async function (pi: ExtensionAPI) {
   let startPromise: Promise<void> | null = null;
   let startupWarningShown = false;
   let appliedTakeoverCheckpointId: string | null = null;
+  let extensionProvidedCompaction = false;
+  let pendingCompactionEntryId: string | null = null;
   let sessionReady: Promise<unknown> = Promise.resolve();
   const beginHook = (hook: string, reason = "none"): number => observation.begin("pi_lifecycle", hook, reason);
   const endHook = (op: number, hook: string, reason = "none", outcome = "success"): void =>
@@ -361,6 +383,22 @@ export default async function (pi: ExtensionAPI) {
       if (injectedBlock) {
         recordObservation("recall-injection", injectedBlock, ctx.sessionManager.getLeafId());
       }
+      // 原生压缩后的第一轮只在该 compaction entry 仍位于当前分支时处理恢复指针；
+      // takeover 激活时 checkpoint 块已携带同类指引，仍消费同一个一次性信号。
+      if (pendingCompactionEntryId) {
+        const branch = typeof ctx.sessionManager?.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
+        if (!branch.some((entry: any) => entry?.id === pendingCompactionEntryId)) {
+          pendingCompactionEntryId = null;
+        } else if (takeoverBranch === "reuse_context" || takeoverBranch === "replace_context") {
+          pendingCompactionEntryId = null;
+        } else {
+          const pointer = renderCompactionPointer(sync.listArchives());
+          if (prependToLastUserMessage(injectedMessages, pointer)) {
+            pendingCompactionEntryId = null;
+            recordObservation("compaction-pointer", pointer, ctx.sessionManager.getLeafId());
+          }
+        }
+      }
       endHook(op, "context");
       return { messages: injectedMessages };
     } catch (error) {
@@ -411,6 +449,7 @@ export default async function (pi: ExtensionAPI) {
       if (!client.connected || bypassed || !config.takeover.enabled) {
         observation.emit("active_context_compaction", "native_compaction", sync.status.activeContext.eligibility);
         endHook(op, "session_before_compact", reason, "skipped");
+        extensionProvidedCompaction = false;
         return;
       }
       await sessionReady;
@@ -424,10 +463,13 @@ export default async function (pi: ExtensionAPI) {
         sync.status.activeContext.eligibility,
       );
       endHook(op, "session_before_compact", reason, compaction ? "success" : "skipped");
+      // 只有扩展提供了自包含压缩时，压缩摘要才携带 checkpoint 指引；原生压缩需要下一轮补指针。
+      extensionProvidedCompaction = Boolean(compaction);
       return compaction ? { compaction } : undefined;
     } catch (error) {
       observation.emit("active_context_compaction", "native_compaction", sync.status.activeContext.eligibility);
       endHook(op, "session_before_compact", reason, "error");
+      extensionProvidedCompaction = false;
       return;
     }
   });
@@ -441,6 +483,10 @@ export default async function (pi: ExtensionAPI) {
         endHook(op, "session_compact", reason, "skipped");
         return;
       }
+      // 原生压缩的摘要不含归档指针：以新 compaction entry 绑定下一轮恢复指引；
+      // 扩展自包含压缩的摘要已是 checkpoint 块，不产生 pending。
+      pendingCompactionEntryId = extensionProvidedCompaction ? null : ctx.sessionManager.getLeafId();
+      extensionProvidedCompaction = false;
       scheduleSync(ctx, "session_compact");
       endHook(op, "session_compact", reason);
     } catch (error) {

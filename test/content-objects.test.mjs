@@ -12,6 +12,7 @@ import {
   ensureDirectoryChain,
   planContentBatches,
   replaceIfHash,
+  withBusyRetry,
   writeContentObjects,
 } from "../shared/content-objects.mjs";
 
@@ -39,7 +40,11 @@ test("409 按 conflict_type 区分可重试路径占用与不可覆盖字节冲�
   const byteConflict = {
     ok: false,
     status: 409,
-    error: { code: "CONFLICT", message: "target already exists", details: { resource: `${ROOT}/a.json` } },
+    error: {
+      code: "CONFLICT",
+      message: "target already exists",
+      details: { resource: `${ROOT}/a.json`, conflict_type: "bytes_conflict", retryable: true },
+    },
   };
   assert.throws(() => acceptBatchResult(byteConflict, ROOT, [`${ROOT}/a.json`]), (error) =>
     error instanceof ContentConflictError && !(error instanceof ContentBusyError) && error.uri === `${ROOT}/a.json`);
@@ -141,4 +146,54 @@ test("写入使用调用方给定的 precondition 并合并逐批结果", async 
   assert.equal(requests[0].wait, false);
   assert.deepEqual(requests[0].operations.map((operation) => operation.precondition.kind), ["create_if_absent", "replace_if_hash"]);
   assert.equal(result.created.size, 2);
+});
+
+test("withBusyRetry 只重试 busy 并在耗尽后原样抛出", async () => {
+  const busy = () => new ContentBusyError("OpenViking path is busy; retry the same request", `${ROOT}/a.json`);
+  const delaysMs = [0, 0, 0];
+
+  let calls = 0;
+  const retries = [];
+  const recovered = await withBusyRetry(
+    async () => {
+      calls++;
+      if (calls <= 2) throw busy();
+      return "ok";
+    },
+    { onRetry: (error, attempt) => retries.push([error.uri, attempt]), delaysMs },
+  );
+  assert.equal(recovered, "ok");
+  assert.equal(calls, 3);
+  assert.deepEqual(retries, [[`${ROOT}/a.json`, 1], [`${ROOT}/a.json`, 2]]);
+
+  let exhaustedCalls = 0;
+  await assert.rejects(
+    () => withBusyRetry(async () => { exhaustedCalls++; throw busy(); }, { delaysMs }),
+    ContentBusyError,
+  );
+  assert.equal(exhaustedCalls, 1 + delaysMs.length);
+
+  // 字节冲突是完整性错误：即使同样是 409 语义也绝不重试。
+  let conflictCalls = 0;
+  const conflictRetries = [];
+  await assert.rejects(
+    () => withBusyRetry(
+      async () => { conflictCalls++; throw new ContentConflictError("bytes conflict", `${ROOT}/a.json`); },
+      { onRetry: () => conflictRetries.push(1), delaysMs },
+    ),
+    ContentConflictError,
+  );
+  assert.equal(conflictCalls, 1);
+  assert.deepEqual(conflictRetries, []);
+
+  const controller = new AbortController();
+  let cancelledCalls = 0;
+  await assert.rejects(
+    () => withBusyRetry(
+      async () => { cancelledCalls++; throw busy(); },
+      { signal: controller.signal, delaysMs: [10_000], onRetry: () => controller.abort() },
+    ),
+    ContentBusyError,
+  );
+  assert.equal(cancelledCalls, 1, "signal 中止后不得再尝试写入");
 });

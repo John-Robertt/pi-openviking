@@ -61,6 +61,7 @@
       "expectedArchives": 1
     },
     "capacityMismatchChars": 600000,
+    "oversizedAtomicChars": 30000,
     "compactionChars": 100000,
     "epochGrowthChars": 8000,
     "epochAdvanceChars": 120000,
@@ -139,6 +140,28 @@
         "容量不匹配仍替换 provider 上下文或删除 ActiveContext",
         "大型原子来源在 fail-open payload 中丢失",
         "无 ActiveContext 时扩展伪造 compaction 或中止 agent"
+      ]
+    },
+    {
+      "id": "w4-oversized-checkpoint-recovery",
+      "summary": "单条超过 raw-tail 预算的原子事件经真实 Archive 与 VLM checkpoint 消费后恢复 takeover；接管块携带归档恢复指引，后续 Pi 原生压缩只在下一轮注入一次恢复指针。",
+      "inputs": {
+        "P1": "请将 OVERSIZED_ARCHIVED_ 与 ASSISTANT 拼接，只回复拼接结果，不要调用工具。",
+        "A1": "OVERSIZED_ARCHIVED_ASSISTANT",
+        "P2": "OVERSIZED_TAKEOVER：请只回复 READY，不要调用工具。",
+        "P3": "POINTER_FIRST：请只回复 FIRST，不要调用工具。",
+        "P4": "POINTER_SECOND：请只回复 SECOND，不要调用工具。"
+      },
+      "successCriteria": [
+        "30K 字符原子事件在保留后续 raw tail 后完整进入 Archive，并经真实 VLM checkpoint 消费成为当前 ActiveContext",
+        "真实 takeover payload 使用该 checkpoint、移除完整 30K 原始事件正文，并携带 viking_search 恢复指引",
+        "checkpoint 超预算时 Pi 使用原生 compaction，压缩后的第一个 provider payload 注入包含来源 Archive 的恢复指针",
+        "恢复指针为一次性信息，随后的 provider payload 不再重复注入"
+      ],
+      "falsification": [
+        "超 raw-tail 预算原子事件未进入 Archive、未被 checkpoint 消费或使 ActiveContext 持续容量不匹配",
+        "takeover payload 仍携带完整 30K 原始事件正文、缺少 checkpoint 或缺少恢复指引",
+        "扩展替代 Pi 执行超预算 compaction，或恢复指针缺失、来源错误、重复注入"
       ]
     }
   ],

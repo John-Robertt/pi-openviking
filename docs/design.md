@@ -70,7 +70,8 @@
 
 - 维护 OpenViking Content API 的请求限制、批次拆分与目录链准备；
 - 严格核对 `batch-write` 响应形状，并返回按 created/updated/unchanged 分组的 URI；
-- 把 409 区分为不可覆盖的字节冲突与可重试的路径占用；
+- 按显式 `conflict_type` 优先区分不可覆盖的字节冲突与可重试路径占用，字段缺失时才采用 `retryable` 兼容判据；
+- 提供有界且可由 lifecycle signal 中止的 busy 重试，由事件、Archive 和 checkpoint 写入 owner 记录各自降级点位；
 - 不拥有任何收录规则：是否允许 `updated`、用哪种 precondition 由调用方决定。
 
 ### `shared/recorded-event-adapter.mjs`
@@ -130,6 +131,7 @@ adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
   session 启动以独立只读扫描刷新当前事实，该扫描可与在途 VLM 并行；状态发布代次使并发期间完成的旧扫描重新读取，
   不得覆盖更新 checkpoint 已发布的状态；SyncManager 再等待对应 ActiveContext 派生更新后解除屏障；
 - 在 VLM 前追加 request，明确失败时追加 failure，成功时追加唯一 checkpoint；回读时验证 Archive、前一 checkpoint、连续 attempt、parent 与无 failure 的完整链，并在并发冲突时采用首个通过该校验的事实；
+- 已验证的 immutable 事实按身份在进程内复用，缺失事实不缓存；处理中轮询只读取 task 状态，Archive 仅在提交输入和终态回读时展开验证；
 - 每个 Archive 最多执行三个确定性 attempt；每次协调调度从 request 事实与全部 Pi 分支可重算的 Archive 链发现一次失效 task，Archive 消费循环不重复穷举，后续只重试已发现的清理义务；
 - 顺序驱动一个在途 Archive；当前分支范围变化时停止尚未开始的旧 checkpoint 写入，并清理其临时 task；
 - 已进入追加事实写入的首写者可以完成，但当前状态只从新范围扫描并派生；

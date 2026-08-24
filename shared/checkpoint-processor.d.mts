@@ -15,7 +15,7 @@ export class OpenVikingCheckpointProcessor {
   advance(input: {
     taskId: string;
     manifest: ArchiveManifestV1;
-    events: PiRecordedEventV1[];
+    loadEvents: () => Promise<PiRecordedEventV1[] | null>;
     previousCheckpoint: CheckpointV2 | null;
   }): Promise<CheckpointProcessResult>;
   cleanup(taskId: string): Promise<boolean>;

@@ -3,6 +3,8 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { OVClient } from "./client.js";
 import type { SyncManager } from "./sync.js";
 import { observation, type Observation } from "./shared/observe.mjs";
+import { eventTokenWeight } from "./shared/context-weight.mjs";
+import { recordedEventBytes } from "./shared/recorded-event.mjs";
 
 /** 已注册的工具名，供系统提示引用；集合的事实源在本模块。 */
 export const VIKING_TOOL_NAMES = [
@@ -15,6 +17,30 @@ export const VIKING_TOOL_NAMES = [
   "viking_archive_expand",
 ] as const;
 
+function boundedIndexField(value: unknown, maxChars = 80): string {
+  const flat = String(value ?? "unknown").replace(/\s+/g, " ").trim();
+  return flat.length > maxChars ? `${flat.slice(0, maxChars)}…` : flat;
+}
+
+/** 事件索引行的种类标签：entry 类型加上消息角色或工具名。 */
+function describeEventKind(event: any): string {
+  const entry = event?.payload?.entry ?? {};
+  const kind = event?.source?.entryType ?? entry.type ?? "unknown";
+  const detail = entry.message?.role ?? entry.message?.toolName ?? entry.customType;
+  return boundedIndexField(detail ? `${kind}/${detail}` : kind);
+}
+
+/** 单行摘要：取 part 文本的前 100 字符；非文本部分只描述形状。 */
+function eventExcerpt(event: any): string {
+  const value = event?.payload?.part?.value;
+  const text = typeof value === "string" ? value
+    : typeof value?.text === "string" ? value.text
+      : typeof value?.thinking === "string" ? value.thinking
+        : null;
+  if (text === null) return `(${boundedIndexField(event?.payload?.part?.form ?? "no")} part, no text)`;
+  const flat = text.replace(/\s+/g, " ").trim();
+  return JSON.stringify(flat.length > 100 ? `${flat.slice(0, 100)}…` : flat);
+}
 export function registerTools(pi: any, client: OVClient, sync: SyncManager, observe: Observation = observation): void {
   // Session-scoped memory confines the model to its own namespace. The server
   // applies the user header to memory-semantic calls only, so every tool that
@@ -109,10 +135,11 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
   pi.registerTool({
     name: "viking_search",
     label: "Viking Search",
-    description: "Semantic search over the OpenViking knowledge base. Returns ranked results with viking:// URIs and abstracts. Use to recall past decisions, user preferences, or project-specific knowledge not in current context.",
-    promptSnippet: "Search OpenViking for past decisions, preferences, and project knowledge",
+    description: "Semantic search over the OpenViking knowledge base. Returns ranked results with viking:// URIs and abstracts. Use to recall past decisions, user preferences, project-specific knowledge, or earlier parts of THIS session that were compacted or replaced out of current context.",
+    promptSnippet: "Search OpenViking for past decisions, preferences, project knowledge, and compacted earlier context of this session",
     promptGuidelines: [
       "Use viking_search when you need information from previous sessions not in MEMORY.md.",
+      "Use viking_search when current work references earlier session context you can no longer see (compacted or checkpoint-replaced); follow hits up with viking_read or viking_archive_expand.",
       "Use viking_search before making decisions that might conflict with past decisions.",
     ],
     parameters: Type.Object({
@@ -368,10 +395,22 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
   pi.registerTool({
     name: "viking_archive_expand",
     label: "Viking Archive Expand",
-    description: "Expand an archive of this session back into its raw recorded events, verified against the archive manifest.",
-    promptSnippet: "Expand an archive of this session into its raw recorded events",
+    description:
+      "List committed archives currently known in this session process, or page through one archive's event index" +
+      " (event ids, roles, context weights, short excerpts, and direct-representation read URIs when available)." +
+      " Use to recover earlier context of THIS session that was compacted or replaced by a checkpoint; use" +
+      " viking_read when the index exposes a read URI. Never dumps full event payloads.",
+    promptSnippet: "List this session's archives or inspect one archive's event index to recover compacted earlier context",
+    promptGuidelines: [
+      "Call viking_archive_expand without archive_id to list committed archives currently known in this session process when earlier context is no longer visible.",
+      "Page large archives with offset/limit instead of fetching everything at once.",
+    ],
     parameters: Type.Object({
-      archive_id: Type.String({ description: "Archive ID (arc_<64 hex>) produced by this session" }),
+      archive_id: Type.Optional(Type.String({
+        description: "Archive ID (arc_<64 hex>) produced by this session; omit to list committed archives currently known in this process",
+      })),
+      offset: Type.Optional(Type.Number({ description: "Event index offset for paging (default 0)" })),
+      limit: Type.Optional(Type.Number({ description: "Max events per page (default 50)" })),
     }),
     async execute(
       _id: string, params: any, _signal: AbortSignal,
@@ -381,22 +420,61 @@ export function registerTools(pi: any, client: OVClient, sync: SyncManager, obse
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
       const archiveId = String(params.archive_id ?? "").trim();
+      // 无 archive_id 时是发现路径：列出当前进程在本会话已验证的 Archive，模型据此选择要检查的 archive。
+      if (!archiveId) {
+        observe.emit("tool_scope", "viking_archive_expand", "archive", Boolean(scoped()), "allow", 1, 0);
+        const archives = sync.listArchives();
+        if (archives.length === 0) {
+          return { content: [{ type: "text", text: "No committed archives are currently known in this session process." }] };
+        }
+        const offset = Math.min(archives.length, Math.max(0, Math.floor(Number(params.offset) || 0)));
+        const limit = Math.min(200, Math.max(1, Math.floor(Number(params.limit) || 50)));
+        const page = archives.slice(offset, offset + limit);
+        const pageRange = page.length > 0 ? `${offset + 1}-${offset + page.length}` : "none";
+        const lines = page.map((descriptor: any, index: number) => {
+          const manifest = descriptor.manifest;
+          return `- [${offset + index + 1}] ${manifest.archiveId} — ${manifest.eventCount} events,` +
+            ` ≈${descriptor.tokenCount} context tokens, ${manifest.firstEventId} → ${manifest.lastEventId}`;
+        });
+        return {
+          content: [{
+            type: "text",
+            text: `This session process currently knows ${archives.length} committed archive(s); showing ${pageRange}:\n${lines.join("\n")}` +
+              "\n\nPage with offset/limit, or call viking_archive_expand with one archive_id for its event index.",
+          }],
+        };
+      }
       // Archive 位置由当前 Pi session 推导，跨会话展开在命名空间层面不可寻址；
       // 这里只需要拒绝形状非法的标识，避免把任意字符串带进 URI 组合。
       if (!/^arc_[0-9a-f]{64}$/.test(archiveId)) {
         observe.emit("tool_scope", "viking_archive_expand", "archive", Boolean(scoped()), "deny", 0, 1);
-        return { content: [{ type: "text", text: `Refused: ${archiveId || "(empty)"} is not a valid archive id.` }] };
+        return { content: [{ type: "text", text: `Refused: ${archiveId} is not a valid archive id.` }] };
       }
       observe.emit("tool_scope", "viking_archive_expand", "archive", Boolean(scoped()), "allow", 1, 0);
       try {
         const { manifest, events } = await sync.expandArchive(archiveId);
+        const offset = Math.min(events.length, Math.max(0, Math.floor(Number(params.offset) || 0)));
+        const limit = Math.min(200, Math.max(1, Math.floor(Number(params.limit) || 50)));
+        const page = events.slice(offset, offset + limit);
+        const pageRange = page.length > 0 ? `${offset + 1}-${offset + page.length}` : "none";
         const header = [
           `archive ${manifest.archiveId}`,
           `events ${manifest.eventCount} (${manifest.firstEventId} → ${manifest.lastEventId})`,
           `content ${manifest.contentHash}`,
+          `showing ${pageRange} of ${events.length}; page with offset/limit.`,
+          "This is an index, not full content: use viking_read when an entry exposes a read URI; oversized chunked entries have no single read URI.",
         ].join("\n");
-        const body = events.map((event: any) => JSON.stringify(event.payload)).join("\n");
-        return { content: [{ type: "text", text: `${header}\n\n${body}` }] };
+        const body = page.map((event: any, index: number) => {
+          const uri = sync.eventStorageUri(event.eventId, recordedEventBytes(event).length);
+          const lines = [
+            `[${offset + index + 1}] ${event.eventId} ${event.occurredAt} ${describeEventKind(event)}` +
+              ` weight≈${eventTokenWeight(event)} tokens`,
+            `    excerpt: ${eventExcerpt(event)}`,
+          ];
+          if (uri) lines.push(`    read: ${uri}`);
+          return lines.join("\n");
+        });
+        return { content: [{ type: "text", text: `${header}\n\n${body.join("\n")}` }] };
       } catch (error: any) {
         return { content: [{ type: "text", text: `Archive not available: ${error?.name || "Error"}` }] };
       }

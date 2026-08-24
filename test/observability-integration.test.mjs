@@ -8,6 +8,7 @@ import { RecallManager } from "../recall.ts";
 import { SyncManager } from "../sync.ts";
 import { ActiveContextManager } from "../shared/active-context.mjs";
 import { archiveManifestBytes, buildArchiveManifest, describeArchives, planArchives } from "../shared/archive.mjs";
+import { ContentBusyError } from "../shared/content-objects.mjs";
 import { ArchiveManager, archiveStorageLocation } from "../shared/archive-store.mjs";
 import { buildCheckpointEvent, buildCheckpointRequestEvent, checkpointId } from "../shared/checkpoint.mjs";
 import { OpenVikingCheckpointProcessor } from "../shared/checkpoint-processor.mjs";
@@ -211,6 +212,49 @@ test("sync 成功推进与失败保持待重放由同一责任模块解释，产
   assert.equal(records.at(-1).data.dropped, 0);
 });
 
+test("busy 争用的操作内重试按 retry 降级记录，恢复后不残留失败状态", async () => {
+  const { path, observation } = observationFor("sync-busy-retry");
+  const trace = buildLongToolLoopTrace();
+  let calls = 0;
+  const adapter = {
+    async writeEvents(_sessionId, events) {
+      calls++;
+      if (calls === 1) throw new ContentBusyError(
+        "OpenViking path is busy; retry the same request", "viking://user/private/resources/.pi-openviking/recorded-events/v1/ab/cd/.evt_x.json",
+      );
+      return { acceptedEventIds: events.map((event) => event.eventId), capabilityVerified: true };
+    },
+  };
+  const client = {
+    userRoot: "viking://user/private",
+    cfg: { archive: { chunkTokenBudget: 20000, rawTailTokenBudget: 30000 } },
+    recordedEventTarget: { endpoint: "https://private.invalid", account: "dev", user: "private" },
+    resolveUserSpace: async () => "private",
+    bindUser() {},
+  };
+  const sync = new SyncManager(client, {
+    observation,
+    ackPathForSession: () => null,
+    adapterFactory: () => adapter,
+  });
+  await sync.ensureSession(trace.sessionId);
+  const result = await sync.syncSession({
+    isPersisted: () => false,
+    getEntries: () => trace.shorter,
+  });
+  assert.equal(result.allDelivered, true);
+  assert.equal(sync.status.lastFailure, null);
+  sync.observeFinalState();
+  await observation.finish();
+
+  const { raw, records } = readRun(path);
+  assert.doesNotMatch(raw, /viking:\/\/user\/private|https:\/\/private/);
+  assert.ok(records.some((record) => record.stage === "sync_failure" && record.data.disposition === "retry" &&
+    record.data.errorCode === "delivery" && record.data.branch === "pending_replay"));
+  assert.ok(records.some((record) => record.stage === "sync_ack_advance"));
+  assert.equal(records.at(-1).data.dropped, 0);
+});
+
 test("Archive 提交与失败由同一责任模块解释，只记录分支、计数与协议 hash", async () => {
   const { path, observation } = observationFor("archive");
   const sessionId = "observability-archive-session";
@@ -382,7 +426,7 @@ test("checkpoint 请求、VLM 边界、状态与失败只记录安全计数和�
   }, { observation });
   const expanded = await archives.expand(sessionId, descriptor.manifest.archiveId);
   assert.equal((await boundaryProcessor.advance({
-    taskId, manifest: descriptor.manifest, events: expanded.events, previousCheckpoint: null,
+    taskId, manifest: descriptor.manifest, loadEvents: async () => expanded.events, previousCheckpoint: null,
   })).status, "completed");
 
   let first = true;

@@ -11,9 +11,10 @@ import {
 import { describeArchives, type ArchiveDescriptor, type ArchiveManifestV1 } from "./shared/archive.mjs";
 import { ArchiveManager } from "./shared/archive-store.mjs";
 import { CheckpointManager, type CheckpointStatus } from "./shared/checkpoint-store.mjs";
+import { BATCH_MAX_FILE_BYTES, withBusyRetry } from "./shared/content-objects.mjs";
 import { parsePiSessionJsonl, sessionHasAssistantEntry } from "./shared/pi-session-source.mjs";
 import { observation, type Observation } from "./shared/observe.mjs";
-import { RecordedEventAdapter } from "./shared/recorded-event-adapter.mjs";
+import { RecordedEventAdapter, recordedEventStorageLocation } from "./shared/recorded-event-adapter.mjs";
 import type { PiRecordedEventV1 } from "./shared/recorded-event.mjs";
 import { projectPiEntries } from "./shared/recorded-event.mjs";
 import { deriveHarnessSessionId } from "./shared/session-model.mjs";
@@ -108,9 +109,11 @@ export class SyncManager {
   private knownParents = new Map<string, string | null>();
   private checkpointBranchLeafId: string | null = null;
   private committedArchives: ArchiveDescriptor[] = [];
+  private sessionArchives = new Map<string, ArchiveDescriptor>();
   private activeContextSnapshot: { branchEvents: any[]; taskModel: TaskModelContext | null } | null = null;
   private operationTail: Promise<void> = Promise.resolve();
   private activeContextRefreshTail: Promise<void> = Promise.resolve();
+  private busyRetryController = new AbortController();
   private syncStatus: SyncStatus = {
     source: "none",
     capability: "unknown",
@@ -219,6 +222,22 @@ export class SyncManager {
     return this.archives.expand(this.piSessionId, archiveId);
   }
 
+  /** 当前进程在本会话已验证的 Archive 缓存（跨分支累计），供工具层提供发现路径；展开仍回读自证。 */
+  listArchives(): ArchiveDescriptor[] {
+    return [...this.sessionArchives.values()];
+  }
+
+  /**
+   * 事件在 Content 存储中的直读 URI。URI 形状仍由 adapter 模块拥有；超过单文件上限的
+   * 事件没有直读对象，返回 null，调用方据此降级为只展示索引信息。
+   */
+  eventStorageUri(eventId: string, eventBytes: number): string | null {
+    const userRoot = this.client.userRoot;
+    if (!this.piSessionId || !userRoot) return null;
+    if (eventBytes > BATCH_MAX_FILE_BYTES) return null;
+    return recordedEventStorageLocation(userRoot, this.piSessionId, eventId).directUri;
+  }
+
   async ensureSession(piSessionId: string): Promise<boolean> {
     if (this.piSessionId === piSessionId && this.adapter) return true;
     if (this.checkpoints) await this.checkpoints.stop();
@@ -227,6 +246,7 @@ export class SyncManager {
       this.knownParents.clear();
       this.checkpointBranchLeafId = null;
       this.committedArchives = [];
+      this.sessionArchives.clear();
       this.activeContextSnapshot = null;
     }
     this.piSessionId = piSessionId;
@@ -246,6 +266,7 @@ export class SyncManager {
       adapter: this.adapter,
       budgets: this.client.cfg.archive,
       observation: this.observe,
+      busyRetrySignal: this.busyRetryController.signal,
     });
     this.checkpoints = new CheckpointManager(this.client, {
       adapter: this.adapter,
@@ -318,6 +339,7 @@ export class SyncManager {
   }
 
   async stopBackground(): Promise<void> {
+    this.busyRetryController.abort();
     await this.checkpoints?.stop();
   }
 
@@ -454,7 +476,17 @@ export class SyncManager {
       const entryEvents = eventsByEntry.get(entry.id) || [];
       let failureCode: "ack_persist" | "capability" | "delivery" = "delivery";
       try {
-        const result = await this.adapter.writeEvents(this.piSessionId, entryEvents);
+        const result = await withBusyRetry(
+          () => this.adapter.writeEvents(this.piSessionId, entryEvents),
+          {
+            // 瞬时 busy 在操作内有界重试：每次尝试按 retry 降级记录，但不触碰 lastFailure——
+            // /viking 只展示重试耗尽后的持久失败，避免把语义刷新争用误读成同步损坏。
+            onRetry: (error: any) => this.observe.emit(
+              "sync_failure", error, "delivery", "retry", "pending_replay", added, this.syncStatus.pendingEntries,
+            ),
+            signal: this.busyRetryController.signal,
+          },
+        );
         if (result.acceptedEventIds.length !== entryEvents.length) {
           throw new Error(`OpenViking did not confirm every event for Pi entry ${entry.id}`);
         }
@@ -628,6 +660,11 @@ export class SyncManager {
     // 分支切换已在 I/O 前失效旧范围，因而不会继续消费已放弃分支。
     if (!result.reconciled) return;
     this.committedArchives = result.archives;
+    // 当前进程的发现路径跨分支累计：分支切换会重置消费范围，但已验证 Archive 仍可按身份展开；
+    // 缓存只增不减并在会话切换时清空，不替代存储回读。
+    for (const descriptor of result.archives) {
+      this.sessionArchives.set(descriptor.manifest.archiveId, descriptor);
+    }
     void this.checkpoints?.schedule(this.piSessionId, result.archives, archiveChains);
   }
 

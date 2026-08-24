@@ -22,6 +22,7 @@ import {
   validateCheckpointOverview,
 } from "../shared/checkpoint.mjs";
 import { ArchiveManager } from "../shared/archive-store.mjs";
+import { ContentBusyError } from "../shared/content-objects.mjs";
 import { CheckpointManager } from "../shared/checkpoint-store.mjs";
 import { RecordedEventAdapter } from "../shared/recorded-event-adapter.mjs";
 import { buildProducedRecordedEvent, projectPiEntries, recordedEventId } from "../shared/recorded-event.mjs";
@@ -950,5 +951,154 @@ test("重试耗尽进入 failed，不宣称恢复且最后一次不再提示将�
   assert.equal(manager.status.mode, "failed");
   assert.ok(notifications.some((message) => message.includes("重试已耗尽")));
   assert.ok(!notifications.some((message) => message.includes("消费已恢复")));
+  await manager.stop();
+});
+
+test("处理中轮询不重放 Archive 展开，已验证事实不重复读取", async () => {
+  const { adapter, archives, descriptors } = await archiveFixture();
+  let expandCalls = 0;
+  const countingArchives = new Proxy(archives, {
+    get(target, property, receiver) {
+      if (property === "expand") {
+        return async (...args) => {
+          expandCalls += 1;
+          return Reflect.get(target, property, receiver).apply(target, args);
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const presentReads = new Map();
+  const countingAdapter = new Proxy(adapter, {
+    get(target, property, receiver) {
+      if (property === "readEventIfExists") {
+        return async (sessionId, eventId) => {
+          const stored = await Reflect.get(target, property, receiver).apply(target, [sessionId, eventId]);
+          if (stored) presentReads.set(eventId, (presentReads.get(eventId) ?? 0) + 1);
+          return stored;
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+
+  let advances = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const processor = {
+    async advance(input) {
+      advances += 1;
+      assert.equal(typeof input.loadEvents, "function", "advance 只接收惰性事件加载器");
+      if (advances === 1) {
+        // 首个 attempt 需要事件正文提交输入，必须触发一次展开。
+        assert.ok(Array.isArray(await input.loadEvents()), "提交输入时按需加载事件");
+        return { status: "processing", taskCreatedAtMs: null };
+      }
+      if (advances === 2) {
+        await gate;
+        return { status: "processing", taskCreatedAtMs: null };
+      }
+      return { status: "completed", overview: OVERVIEW };
+    },
+    async cleanup() { return true; },
+  };
+  const manager = new CheckpointManager({}, {
+    adapter: countingAdapter,
+    archiveManager: countingArchives,
+    processor,
+    pollIntervalMs: 1,
+    now: clock(),
+  });
+  const scheduled = manager.schedule(SESSION, [descriptors[0]]);
+  for (let i = 0; i < 200 && advances < 2; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(advances, 2, "轮询必须继续驱动同一 request");
+  const expandAtPoll = expandCalls;
+  release();
+  await scheduled;
+  for (let i = 0; i < 200 && manager.status.mode !== "caught_up"; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(manager.status.mode, "caught_up");
+  assert.equal(expandAtPoll, 1, "处理中轮询不得展开 Archive");
+  assert.equal(expandCalls, 2, "只有提交输入与完成回读各展开一次");
+
+  const presentAfterCatchUp = new Map(presentReads);
+  assert.ok(presentAfterCatchUp.size > 0);
+  await manager.schedule(SESSION, [descriptors[0]]);
+  for (const [eventId, count] of presentAfterCatchUp) {
+    assert.equal(presentReads.get(eventId), count, `已验证事实 ${eventId.slice(0, 12)}… 不得在后续扫描中重复读取`);
+  }
+  await manager.stop();
+});
+
+test("同一次 advance 完成时仍在提交输入后重新展开 Archive", async () => {
+  const { adapter, archives, descriptors } = await archiveFixture();
+  let expandCalls = 0;
+  const countingArchives = new Proxy(archives, {
+    get(target, property, receiver) {
+      if (property === "expand") {
+        return async (...args) => {
+          expandCalls += 1;
+          return Reflect.get(target, property, receiver).apply(target, args);
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const manager = new CheckpointManager({}, {
+    adapter,
+    archiveManager: countingArchives,
+    processor: {
+      async advance(input) {
+        assert.ok(Array.isArray(await input.loadEvents()), "新 request 提交输入必须展开 Archive");
+        return { status: "completed", overview: OVERVIEW };
+      },
+      async cleanup() { return true; },
+    },
+    pollIntervalMs: 60_000,
+    now: clock(),
+  });
+
+  await manager.schedule(SESSION, [descriptors[0]]);
+  assert.equal(manager.status.mode, "caught_up");
+  assert.equal(expandCalls, 2, "即时完成也必须分别证明提交输入与终态来源");
+  await manager.stop();
+});
+
+test("checkpoint 事实写入的路径占用在操作内恢复", async () => {
+  const { adapter, archives, descriptors } = await archiveFixture();
+  let writes = 0;
+  const busyAdapter = new Proxy(adapter, {
+    get(target, property, receiver) {
+      if (property === "writeEvents") {
+        return async (...args) => {
+          writes += 1;
+          if (writes === 1) throw new ContentBusyError("busy", "viking://busy");
+          return Reflect.get(target, property, receiver).apply(target, args);
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const manager = new CheckpointManager({}, {
+    adapter: busyAdapter,
+    archiveManager: archives,
+    processor: {
+      async advance(input) {
+        await input.loadEvents();
+        return { status: "completed", overview: OVERVIEW };
+      },
+      async cleanup() { return true; },
+    },
+    pollIntervalMs: 60_000,
+    now: clock(),
+  });
+
+  await manager.schedule(SESSION, [descriptors[0]]);
+  assert.equal(manager.status.mode, "caught_up");
+  assert.ok(writes >= 3, "request busy 重试后仍须写入 request 与 checkpoint");
+  assert.equal(manager.status.lastFailure, null);
   await manager.stop();
 });

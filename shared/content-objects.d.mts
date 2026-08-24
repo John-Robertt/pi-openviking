@@ -45,7 +45,15 @@ export class ContentWriteError extends Error {
   status?: number;
   error?: unknown;
 }
-
+export const BUSY_RETRY_DELAYS_MS: readonly number[];
+export function withBusyRetry<T>(
+  operation: () => Promise<T>,
+  options?: {
+    onRetry?: (error: ContentBusyError, attempt: number) => void;
+    delaysMs?: readonly number[];
+    signal?: AbortSignal;
+  },
+): Promise<T>;
 export function acceptBatchResult(response: unknown, rootUri: string, expectedUris: string[]): AcceptedContentResult;
 export function planContentBatches(objects: ContentObject[]): ContentObject[][];
 export function ensureDirectoryChain(

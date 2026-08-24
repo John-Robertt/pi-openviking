@@ -234,37 +234,85 @@ test("资源导入在会话隔离模式拒绝，关闭隔离后按服务身份�
   }
 });
 
-test("Archive 展开只接受本会话命名空间内的合法 archiveId", async () => {
+test("Archive 展开只接受本会话命名空间内的合法 archiveId，输出为受限事件索引", async () => {
   const expansions = [];
+  const archiveId = `arc_${"a".repeat(64)}`;
   const { run, close } = await harness({
     sync: {
       sessionId: "pi-x",
-      async expandArchive(archiveId) {
-        expansions.push(archiveId);
+      listArchives: () => Array.from({ length: 52 }, (_, index) => ({
+        manifest: {
+          archiveId: index === 0 ? archiveId : `arc_${index.toString(16).padStart(64, "0")}`,
+          eventCount: 2,
+          firstEventId: `evt_${"1".repeat(64)}`,
+          lastEventId: `evt_${"3".repeat(64)}`,
+          contentHash: `sha256:${"2".repeat(64)}`,
+        },
+        tokenCount: 1234,
+      })),
+      eventStorageUri: () => null,
+      async expandArchive(id) {
+        expansions.push(id);
         return {
           manifest: {
-            archiveId,
-            eventCount: 1,
+            archiveId: id,
+            eventCount: 2,
             firstEventId: `evt_${"1".repeat(64)}`,
-            lastEventId: `evt_${"1".repeat(64)}`,
+            lastEventId: `evt_${"3".repeat(64)}`,
             contentHash: `sha256:${"2".repeat(64)}`,
           },
-          events: [{ payload: { entry: { id: "entry-0" } } }],
+          events: [
+            {
+              eventId: `evt_${"1".repeat(64)}`, occurredAt: "2026-08-24T05:39:17.985Z",
+              source: { entryType: "message" },
+              payload: { entry: { id: "entry-0", message: { role: "assistant" } }, part: { form: "scalar", value: "planning the next step" } },
+            },
+            {
+              eventId: `evt_${"3".repeat(64)}`, occurredAt: "2026-08-24T05:39:18.985Z",
+              source: { entryType: "custom" },
+              payload: { entry: { id: "entry-1", customType: "x".repeat(500) }, part: { form: "array", value: { text: "exit 0" } } },
+            },
+          ],
         };
       },
     },
   });
   try {
-    for (const rejected of ["", "pi-someone-else", "../user/dev--pi-OTHER/memories", `arc_${"z".repeat(64)}`]) {
+    for (const rejected of ["pi-someone-else", "../user/dev--pi-OTHER/memories", `arc_${"z".repeat(64)}`]) {
       const result = await run("viking_archive_expand", { archive_id: rejected });
       assert.match(result.text, /^Refused:/);
       assert.deepEqual(result.requests, [], "形状非法的 archiveId 不得发出请求");
     }
     assert.deepEqual(expansions, [], "拒绝路径不得触达 Archive 存储");
 
-    const own = await run("viking_archive_expand", { archive_id: `arc_${"a".repeat(64)}` });
-    assert.match(own.text, new RegExp(`^archive arc_a{64}\\nevents 1 `));
-    assert.deepEqual(expansions, [`arc_${"a".repeat(64)}`]);
+    // 无参数是发现路径：列出本会话 Archive，不触达 expand。
+    const listing = await run("viking_archive_expand", {});
+    assert.match(listing.text, /knows 52 committed archive\(s\); showing 1-50/);
+    assert.match(listing.text, new RegExp(archiveId));
+    assert.doesNotMatch(listing.text, new RegExp(`arc_${(51).toString(16).padStart(64, "0")}`));
+    const listingTail = await run("viking_archive_expand", { offset: 50, limit: 2 });
+    assert.match(listingTail.text, /showing 51-52/);
+    assert.deepEqual(expansions, [], "列表路径不得触达 Archive 存储");
+
+    const own = await run("viking_archive_expand", { archive_id: archiveId });
+    assert.match(own.text, new RegExp(`^archive arc_a{64}\\nevents 2 `));
+    assert.match(own.text, /showing 1-2 of 2/);
+    assert.match(own.text, /message\/assistant weight≈\d+ tokens/);
+    assert.match(own.text, /excerpt: "planning the next step"/);
+    assert.match(own.text, /custom\/x+… weight≈/);
+    assert.doesNotMatch(own.text, new RegExp("x".repeat(500)), "索引标签必须有硬上限");
+    assert.doesNotMatch(own.text, /entry-0/, "索引不得包含完整 payload 字段");
+    assert.match(own.text, /oversized chunked entries have no single read URI/);
+    assert.doesNotMatch(own.text, /^\s*read:/m, "没有 direct 表示的事件不得伪造可读 URI");
+    assert.deepEqual(expansions, [archiveId]);
+
+    const page = await run("viking_archive_expand", { archive_id: archiveId, offset: 1, limit: 1 });
+    assert.match(page.text, /showing 2-2 of 2/);
+    assert.doesNotMatch(page.text, /planning the next step/);
+
+    const exhausted = await run("viking_archive_expand", { archive_id: archiveId, offset: 99, limit: 1 });
+    assert.match(exhausted.text, /showing none of 2/);
+    assert.doesNotMatch(exhausted.text, /showing 100-2/);
   } finally {
     await close();
   }

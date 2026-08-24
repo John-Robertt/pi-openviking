@@ -6,6 +6,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { SyncManager } from "../sync.ts";
 import { snapshotSessionSource } from "../shared/pi-session-source.mjs";
 import { buildArchiveManifest, describeArchives, planArchives } from "../shared/archive.mjs";
+import { ContentBusyError } from "../shared/content-objects.mjs";
 import { buildCheckpointEvent, buildCheckpointRequestEvent, checkpointEventId, checkpointId } from "../shared/checkpoint.mjs";
 import { archiveStorageLocation } from "../shared/archive-store.mjs";
 import { recordedEventStorageLocation } from "../shared/recorded-event-adapter.mjs";
@@ -18,14 +19,16 @@ class MemoryEventStore {
   constructor() {
     this.events = new Map();
     this.failNext = false;
+    this.failTimes = 0;
     this.delayMs = 0;
     this.failureMessage = "injected unavailable";
   }
 
   async writeEvents(_sessionId, events) {
     if (this.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
-    if (this.failNext) {
+    if (this.failNext || this.failTimes > 0) {
       this.failNext = false;
+      if (this.failTimes > 0) this.failTimes--;
       if (this.failureError) throw this.failureError;
       const error = new Error(this.failureMessage);
       if (this.failureStatus) error.status = this.failureStatus;
@@ -794,4 +797,55 @@ test("某个 entry 永久无法同步时，已确认前缀仍然形成 Archive",
   assert.ok(result.pending > 0);
   assert.ok(sync.status.archive.committed > 0, "已确认前缀的 Archive 不得被下游 entry 的冲突阻断");
   assert.equal(sync.status.archive.lastFailure, null);
+});
+
+test("busy 争用在操作内有界重试：恢复后不污染状态，耗尽后保持可诊断", async () => {
+  const root = "test/.artifacts/sync-manager-busy";
+  const ackPath = `${root}/ack.json`;
+  await rm(root, { recursive: true, force: true });
+  await mkdir(root, { recursive: true });
+  try {
+    const trace = buildLongToolLoopTrace();
+    const busy = () => new ContentBusyError("OpenViking path is busy; retry the same request", "viking://user/test/resources/.pi-openviking/recorded-events/v1/ab/cd/.evt_x.json");
+
+    // 两次 busy 后在同一轮同步内恢复：entry 照常 ACK，lastFailure 不被瞬时争用污染。
+    const store = new MemoryEventStore();
+    store.failTimes = 2;
+    store.failureError = busy();
+    const sync = manager(store, ackPath);
+    await sync.ensureSession(trace.sessionId);
+    const recovered = await syncBranch(sync, trace.shorter);
+    assert.equal(recovered.allDelivered, true);
+    assert.equal(recovered.added, trace.shorter.length);
+    assert.equal(sync.status.lastFailure, null);
+
+    // 重试耗尽：保持待重放，lastFailure 呈现持久失败，争用结束后下一轮重放恢复。
+    const exhaustedStore = new MemoryEventStore();
+    exhaustedStore.failTimes = Number.MAX_SAFE_INTEGER;
+    exhaustedStore.failureError = busy();
+    const exhausted = manager(exhaustedStore, `${root}/exhausted.json`);
+    await exhausted.ensureSession(`${trace.sessionId}-exhausted`);
+    const blocked = await syncBranch(exhausted, trace.shorter);
+    assert.equal(blocked.allDelivered, false);
+    assert.equal(blocked.pending, trace.shorter.length);
+    assert.match(exhausted.status.lastFailure, /ContentBusyError/);
+    exhaustedStore.failTimes = 0;
+    const replayed = await syncBranch(exhausted, trace.shorter);
+    assert.equal(replayed.allDelivered, true);
+    assert.equal(exhausted.status.lastFailure, null);
+
+    const cancelledStore = new MemoryEventStore();
+    cancelledStore.failTimes = 10;
+    cancelledStore.failureError = busy();
+    const cancelledSync = manager(cancelledStore, `${root}/cancelled.json`);
+    await cancelledSync.ensureSession(`${trace.sessionId}-cancelled`);
+    const pending = syncBranch(cancelledSync, trace.shorter);
+    await new Promise((resolve) => setImmediate(resolve));
+    await cancelledSync.stopBackground();
+    const cancelled = await pending;
+    assert.equal(cancelled.allDelivered, false);
+    assert.equal(cancelledStore.failTimes, 9, "shutdown 中止退避后不得再次写入");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

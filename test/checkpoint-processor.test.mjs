@@ -32,7 +32,7 @@ test("processor 通过公开 Session/Task API 提交并读取 Working Memory", a
     async getSessionContext() { calls.push("getSessionContext"); return response(true, { latest_archive_overview: OVERVIEW }); },
   };
   const processor = new OpenVikingCheckpointProcessor(client);
-  const result = await processor.advance({ taskId: TASK_ID, manifest, events, previousCheckpoint: null });
+  const result = await processor.advance({ taskId: TASK_ID, manifest, loadEvents: async () => events, previousCheckpoint: null });
   assert.equal(result.status, "completed");
   assert.equal(result.overview, validateCheckpointOverview(OVERVIEW));
   assert.deepEqual(calls, ["getSession", "addMessage", "commitSession", "getTask", "getSessionContext"]);
@@ -50,7 +50,7 @@ test("processor 从持久 Session 的 task 列表恢复，不重复写输入或 
     async getTask() { calls.push("getTask"); return response(true, { status: "running", created_at: 12.5 }); },
   };
   const processor = new OpenVikingCheckpointProcessor(client);
-  const result = await processor.advance({ taskId: TASK_ID, manifest, events, previousCheckpoint: null });
+  const result = await processor.advance({ taskId: TASK_ID, manifest, loadEvents: async () => events, previousCheckpoint: null });
   assert.equal(result.status, "processing");
   assert.equal(result.taskCreatedAtMs, 12500, "悬挂判定需要服务器侧 task 创建时刻");
   assert.deepEqual(calls, ["getSession", "listTasks", "getTask"]);
@@ -64,7 +64,7 @@ test("processor 只把 OpenViking 明确终态失败返回为 checkpoint failure
     async getTask() { return response(true, { status: "failed", error: "Authorization: Bearer sk-review-secret" }); },
   };
   const processor = new OpenVikingCheckpointProcessor(client);
-  const result = await processor.advance({ taskId: TASK_ID, manifest, events, previousCheckpoint: null });
+  const result = await processor.advance({ taskId: TASK_ID, manifest, loadEvents: async () => events, previousCheckpoint: null });
   assert.equal(result.status, "failed");
   assert.equal(result.error.errorCode, "task_failed");
   assert.equal(result.error.message, "checkpoint VLM task failed");
@@ -81,7 +81,7 @@ test("processor 拒绝缺少统一 continuation 契约的非空输出", async ()
     },
   };
   const processor = new OpenVikingCheckpointProcessor(client);
-  const result = await processor.advance({ taskId: TASK_ID, manifest, events, previousCheckpoint: null });
+  const result = await processor.advance({ taskId: TASK_ID, manifest, loadEvents: async () => events, previousCheckpoint: null });
   assert.equal(result.status, "failed");
   assert.equal(result.error.errorCode, "invalid_output");
 });
@@ -113,7 +113,7 @@ test("processor 在任一媒体没有非空语义摘要时保留同一 request �
     async getSessionContext() { return response(true, { latest_archive_overview: OVERVIEW }); },
   };
   const processor = new OpenVikingCheckpointProcessor(client);
-  const result = await processor.advance({ taskId: TASK_ID, manifest: imageManifest, events: imageEvents, previousCheckpoint: null });
+  const result = await processor.advance({ taskId: TASK_ID, manifest: imageManifest, loadEvents: async () => imageEvents, previousCheckpoint: null });
   assert.equal(result.status, "pending");
   assert.equal(result.error.errorCode, "media_prepare");
   assert.equal(added, 0);

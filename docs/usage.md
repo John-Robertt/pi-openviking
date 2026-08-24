@@ -142,6 +142,10 @@ npx pi-openviking@latest credentials
 原始用户指令 anchor 与 raw tail；否则继续使用完整 Pi 上下文。已接管的候选容量不匹配或 checkpoint 超预算、且当前分支
 已有更新 checkpoint 时，下一次请求直接改用更新候选重新判定；更新候选仍不适配时保留原边界并继续使用完整 Pi 上下文。
 Pi 触发 compaction 时，扩展只在同一 ActiveContext 可读时提供自包含 checkpoint，不可用时保留 Pi 原生 compaction。
+接管替换与原生压缩都会让早期上下文离开模型视野：checkpoint 正文固定携带恢复指引；原生压缩后的下一轮请求，
+扩展会在用户消息前补一段一次性指引，列出当前进程在本会话已验证的 Archive，并指明用 `viking_search`、
+`viking_archive_expand` 以及事件索引提供直读 URI 时的 `viking_read` 找回细节。该一次性指针绑定产生压缩的当前进程和
+分支；重启后使用 checkpoint 中的 Archive 身份或 `viking_search` 恢复。
 `recallTokenBudget` 直接限制服务端为一次检索装配的
 上下文 token 预算。
 
@@ -239,7 +243,7 @@ ACK 文件不包含 transcript，活动上下文文件只包含 `checkpointId` �
 | `viking_remember`       | 显式提交一条待抽取记忆             |
 | `viking_forget`         | 删除普通记忆 URI 或高置信匹配      |
 | `viking_add_resource`   | 导入 HTTP URL                      |
-| `viking_archive_expand` | 按 `archiveId` 展开本会话 Archive  |
+| `viking_archive_expand` | 列出当前进程已知的本会话 Archive，或按 `archiveId` 分页列出事件索引（身份、类型、权重、摘要，以及 direct 表示可用时的单事件读取 URI） |
 
 原始事件同步不经过这些工具。
 

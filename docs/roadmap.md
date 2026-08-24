@@ -16,7 +16,8 @@
 **完整记录与可靠同步的出口已关闭。** 事件投影、身份、确认前沿与重放在真实 Pi lifecycle、真实
 `SessionManager` 和受管 OpenViking 上成立：`npm test` 提供 deterministic 证据，`verify:sync:live`
 提供真实边界证据。该门禁断言的范围见 [`docs/verification.md`](./verification.md) 的门禁表；
-workload、身份与阈值由 `test/live/sync.workloads.json` 及其固定 hash 承载。
+workload、身份与阈值由 `test/live/sync.workloads.json` 及其固定 hash 承载。事件、Archive 与 checkpoint 的 Content 写入
+只对路径占用执行可由 shutdown 中止的有界重试，字节冲突仍立即进入完整性失败。
 
 **可观测性的出口已关闭。** `shared/observe.mjs` 的 active stage registry 是现行点位唯一清单；关闭零工作、sink/schema
 fail-open、字节一致性、进程 run 下的 session producer 隔离与会话替换注销由 deterministic checks 证明。
@@ -33,7 +34,8 @@ fail-open、字节一致性、进程 run 下的 session producer 隔离与会话
 **checkpoint 生产的出口已关闭。** checkpoint request、代码拥有的明确 failure 与结构化 checkpoint 作为自产
 `RecordedEventV1` 进入既有 immutable event namespace；消费状态、完整 parent/attempt 链、积压和终态清理
 义务只从 Archive 与这些事实派生。deterministic checks 证明孤立 checkpoint 拒绝、并发首写者收敛、逐 Archive
-三次 attempt、媒体失败 pending、外部错误脱敏、provider task 悬挂超时（task_timeout）转入重试链和跨重启清理。
+三次 attempt、媒体失败 pending、外部错误脱敏、provider task 悬挂超时（task_timeout）转入重试链和跨重启清理；
+处理中轮询只读取 task 状态，已验证事实按身份复用，Archive 只在提交输入与终态回读时展开。
 
 `verify:checkpoint:live` 在当前开发模型身份和受管 OpenViking 上覆盖文本、多模态、明确失败后的真实 VLM 重试、
 双 Archive 重启恢复及当前 Archive 范围失效，并分别以 480000ms 和 240000ms 约束媒体语义处理与 checkpoint 生成，
@@ -50,11 +52,9 @@ fail-open、字节一致性、进程 run 下的 session producer 隔离与会话
 
 **上下文切换与 fail-open 的出口已关闭。** `context` hook 在 eligible `ActiveContext` 到达高水位时原子替换 provider
 messages；`session_before_compact` 只在事实可读且 eligible 时提供自包含 checkpoint，否则由 Pi 使用完整上下文和原生
-compaction。`verify:takeover:live` 通过 218/218，覆盖超预算、容量不匹配、稳定前缀、checkpoint 推进与 compaction：
-w1 的后台 checkpoint 等待从固定 delay 改为按状态轮询（VLM 生成延迟不确定）；w3 调整为先在小会话上完成并观察原生
-compaction 再 seed 容量失配原子 entry（600k 原子 entry 一旦成为 compaction 保留边界，其后的 compact 没有可摘要区间）。
-VLM 把整段正文写成整行斜体导致 `invalid_output` 的实测失败模式由 `shared/checkpoint.mjs` 的指引识别修复：模板指引
-按 pin 模板原文逐字匹配，斜体正文保留。
+compaction。`verify:takeover:live` 通过 277/277，覆盖稳定前缀与 checkpoint 推进、跨重启与分支失效、checkpoint 超预算
+和容量不匹配时的完整上下文降级、Pi compaction，以及超 raw-tail 预算原子事件经 Archive/VLM checkpoint 后恢复接管；
+checkpoint 块与原生压缩后的下一轮分别提供固定和一次性的归档恢复路径。
 
 **发布预算校准的出口已关闭。** 发布默认预算保持 Archive chunk 50000、raw tail 20000、checkpoint 16000。
 `verify:budget:live` 在现行最小 checkpoint schema、统一 Working Memory 接受门和完整装载 fail-open 下，对 tool-loop、

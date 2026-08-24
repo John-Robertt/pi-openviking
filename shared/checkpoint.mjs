@@ -331,8 +331,12 @@ export function renderCheckpointBlock(checkpoint) {
       !checkpoint.narrative || !ARCHIVE_ID_PATTERN.test(checkpoint?.sourceArchiveId)) {
     throw new TypeError("checkpoint block requires a parsed checkpoint");
   }
+  // 固定指引随 checkpoint 身份变化而整体替换，不破坏 prompt cache 的前缀稳定性。
   return [
     `<openviking-checkpoint id="${checkpoint.checkpointId}" archive="${checkpoint.sourceArchiveId}">`,
+    "This checkpoint replaces earlier context of this session that was compacted into the archive above.",
+    "The archived raw events remain stored: recover details with viking_search (keywords), or",
+    "viking_archive_expand (the archive id above, or omit it to list archives currently known in this process).",
     checkpoint.narrative,
     "</openviking-checkpoint>",
   ].join("\n");

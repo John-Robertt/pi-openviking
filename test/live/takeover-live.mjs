@@ -9,7 +9,7 @@ import { calculateContextTokens, SessionManager } from "@earendil-works/pi-codin
 
 import { readActiveContext } from "../../shared/active-context.mjs";
 import { describeArchives } from "../../shared/archive.mjs";
-import { checkpointEventIdFor, parseCheckpointEventById } from "../../shared/checkpoint.mjs";
+import { checkpointEventIdFor, checkpointId as checkpointIdFor, parseCheckpointEventById } from "../../shared/checkpoint.mjs";
 import { parsePiSessionJsonl } from "../../shared/pi-session-source.mjs";
 import { projectPiEntries } from "../../shared/recorded-event.mjs";
 import { RecordedEventAdapter } from "../../shared/recorded-event-adapter.mjs";
@@ -39,6 +39,7 @@ import { parseObservationRun } from "./observation-evidence.mjs";
 
 const CHECKPOINT_ID = /chk_[0-9a-f]{64}/;
 const LARGE_MARKER = "TAKEOVER_CAPACITY_ATOMIC_MARKER";
+const OVERSIZED_MARKER = "TAKEOVER_OVERSIZED_ATOMIC_MARKER";
 
 function seededText(seed, length) {
   let text = "";
@@ -119,11 +120,13 @@ function assertPayloadUsesCheckpoint(log, ctx, payload, checkpointId, archivedMa
 
 function appendUserPressure(sessionFile, marker, seed, chars) {
   const manager = SessionManager.open(sessionFile);
+  const content = `${marker}\n${seededText(seed, chars)}`;
   manager.appendMessage({
     role: "user",
-    content: `${marker}\n${seededText(seed, chars)}`,
+    content,
     timestamp: Date.now(),
   });
+  return content;
 }
 
 function seedCompactionPressure(ctx, sessionFile) {
@@ -470,10 +473,122 @@ async function w3(log, ctx) {
   recordWrittenObjects(ctx, branch, describeArchives(ctx.sessionId, branch, ctx.manifest.environment.extensionConfig.content.archive));
 }
 
+// w4：单条超过 rawTail 预算的原子事件经真实 archive → VLM checkpoint 管线后，takeover 必须
+// 正常接管（不回退容量不匹配）；接管的 checkpoint 块必须携带恢复指引；随后的原生压缩必须在
+// 下一轮请求注入一次性恢复指针且只注入一次。
+async function w4(log, ctx) {
+  const established = await establishActiveContext(log, ctx, ctx.workload.inputs);
+  if (!established?.active) return;
+
+  writeExtensionConfig(ctx, ctx.manifest.environment.extensionConfig.content);
+  const oversizedContent = appendUserPressure(
+    established.formation.sessionFile, OVERSIZED_MARKER,
+    `${ctx.sessionId}/w4-oversized`, ctx.manifest.environment.oversizedAtomicChars,
+  );
+  // 归档边界必须在大原子 entry 之后保留完整 raw tail；追加两倍预算的独立 entry，
+  // 使压力轴跨过下一个 chunk 边界并留下所需 tail，而不是假设超预算 entry 会立即归档。
+  appendUserPressure(
+    established.formation.sessionFile, "TAKEOVER_OVERSIZED_TRAILING_PRESSURE",
+    `${ctx.sessionId}/w4-trailing`,
+    ctx.manifest.environment.extensionConfig.content.archive.rawTailTokenBudget * 8,
+  );
+  const syncRun = await runPi(ctx, {
+    workloadId: ctx.workloadId, turn: 3, endpoint: ctx.endpoint,
+    actions: [{ command: "/viking sync" }],
+  });
+  assertRunHealthy(log, ctx, syncRun, { requireCapture: false });
+
+  // 独立重算分支与 Archive 计划，按事件范围定位覆盖大事件的 Archive；身份可确定性推导。
+  const source = await branchSource(ctx, syncRun.sessionFile);
+  const archives = describeArchives(ctx.sessionId, source.branch, ctx.manifest.environment.extensionConfig.content.archive);
+  const oversizedArchive = archives.find((archive) => source.branch.slice(archive.startIndex, archive.endIndex + 1)
+    .some((event) => JSON.stringify(event.payload).includes(OVERSIZED_MARKER)));
+  const oversizedArchived = Boolean(oversizedArchive);
+  log.check(ctx.workloadId, "oversized.archived", true, oversizedArchived, oversizedArchived,
+    "超过 rawTail 预算的原子事件必须在保留后续 raw tail 后完整进入 Archive");
+  if (!oversizedArchive) return;
+  const expectedCheckpointId = checkpointIdFor(oversizedArchive.manifest);
+
+  const waitRun = await runPi(ctx, {
+    workloadId: ctx.workloadId, turn: 4, endpoint: ctx.endpoint,
+    actions: [
+      { command: "/viking sync" },
+      { command: "/viking", untilNotifyIncludes: expectedCheckpointId },
+    ],
+  });
+  assertRunHealthy(log, ctx, waitRun, { requireCapture: false });
+  ctx.runs.push(summarizeRun(syncRun), summarizeRun(waitRun));
+
+  const takeoverRun = await runPi(ctx, {
+    workloadId: ctx.workloadId, turn: 5, endpoint: ctx.endpoint,
+    actions: [{ prompt: ctx.workload.inputs.P2 }],
+  });
+  assertRunHealthy(log, ctx, takeoverRun, { requireCapture: true });
+  const active = await readActiveContext(activeContextPathFor(ctx));
+  log.check(ctx.workloadId, "oversized.active-context", expectedCheckpointId, active?.checkpointId,
+    Boolean(active) && active.checkpointId === expectedCheckpointId,
+    "最新 checkpoint 必须在下一次真实 context hook 中原子推进为 ActiveContext");
+  const payloads = providerPayloads(takeoverRun);
+  log.check(ctx.workloadId, "takeover.capture-count", 1, payloads.length, payloads.length === 1);
+  if (payloads.length !== 1) return;
+  const payloadText = JSON.stringify(payloads[0]);
+  log.check(ctx.workloadId, "takeover.checkpoint-used", expectedCheckpointId,
+    payloadText.match(CHECKPOINT_ID)?.[0] ?? null, payloadText.includes(expectedCheckpointId),
+    "大事件经 checkpoint 消费后 takeover 不得回退为容量不匹配");
+  log.check(ctx.workloadId, "takeover.oversized-removed", false,
+    payloadText.includes(oversizedContent), !payloadText.includes(oversizedContent),
+    "takeover 可以保留 checkpoint 提炼的 marker，但不得保留完整 30K 原始事件正文");
+  log.check(ctx.workloadId, "takeover.recovery-guidance", true,
+    payloadText.includes("recover details with viking_search"),
+    payloadText.includes("recover details with viking_search"),
+    "接管 payload 的 checkpoint 块必须携带归档恢复指引");
+  ctx.runs.push(summarizeRun(takeoverRun));
+
+  // checkpoint 超预算使 compaction 走原生路径；原生压缩后的下一个请求必须携带一次性恢复指针。
+  writeExtensionConfig(ctx, ctx.manifest.environment.extensionConfig.checkpointOverBudget);
+  const compactRun = await runPi(ctx, {
+    workloadId: ctx.workloadId, turn: 6, endpoint: ctx.endpoint,
+    actions: [
+      { rpc: { type: "set_auto_compaction", enabled: false } },
+      { prompt: COMPACTION_PADDING_PROMPT },
+      { rpc: { type: "compact" }, timeoutMs: ctx.manifest.thresholds.agentSettledMs },
+      { prompt: ctx.workload.inputs.P3 },
+      { prompt: ctx.workload.inputs.P4 },
+    ],
+  });
+  assertRunHealthy(log, ctx, compactRun, { requireCapture: true });
+  const compactManager = SessionManager.open(compactRun.sessionFile);
+  const compactEntry = compactManager.getBranch().findLast((candidate) => candidate.type === "compaction");
+  const compactResult = compactRun.actions[2]?.response?.data;
+  log.check(ctx.workloadId, "compaction.native", false, compactEntry?.fromHook ?? false,
+    compactEntry?.fromHook !== true && compactResult?.details?.type !== "openviking-active-context" &&
+      Boolean(compactResult?.usage));
+  const compactPayloads = providerPayloads(compactRun);
+  const p3 = compactPayloads.find((payload) => JSON.stringify(payload).includes("POINTER_FIRST"));
+  const p4 = compactPayloads.find((payload) => JSON.stringify(payload).includes("POINTER_SECOND"));
+  log.check(ctx.workloadId, "compaction.pointer-injected", true,
+    Boolean(p3) && JSON.stringify(p3).includes("<openviking-compaction>"),
+    Boolean(p3) && JSON.stringify(p3).includes("<openviking-compaction>") &&
+      JSON.stringify(p3).includes(oversizedArchive.manifest.archiveId),
+    "原生压缩后的下一个请求必须注入一次性恢复指针");
+  log.check(ctx.workloadId, "compaction.pointer-oneshot", true,
+    Boolean(p4) && !JSON.stringify(p4).includes("<openviking-compaction>"),
+    Boolean(p4) && !JSON.stringify(p4).includes("<openviking-compaction>"),
+    "恢复指针只注入一次，后续请求不得重复携带");
+  ctx.runs.push(summarizeRun(compactRun));
+
+  const parsed = parsePiSessionJsonl(await readFile(compactRun.sessionFile, "utf8"), { sessionId: ctx.sessionId });
+  const events = projectPiEntries(ctx.sessionId, parsed.entries);
+  const onBranch = new Set(parsed.branch.map((branchEntry) => branchEntry.id));
+  const branch = events.filter((event) => onBranch.has(event.source.entryId));
+  recordWrittenObjects(ctx, branch, describeArchives(ctx.sessionId, branch, ctx.manifest.environment.extensionConfig.content.archive));
+}
+
 const WORKLOAD_RUNNERS = {
   "w1-takeover-stable-prefix": w1,
   "w2-restart-branch-fail-open": w2,
   "w3-capacity-compaction-fail-open": w3,
+  "w4-oversized-checkpoint-recovery": w4,
 };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

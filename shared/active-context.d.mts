@@ -94,6 +94,7 @@ export function materializeActiveContext(input: {
 }): ActiveContextPayload;
 export function payloadSegment(payload: ActiveContextPayload | null, kind: string): ActiveContextSegment | null;
 export function renderActiveContextMessages(payload: ActiveContextPayload): any[];
+export function renderCompactionPointer(archives: Array<{ manifest: { archiveId: string; eventCount: number } }>): string;
 export function evaluateEligibility(input: {
   capacity: TaskModelCapacity | null;
   takeover: TakeoverPolicy;

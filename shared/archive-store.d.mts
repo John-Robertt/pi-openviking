@@ -26,6 +26,7 @@ export class ArchiveManager {
     adapter: RecordedEventAdapter;
     budgets: ArchiveBudgets;
     observation?: Observation;
+    busyRetrySignal?: AbortSignal;
   });
   readonly status: ArchiveState;
   observeFinalState(): void;

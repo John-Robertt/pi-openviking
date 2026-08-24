@@ -30,8 +30,11 @@ export class OpenVikingCheckpointProcessor {
     this.createdDirectories = new Set();
   }
 
-  async advance({ taskId, manifest, events, previousCheckpoint }) {
-    const op = this.observe.begin("checkpoint_process", events.length, embeddedImages(events).length);
+  // loadEvents 只在会话尚无输入时调用：处理中轮询只读任务状态，不得每轮重放 Archive 展开。
+  // checkpoint_process 随之只覆盖真正处理事件的执行；纯状态轮询由 checkpoint_request 与
+  // client_http 记录承担可见性。
+  async advance({ taskId, manifest, loadEvents, previousCheckpoint }) {
+    let op = null;
     let outcome = "processing";
     try {
       const session = await this.client.getSession(taskId);
@@ -45,6 +48,9 @@ export class OpenVikingCheckpointProcessor {
       let providerTaskId = null;
 
       if (messageCount === 0 && commitCount === 0) {
+        const events = await loadEvents();
+        if (!events) return { status: "pending" };
+        op = this.observe.begin("checkpoint_process", events.length, embeddedImages(events).length);
         const media = await this.prepareMedia(taskId, events);
         if (!media) {
           return { status: "pending", error: { errorClass: "transport", errorCode: "media_prepare", message: "checkpoint media preparation is pending" } };
@@ -116,7 +122,7 @@ export class OpenVikingCheckpointProcessor {
       outcome = "completed";
       return { status: "completed", overview: normalizedOverview };
     } finally {
-      this.observe.end("checkpoint_process", op, outcome);
+      if (op !== null) this.observe.end("checkpoint_process", op, outcome);
     }
   }
 

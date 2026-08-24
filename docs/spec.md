@@ -129,7 +129,8 @@ OpenViking ACL；具有相同凭证的外部写入不在信任边界内，回读
 位于已创建的 shard 子目录；adapter 按最多 128 个对象和最多 16 MiB 内容拆分请求，单文件不超过
 8 MiB。只有响应中每个目标 URI 都明确出现在 `created` 或
 `unchanged` 时才确认对应事件；语义队列状态不构成事件 ACK。相同 URI 的不同字节返回
-`409 CONFLICT`，作为完整性错误停止该事件的 ACK 推进并通过 raw download 诊断。请求失败、响应丢失
+`409 CONFLICT`，作为完整性错误停止该事件的 ACK 推进并通过 raw download 诊断；其中语义刷新占用的
+可重试变体先按有界退避重试同一请求，耗尽后才计入失败。请求失败、响应丢失
 或底层 I/O 部分落盘时不推进 ACK，随后整组重放；已落盘的相同字节在重放时返回 `unchanged`。
 
 超过 8 MiB 的事件采用同一分片目录内的以下隐藏对象：
@@ -366,6 +367,13 @@ OpenViking takeover 负责正常的上下文增长，Pi compaction 负责运行�
 checkpoint hash、Archive 身份和 raw-tail 边界；`ActiveContext` 不可用时，Pi 执行原生
 split-turn compaction。扩展通过生命周期钩子提供可用上下文，不主动调用 compaction，也不
 中止正在运行的 agent。
+
+任务模型必须始终知道“被替换出当前上下文的早期内容仍可按身份找回”。takeover 的 checkpoint 块在身份与
+narrative 之外携带固定的恢复指引（检索工具与 Archive 发现路径）；该指引随 checkpoint 身份整体替换，不破坏
+prompt cache 前缀稳定性。发生 Pi 原生压缩时，摘要里没有归档指针，扩展在下一轮 `context` 向最后一条用户消息
+前置一次性的恢复指引块：列出当前进程在本会话已验证的 Archive 身份与事件数，并给出检索、展开和可用的单事件直读路径；
+当轮 takeover 已替换上下文时由 checkpoint 块的指引承担同一职责，不重复注入。一次性指针绑定产生该 compaction entry
+的当前进程与分支；进程重启后的恢复路径由持久 checkpoint、Archive 身份和语义搜索提供。
 
 ### 8. 检索与恢复
 

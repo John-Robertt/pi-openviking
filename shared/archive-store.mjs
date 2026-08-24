@@ -22,6 +22,7 @@ import {
   ContentWriteError,
   ensureDirectoryChain,
   replaceIfHash,
+  withBusyRetry,
   writeContentObjects,
 } from "./content-objects.mjs";
 import { observation as processObservation } from "./observe.mjs";
@@ -55,12 +56,15 @@ export function archiveStorageLocation(userRoot, sessionId, id) {
 }
 
 export class ArchiveManager {
-  constructor(transport, { userRoot, adapter, budgets, observation = processObservation }) {
+  constructor(transport, {
+    userRoot, adapter, budgets, observation = processObservation, busyRetrySignal,
+  }) {
     this.transport = transport;
     this.userRoot = userRoot;
     this.adapter = adapter;
     this.budgets = budgets;
     this.observe = observation;
+    this.busyRetrySignal = busyRetrySignal;
     this.createdDirectories = new Set();
     this.provenArchives = new Map();
     this.planScope = null;
@@ -179,9 +183,18 @@ export class ArchiveManager {
       this.createdDirectories,
     );
     const precondition = existing ? replaceIfHash(sha256(existing)) : CREATE_IF_ABSENT;
-    const result = await writeContentObjects(this.transport, location.sessionRoot, [
-      { uri: location.manifestUri, bytes, precondition },
-    ]);
+    const result = await withBusyRetry(
+      () => writeContentObjects(this.transport, location.sessionRoot, [
+        { uri: location.manifestUri, bytes, precondition },
+      ]),
+      {
+        signal: this.busyRetrySignal,
+        onRetry: (error) => this.observe.emit(
+          "archive_failure", error, "commit", "retry", "pending_retry",
+          this.state.committed, this.state.pending,
+        ),
+      },
+    );
     // create_if_absent 返回 unchanged 表示另一进程已写入完全相同的字节；这正是最强的
     // 接受证明，不是完整性错误。读回自证仍然照常执行。
     const accepted = existing ? result.updated.size === 1 : result.created.size + result.unchanged.size === 1;

@@ -13,6 +13,7 @@ import {
   evaluateTakeoverTrigger,
   materializeActiveContext,
   renderActiveContextMessages,
+  renderCompactionPointer,
   normalizeActiveContext,
   payloadSegment,
   readActiveContext,
@@ -219,6 +220,8 @@ test("takeover messages 渲染 checkpoint、anchor 和完整 raw tail，且不�
   assert.equal(rendered[0].role, "custom");
   assert.equal(rendered[0].customType, "openviking-checkpoint");
   assert.match(rendered[0].content, /<openviking-checkpoint/);
+  assert.match(rendered[0].content, /replaces earlier context of this session/, "checkpoint 块必须携带恢复指引");
+  assert.match(rendered[0].content, /viking_archive_expand/);
   assert.match(rendered[0].content, /close the active context exit/);
   assert.equal(rendered.some((message) => JSON.stringify(message).includes(events[0].payload.part.value)), true, "anchor 保留原始用户指令");
   assert.equal(rendered.some((message) => JSON.stringify(message).includes(events[1].payload.part.value)), false, "已归档前缀不进入接管消息");
@@ -823,4 +826,24 @@ test("checkpoint 事件按身份自证读取，同一身份只读取一次", asy
   const payload = await manager.materialize(events, { systemPrompt: "system" });
   const block = payloadSegment(payload, "checkpoint").text;
   assert.ok(block.includes(checkpointId(consumed.manifest)) && block.includes(consumed.manifest.archiveId));
+});
+
+test("原生压缩恢复指针列出当前进程已知 Archive 并给出可执行找回路径", () => {
+  const descriptors = Array.from({ length: 7 }, (_, index) => ({
+    manifest: {
+      archiveId: `arc_${String(index).padStart(64, "0")}`,
+      eventCount: 10 + index,
+    },
+  }));
+  const pointer = renderCompactionPointer(descriptors);
+  assert.match(pointer, /^<openviking-compaction>/);
+  assert.match(pointer, /7 committed archive/);
+  assert.ok(pointer.includes(`arc_${"0".repeat(63)}6 (16 events)`), "列出最近一个 Archive 的身份与事件数");
+  assert.ok(!pointer.includes(`arc_${"0".repeat(64)}`), "清单只保留最近 5 个 Archive");
+  assert.match(pointer, /viking_search/);
+  assert.match(pointer, /viking_archive_expand/);
+  assert.match(pointer, /<\/openviking-compaction>$/);
+
+  const empty = renderCompactionPointer([]);
+  assert.match(empty, /No committed archives are currently known/);
 });
