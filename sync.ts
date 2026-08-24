@@ -443,11 +443,13 @@ export class SyncManager {
     source: SyncStatus["source"],
     taskModel: TaskModelContext | null,
   ): Promise<SyncBranchResult> {
-    if (!this.piSessionId || !this.adapter) return this.uninitializedResult();
+    const piSessionId = this.piSessionId;
+    const adapter = this.adapter;
+    if (!piSessionId || !adapter) return this.uninitializedResult();
 
     let events: any[];
     try {
-      events = projectPiEntries(this.piSessionId, entries);
+      events = projectPiEntries(piSessionId, entries);
     } catch (error: any) {
       this.observe.emit("sync_failure", error, "projection", "abort_operation", "pending_replay", 0, entries.length);
       return this.failResult(error?.message || String(error), source);
@@ -477,7 +479,7 @@ export class SyncManager {
       let failureCode: "ack_persist" | "capability" | "delivery" = "delivery";
       try {
         const result = await withBusyRetry(
-          () => this.adapter.writeEvents(this.piSessionId, entryEvents),
+          () => adapter.writeEvents(piSessionId, entryEvents),
           {
             // 瞬时 busy 在操作内有界重试：每次尝试按 retry 降级记录，但不触碰 lastFailure——
             // /viking 只展示重试耗尽后的持久失败，避免把语义刷新争用误读成同步损坏。

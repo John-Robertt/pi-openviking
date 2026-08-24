@@ -1,6 +1,6 @@
 {
   "name": "pi-openviking",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Pi extension for append-only event recording, atomic archives, VLM checkpoints, and memory recall.",
   "keywords": [
     "pi-package"
@@ -14,7 +14,8 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test 'test/*.test.mjs'",
+    "test": "npm run typecheck && node --test 'test/*.test.mjs'",
+    "typecheck": "tsc -p tsconfig.json",
     "dev": "node scripts/dev.mjs",
     "verify:observability:live": "node test/live/observability-live.mjs",
     "verify:sync:live": "node test/live/sync-live.mjs",
@@ -53,5 +54,9 @@
   ],
   "dependencies": {
     "undici": "^7"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.21",
+    "typescript": "6.0.2"
   }
 }

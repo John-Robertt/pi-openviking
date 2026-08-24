@@ -48,7 +48,9 @@ npm run dev -- pi
 `shared/toolchain.mjs` 的 `TOOLCHAIN` 唯一维护 OpenViking、uv、托管 Python 和 zstandard 的当前
 受管选择；`package.json` 维护 Node 最低版本、npm 依赖与 peer 最低兼容基线。peer 不设置预防性上限：
 当前 lock 和 live manifest 记录最近验证快照，后续版本默认向前兼容，只有实际 gate 证明存在破坏时才临时
-隔离并适配。文档中的版本号由 `npm test` 检查与权威源一致。
+隔离并适配。`npm test` 先以 `tsconfig.json` 对仓库内全部 TypeScript 源执行严格的 `noEmit` 类型检查，
+并通过本仓库声明解析模块边界；`skipLibCheck` 只跳过声明文件内部检查。随后运行 deterministic tests，
+文档中的版本号也由该命令检查与权威源一致。
 
 ```bash
 # 1. 修改唯一权威源

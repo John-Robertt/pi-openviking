@@ -13,7 +13,7 @@ import { RecallManager } from "./recall.js";
 import { SyncManager, type TaskModelContext } from "./sync.js";
 import { buildProfileBlock } from "./shared/profile-inject.mjs";
 import { renderCompactionPointer } from "./shared/active-context.mjs";
-import { observation as processObservation } from "./shared/observe.mjs";
+import { observation as processObservation, type Observation } from "./shared/observe.mjs";
 import { createStatusRefresh } from "./shared/status-refresh.mjs";
 import { clearVikingFooter, formatVikingCommand, setVikingFooter } from "./shared/viking-status.mjs";
 import { guardVikingUriToolCall } from "./lib/uri-guard-adapter.mjs";
@@ -138,7 +138,7 @@ export default async function (pi: ExtensionAPI) {
         return;
       }
       startupWarningShown = false;
-      profileBlock = await buildSessionProfileBlock(client, config);
+      profileBlock = await buildSessionProfileBlock(client, config, observation);
       observation.emit("profile_result", profileBlock);
       observation.emit("sync_schedule", "session_start", client.connected);
       sessionReady = sync.syncSession(snapshotSessionSource(ctx.sessionManager), taskModelContext(ctx))
@@ -689,7 +689,7 @@ function matchBypass(cwd: string, pattern: string): boolean {
 
 /** Build the <openviking-context> profile block. */
 async function buildSessionProfileBlock(
-  client: OVClient, config: OVConfig,
+  client: OVClient, config: OVConfig, observation: Observation,
 ): Promise<string> {
   try {
     const profile = await buildProfileBlock(

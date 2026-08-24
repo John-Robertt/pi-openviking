@@ -20,6 +20,7 @@ test("package-lock 根元数据与 package.json 一致", () => {
   assert.equal(root.version, manifest.version);
   assert.deepEqual(root.engines, manifest.engines);
   assert.deepEqual(root.dependencies, manifest.dependencies);
+  assert.deepEqual(root.devDependencies, manifest.devDependencies);
   assert.deepEqual(root.peerDependencies, manifest.peerDependencies);
 });
 
