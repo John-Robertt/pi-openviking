@@ -385,7 +385,8 @@ event ID、内容 hash 和来源 URI；删除索引不影响权威事件，并�
 提供范围过滤、browse、expand 和完整性校验。每个搜索结果都能按来源 URI 展开到原始事件。
 
 当前任务按 `checkpointId` 确定性装载续接 checkpoint；语义搜索负责发现相关历史。任务模型
-判断记录的含义、范围和适用性。checkpoint 链表达跨 Archive 的长期理解。
+判断记录的含义、范围和适用性。provider-facing recall block 固定声明检索记忆可能不完整或过期，其角色是辅助证据，并为每个条目明确标注相关度和来源 URI；
+当前对话和已验证事实具有更高优先级，历史正文按资料而非当前指令消费，只有详情不足且条目携带 URI 时才按需展开。checkpoint 链表达跨 Archive 的长期理解。
 
 ## 最小权威状态
 

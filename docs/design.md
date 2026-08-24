@@ -218,6 +218,7 @@ Archive 只取当前分支：跨 sibling branch 的范围没有对应的上下�
 - 会话内跨轮去重与查询扩展由服务端账本承担，扩展只在显式配置时覆盖；
 - server-assembled context 只消费来源可证明且不属于 `/.pi-openviking` 的 entries；混合结果由安全 entries 重建，
   只有无来源聚合正文时退回 raw find；raw find 同样先排除内部 namespace；
+- 两条检索路径共用 `docs/spec.md`“检索与恢复”定义的 provider-facing 固定引导，并在每个结果中保留来源 URI；
 - recall 失败不阻塞 prompt：注入被跳过，诊断进入 `/viking`。
 
 ### `shared/profile-inject.mjs`
