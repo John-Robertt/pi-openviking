@@ -115,23 +115,23 @@
     "minProviderHeadroomTokens": 50000,
     "baseline": {
       "status": "accepted",
-      "measuredAt": "2026-08-22T09:21:08.565Z",
-      "environment": "linux/x64, node v24.18.0, pi 0.84.2, OpenViking 0.4.15（受管 dev 服务）, task/VLM openai-codex/gpt-5.6-luna",
+      "measuredAt": "2026-08-23T23:43:54.555Z",
+      "environment": "darwin/arm64, node v24.15.0, pi 0.84.2, OpenViking 0.4.15（受管 dev 服务）, task/VLM openai-codex/gpt-5.6-luna",
       "results": {
         "sourceTokens": { "min": 110209, "max": 206436 },
         "archiveCounts": { "tool-loop": 3, "atomic": 2, "branch": 1 },
-        "checkpointWallMs": { "max": 75715 },
-        "checkpointTokens": { "min": 123428, "max": 449253 },
-        "providerWallMs": { "max": 5405 },
-        "providerTokens": { "min": 71402, "max": 86707 },
-        "providerHeadroomTokens": { "min": 57293 },
-        "payloadTokens": { "min": 69819, "max": 76851 },
+        "checkpointWallMs": { "max": 73855 },
+        "checkpointTokens": { "min": 120843, "max": 411350 },
+        "providerWallMs": { "max": 7001 },
+        "providerTokens": { "min": 71856, "max": 83035 },
+        "providerHeadroomTokens": { "min": 60965 },
+        "payloadTokens": { "min": 69470, "max": 76580 },
         "usableTokens": 144000,
-        "headroomTokens": { "min": 67149 }
+        "headroomTokens": { "min": 67420 }
       },
       "expectedChange": "三类 100k+ 来源在 50000/20000/16000 候选预算下均形成来源可核验的 Archive/checkpoint/ActiveContext；tool-loop 真实覆盖旧候选容量失配后推进到可装入的更新 checkpoint。九次真实 provider 输入均不超过 144000 可用容量，策略量与真实 provider headroom 均不低于 50000。",
       "falsification": "任一来源/manifest/checkpoint/raw-tail/provider 文本、字节或身份不一致，真实 token 缺失，旧候选失配不能推进到可装入的更新 checkpoint，checkpoint 超过 240000ms，任一 headroom 低于 50000，重复数不足或 compaction/清理失败，即重新打开预算约束。",
-      "thresholdRationale": "checkpointWallMs 沿用 checkpoint gate 的 240000ms 质量边界；本 baseline 最慢累计 checkpoint 为 75715ms，约有 3.17 倍余量。两类 headroom 门限均为 50000；实测最小策略量余量 67149，最小真实 provider 余量 57293。providerWallMs 只计 prompt 到 agent_settled；容量与 token 使用真实 Pi/OpenViking 计量，不以输入字符估算。"
+      "thresholdRationale": "checkpointWallMs 沿用 checkpoint gate 的 240000ms 质量边界；本 baseline 最慢累计 checkpoint 为 73855ms，约有 3.25 倍余量。两类 headroom 门限均为 50000；实测最小策略量余量 67420，最小真实 provider 余量 60965。providerWallMs 只计 prompt 到 agent_settled；容量与 token 使用真实 Pi/OpenViking 计量，不以输入字符估算。"
     }
   }
 }

@@ -303,9 +303,12 @@ test("checkpoint 只可完整装载，预算不足时接管与 compaction 都 fa
     lastCheckpointId: checkpointId(consumed.manifest),
     capacity: CAPACITY,
   });
-  assert.equal(status.eligibility, "facts_unavailable");
-  assert.match(status.lastFailure, /complete checkpoint exceeds checkpointTokenBudget/);
-  await assert.rejects(() => manager.materialize(events), /complete checkpoint exceeds checkpointTokenBudget/);
+  // 超预算是独立成因：余量仍为正，因此不能与容量不匹配混同。
+  assert.equal(status.eligibility, "checkpoint_over_budget");
+  assert.ok(status.headroomTokens > 0, "余量仍为正，成因是 checkpoint 预算而不是模型容量");
+  assert.equal(status.lastFailure, null);
+  const payload = await manager.materialize(events);
+  assert.ok(payload.tokens.checkpoint > 100, "候选仍完整 materialize，判定交给 eligibility");
   assert.equal(await manager.takeoverMessages(events, { capacity: CAPACITY }), null);
   assert.equal(await manager.compaction(events, 12345), null);
 });
@@ -342,6 +345,13 @@ test("eligibility 使用 Pi 报告的容量与安全余量，接管高水位不�
   });
   assert.equal(impossibleReserve.usableTokens, 0);
   assert.equal(impossibleReserve.eligibility, "capacity_mismatch");
+
+  assert.equal(evaluateEligibility({
+    capacity: CAPACITY,
+    takeover: { ...TAKEOVER, checkpointTokenBudget: 1 },
+    payloadTokens: 1,
+    checkpointTokens: null,
+  }).eligibility, "facts_unavailable", "配置独立预算后必须有 checkpoint 权重事实");
 
   assert.equal(evaluateEligibility({ capacity: null, takeover: TAKEOVER, payloadTokens: 1 }).eligibility, "capacity_unknown");
   assert.equal(evaluateEligibility({ capacity: CAPACITY, takeover: TAKEOVER, payloadTokens: null }).eligibility, "no_context");
@@ -384,6 +394,12 @@ test("provider epoch 建立后持续复用，只有活动 payload 再越过高�
   });
   assert.equal(recovered.render, true);
   assert.equal(recovered.allowAdvance, true);
+  const recoveredOverBudget = evaluateTakeoverTrigger({
+    enabled: true, eligibility: "checkpoint_over_budget", currentCheckpointId: "chk_a", nextCheckpointId: "chk_b",
+    appliedCheckpointId: null, piUsageTokens: 1000, payloadTokens: 200, highWaterTokens: null,
+  });
+  assert.equal(recoveredOverBudget.render, true);
+  assert.equal(recoveredOverBudget.allowAdvance, true);
   assert.equal(evaluateTakeoverTrigger({
     enabled: true, eligibility: "capacity_mismatch", currentCheckpointId: "chk_a", nextCheckpointId: "chk_a",
     appliedCheckpointId: null, piUsageTokens: 1000, payloadTokens: 200, highWaterTokens: null,
@@ -394,6 +410,32 @@ test("provider epoch 建立后持续复用，只有活动 payload 再越过高�
       piUsageTokens: 1000, payloadTokens: 200, highWaterTokens: null,
     }).render, false);
   }
+});
+
+test("同一逻辑候选容量失配时只 materialize 一次", async () => {
+  const { events, archives } = fixture();
+  const consumed = archives[1];
+  const consumedId = checkpointId(consumed.manifest);
+  const manager = new ActiveContextManager({
+    path: null, adapter: adapterFor([checkpointEventFor(consumed.manifest)]), takeover: TAKEOVER,
+  });
+  await manager.update(SESSION, {
+    branchEvents: events, archives, lastCheckpointId: consumedId, capacity: CAPACITY,
+  });
+  const materializeFor = manager.materializeFor.bind(manager);
+  let materializations = 0;
+  manager.materializeFor = async (...args) => {
+    materializations++;
+    return materializeFor(...args);
+  };
+
+  const messages = await manager.takeoverMessages(events, {
+    archives, lastCheckpointId: consumedId, capacity: { contextWindow: 1, maxTokens: 0 },
+  });
+
+  assert.equal(messages, null);
+  assert.equal(materializations, 1);
+  assert.equal(manager.status.eligibility, "capacity_mismatch");
 });
 
 test("Pi system/tools API 任一不可读时显式标记任务模型事实不可用", () => {
@@ -590,6 +632,102 @@ test("旧候选容量失配时可用更新 checkpoint 原子推进并恢复接�
   assert.deepEqual(manager.current, latestContext);
   assert.equal(manager.status.checkpointId, laterId);
   assert.equal(manager.status.eligibility, "eligible");
+});
+
+test("checkpoint 超预算时只用可装载的更新候选推进，更新候选仍超预算则保持原边界", async () => {
+  const { events, archives } = fixture();
+  const consumed = archives[1];
+  const later = archives[2];
+  const consumedId = checkpointId(consumed.manifest);
+  const laterId = checkpointId(later.manifest);
+  const largeOverview = `${OVERVIEW}\n${"长期事实".repeat(2000)}`;
+  const consumedEvent = checkpointEventFor(consumed.manifest, null, largeOverview);
+  const laterEvent = checkpointEventFor(later.manifest, consumedId);
+  const oldContext = selectActiveContext(events, archives, consumedId);
+  const latestContext = selectActiveContext(events, archives, laterId);
+  const oldPayload = materializeActiveContext({
+    context: oldContext, checkpoint: parseCheckpointEventById(consumedEvent, consumedId), branchEvents: events,
+  });
+  const latestPayload = materializeActiveContext({
+    context: latestContext, checkpoint: parseCheckpointEventById(laterEvent, laterId), branchEvents: events,
+  });
+  assert.ok(oldPayload.tokens.checkpoint > latestPayload.tokens.checkpoint);
+  const takeover = { ...TAKEOVER, checkpointTokenBudget: latestPayload.tokens.checkpoint };
+  const manager = new ActiveContextManager({
+    path: null, adapter: adapterFor([consumedEvent, laterEvent]), takeover,
+  });
+  const overBudget = await manager.update(SESSION, {
+    branchEvents: events, archives, lastCheckpointId: consumedId, capacity: CAPACITY,
+  });
+  assert.equal(overBudget.eligibility, "checkpoint_over_budget");
+  await manager.update(SESSION, {
+    branchEvents: events, archives, lastCheckpointId: laterId, capacity: CAPACITY,
+  });
+  const messages = await manager.takeoverMessages(events, {
+    archives, lastCheckpointId: laterId, capacity: CAPACITY, allowAdvance: true,
+  });
+  assert.ok(messages);
+  assert.deepEqual(manager.current, latestContext);
+  assert.equal(manager.status.eligibility, "eligible");
+
+  const laterLargeEvent = checkpointEventFor(later.manifest, consumedId, largeOverview);
+  const blocked = new ActiveContextManager({
+    path: null, adapter: adapterFor([consumedEvent, laterLargeEvent]), takeover,
+  });
+  await blocked.update(SESSION, {
+    branchEvents: events, archives, lastCheckpointId: consumedId, capacity: CAPACITY,
+  });
+  await blocked.update(SESSION, {
+    branchEvents: events, archives, lastCheckpointId: laterId, capacity: CAPACITY,
+  });
+  assert.equal(await blocked.takeoverMessages(events, {
+    archives, lastCheckpointId: laterId, capacity: CAPACITY, allowAdvance: true,
+  }), null);
+  assert.deepEqual(blocked.current, oldContext);
+  assert.equal(blocked.status.checkpointId, consumedId);
+  assert.equal(blocked.status.eligibility, "checkpoint_over_budget");
+  const retainedPayload = await blocked.materialize(events);
+  assert.equal(blocked.status.payloadTokens, retainedPayload.tokens.payload);
+  assert.equal(await blocked.compaction(events, oldPayload.tokens.payload), null);
+});
+
+test("旧候选与更新 checkpoint 都容量失配时保持原边界并使用完整 Pi 上下文", async () => {
+  const { events, archives } = fixture();
+  const consumed = archives[1];
+  const later = archives[2];
+  const consumedId = checkpointId(consumed.manifest);
+  const laterId = checkpointId(later.manifest);
+  const consumedEvent = checkpointEventFor(consumed.manifest);
+  const laterEvent = checkpointEventFor(later.manifest, consumedId);
+  const oldContext = selectActiveContext(events, archives, consumedId);
+  const latestContext = selectActiveContext(events, archives, laterId);
+  const latestPayload = materializeActiveContext({
+    context: latestContext, checkpoint: parseCheckpointEventById(laterEvent, laterId), branchEvents: events,
+  });
+  const mismatchCapacity = { contextWindow: latestPayload.tokens.payload - 1, maxTokens: 0 };
+  const manager = new ActiveContextManager({
+    path: null, adapter: adapterFor([consumedEvent, laterEvent]), takeover: TAKEOVER,
+  });
+  await manager.update(SESSION, {
+    branchEvents: events, archives, lastCheckpointId: consumedId, capacity: CAPACITY,
+  });
+  const original = manager.current;
+  assert.deepEqual(original, oldContext);
+  await manager.update(SESSION, {
+    branchEvents: events, archives, lastCheckpointId: laterId, capacity: mismatchCapacity,
+  });
+
+  const messages = await manager.takeoverMessages(events, {
+    archives, lastCheckpointId: laterId, capacity: mismatchCapacity, allowAdvance: true,
+  });
+  assert.equal(messages, null);
+  assert.deepEqual(manager.current, original);
+  assert.equal(manager.status.checkpointId, consumedId);
+  assert.equal(manager.status.eligibility, "capacity_mismatch");
+  const retainedPayload = await manager.materialize(events);
+  assert.equal(manager.status.payloadTokens, retainedPayload.tokens.payload);
+  assert.equal(manager.status.rawTailEvents, payloadSegment(retainedPayload, "raw-tail").events.length);
+  assert.equal(manager.status.headroomTokens, mismatchCapacity.contextWindow - retainedPayload.tokens.payload);
 });
 
 test("来源边界离开当前分支后不再复用，且没有可用 checkpoint 时清除持久化选择", async (t) => {

@@ -14,7 +14,6 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { OBSERVATION_STAGE_REGISTRY } from "../../shared/observe.mjs";
-import { openVikingApiPath } from "../../shared/openviking-api.mjs";
 import { parsePiSessionJsonl } from "../../shared/pi-session-source.mjs";
 import { projectPiEntries, recordedEventBytes } from "../../shared/recorded-event.mjs";
 import { recordedEventStorageLocation } from "../../shared/recorded-event-adapter.mjs";
@@ -87,20 +86,12 @@ function recordRun(ctx, run) {
   });
 }
 
-async function createObject(client, rootUri, uri, bytes, { waitMs = 0 } = {}) {
-  const request = {
+async function createObject(client, rootUri, uri, bytes) {
+  const response = await client.batchWrite({
     root_uri: rootUri,
     operations: [{ uri, content_base64: Buffer.from(bytes).toString("base64"), precondition: { kind: "create_if_absent" } }],
-    wait: waitMs > 0,
-    ...(waitMs > 0 ? { timeout: waitMs / 1000 } : {}),
-  };
-  const response = waitMs > 0
-    ? await client.fetchJSON(
-      openVikingApiPath("/content/batch-write"),
-      { method: "POST", body: JSON.stringify(request) },
-      waitMs + 10000,
-    )
-    : await client.batchWrite(request);
+    wait: false,
+  });
   if (!response.ok || !response.result?.created?.includes(uri)) {
     throw new FixtureError(response.ok ? "OBJECT_NOT_CREATED" : `OBJECT_HTTP_${response.status || 0}`);
   }
@@ -192,9 +183,7 @@ async function wSuccessRecallSync(log, ctx) {
   const recallUri = `${ownerRoot}/recall-fixture.md`;
   (ctx.extraCleanupRoots ??= []).push(ownerRoot);
   await mkdirChain(ctx.client, `${ctx.userRoot}/resources`, ownerRoot);
-  await createObject(ctx.client, ownerRoot, recallUri, Buffer.from(ctx.workload.prompt, "utf8"), {
-    waitMs: ctx.manifest.thresholds.fixtureMs,
-  });
+  await createObject(ctx.client, ownerRoot, recallUri, Buffer.from(ctx.workload.prompt, "utf8"));
   (ctx.extraUris ??= []).push(recallUri);
   const fixture = await waitForRecallFixture(ctx.client, {
     query: ctx.workload.prompt,
@@ -216,7 +205,12 @@ async function wSuccessRecallSync(log, ctx) {
     workloadId: ctx.workloadId,
     turn: "success",
     endpoint: ctx.endpoint,
-    actions: [{ prompt: ctx.workload.prompt }, { command: "/viking sync" }],
+    actions: [
+      { prompt: ctx.workload.prompt },
+      { command: "/viking sync" },
+      { rpc: { type: "compact" }, timeoutMs: ctx.manifest.thresholds.agentSettledMs },
+      { command: "/viking sync" },
+    ],
     capture: "observation",
   });
   attachObservation(run);
@@ -227,6 +221,10 @@ async function wSuccessRecallSync(log, ctx) {
   log.check(ctx.workloadId, "sync-notify", "info", notify?.notifyType, notify?.notifyType === "info");
   const sessionText = await readFile(run.sessionFile, "utf8");
   const parsed = parsePiSessionJsonl(sessionText, { sessionId: ctx.sessionId });
+  const compactionEntry = parsed.branch.findLast((entry) => entry.type === "compaction");
+  const compaction = run.actions[2]?.response?.data;
+  log.check(ctx.workloadId, "compaction-native", false, compactionEntry?.fromHook ?? false,
+    compactionEntry?.fromHook !== true && compaction?.details?.type !== "openviking-active-context" && Boolean(compaction?.usage));
   await assertRemoteEvents(log, ctx, parsed.entries);
   const productObservation = parsed.entries.find((entry) => entry.type === "custom" && entry.customType === "ov-observation");
   const provenance = productObservation?.data;

@@ -143,12 +143,13 @@ export class ArchiveManager {
 
     const existing = await this.readManifestBytes(location.manifestUri);
     if (existing && existing.equals(bytes)) {
+      // archiveId 由 sessionId、首尾 eventId 与 eventCount 派生，命中 key 已蕴含这些边界；
+      // 它不覆盖 contentHash，因此只需再证 manifest 字节本身。
       const proof = this.provenArchives.get(manifest.archiveId);
-      const proofMatches = proof?.sessionId === sessionId && proof.manifestHash === sha256(bytes) &&
-        proof.sourceFrontier === manifest.lastEventId && proof.eventCount === manifest.eventCount;
+      const proofMatches = proof === sha256(bytes);
       if (!proofMatches) {
         await this.proveReferencedEvents(sessionId, manifest, events);
-        this.rememberProof(sessionId, manifest, bytes);
+        this.rememberProof(manifest, bytes);
       }
       const branch = proofMatches ? "proof_reused" : "already_committed";
       this.observe.emit("archive_commit", branch, manifest.eventCount);
@@ -193,18 +194,13 @@ export class ArchiveManager {
       throw new ArchiveIntegrityError("Archive manifest read-back does not match the committed bytes", manifest.archiveId);
     }
     const branch = existing ? "repaired_residue" : "created";
-    this.rememberProof(sessionId, manifest, bytes);
+    this.rememberProof(manifest, bytes);
     this.observe.emit("archive_commit", branch, manifest.eventCount);
     return { archiveId: manifest.archiveId, branch, manifest };
   }
 
-  rememberProof(sessionId, manifest, bytes) {
-    this.provenArchives.set(manifest.archiveId, {
-      sessionId,
-      manifestHash: sha256(bytes),
-      sourceFrontier: manifest.lastEventId,
-      eventCount: manifest.eventCount,
-    });
+  rememberProof(manifest, bytes) {
+    this.provenArchives.set(manifest.archiveId, sha256(bytes));
   }
 
   /**
@@ -286,7 +282,7 @@ export class ArchiveManager {
     if (archiveContentHash(events) !== manifest.contentHash) {
       throw new ArchiveIntegrityError("expanded events do not recompute the manifest content hash", archiveId);
     }
-    this.rememberProof(sessionId, manifest, archiveManifestBytes(manifest));
+    this.rememberProof(manifest, archiveManifestBytes(manifest));
     return { manifest, events };
   }
 }

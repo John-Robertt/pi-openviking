@@ -4,7 +4,7 @@
   "purpose": "checkpoint 生产真实验收门禁：使用真实 OpenViking Content API 已提交且可 expand 的 Archive 与开发模型身份中的 VLM，机器断言 request/failure/checkpoint 追加事实、来源/hash、自证、重试、进程恢复、积压派生、多模态理解和吞吐。",
   "mechanism": {
     "selected": "Archive 回读证明 + OpenViking Session/Task 公开 API + ProducedRecordedEventV1 追加事实",
-    "evidence": "当前开发模型身份覆盖五个 workload；真实 gate 独立约束媒体语义处理与 checkpoint 生成时长，并逐代验证统一 Working Memory 的必需章节、可执行 Open Issues、跨代全局目标与新增约束、最小 checkpoint 事实、来源链、任务 token 与清理。deterministic checks 证明上一统一状态和新增上下文进入同一更新输入，已完成目标、失效事实和重复表述不进入下一代当前状态，退化局部摘要不可消费、孤立 checkpoint 被拒绝、并发事实首写者收敛、三个 Archive 各三次 attempt 可追平、分支失效及终态清理跨重启恢复、媒体缺少摘要保持 pending，且外部错误正文不进入事实。受管服务持有 VLM 凭证，扩展进程不读取或转发凭证。",
+    "evidence": "当前开发模型身份覆盖五个 workload；真实 gate 独立约束媒体语义处理与 checkpoint 生成时长，并逐代验证统一 Working Memory 的必需章节、续接章节的真实内容、跨代全局目标与新增约束、最小 checkpoint 事实、来源链、任务 token 与清理。deterministic checks 证明上一统一状态和新增上下文进入同一更新输入，已完成目标、失效事实和重复表述不进入下一代当前状态，退化局部摘要不可消费、真实为空的记录章节仍可消费、模板指引按结构剥离而不按措辞、孤立 checkpoint 被拒绝、并发事实首写者收敛、三个 Archive 各三次 attempt 可追平、分支失效及终态清理跨重启恢复、媒体缺少摘要保持 pending，且外部错误正文不进入事实。受管服务持有 VLM 凭证，扩展进程不读取或转发凭证。",
     "falsifiedAlternatives": [
       "扩展直接调用 VLM provider：运行时没有 VLM 凭证所有权，且会绕过受管服务固定身份",
       "把 checkpoint 仅保存在本地队列：重启后无法由 Archive/request/failure/checkpoint 事实恢复",
@@ -71,7 +71,7 @@
       "successCriteria": [
         "Archive manifest 与 events 在 VLM 前后逐字节不变",
         "request 先于 checkpoint 持久化，checkpoint 来源 archiveId/contentHash 完全匹配",
-        "checkpoint 只保留来源身份、统一 narrative、model 与 promptVersion；Task & Goals、Current State、Key Facts & Decisions 与 Open Issues 均包含续接内容，Open Issues 可形成执行入口",
+        "checkpoint 只保留来源身份、统一 narrative、model 与 promptVersion；Task & Goals、Current State 与 Key Facts & Decisions 均包含续接内容；Open Issues、Files & Context 与 Errors & Corrections 必须存在，真实为空仍可消费；原生模板指引不进入 narrative",
         "OpenViking task completed、llm.total_tokens>0、wallMs<=checkpointWallMs"
       ],
       "falsification": [

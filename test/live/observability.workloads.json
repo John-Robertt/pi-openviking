@@ -22,7 +22,7 @@
     },
     "registry": {
       "schemaVersion": 1,
-      "sha256": "3d5503b7e461501153446f8c04f03785eac7f1404a9f8f11ffb48984cc8490a9"
+      "sha256": "d0ac6eeef8a0ace59903417d0a71f8dd64bafdd3b1b7a9a3035d6d77dcb86610"
     },
     "extensionLoadOrder": ["index.ts"]
   },
@@ -34,7 +34,7 @@
   "workloads": [
     {
       "id": "success-recall-sync",
-      "summary": "随机 session namespace 异步写入所属 marker 与用户语义 resource，并在统一 deadline 内轮询真实 search 直到目标 URI 可检索；真实 Pi prompt 触发 recall provenance entry，再由 /viking sync 证明 Content 写入和 ACK 推进。",
+      "summary": "随机 session namespace 异步写入所属 marker 与用户语义 resource，真实 Pi prompt 触发 recall provenance entry；显式同步证明 Content 写入和 ACK 推进，随后由真实 session_before_compact hook 证明无 ActiveContext 时选择原生 compaction。",
       "prompt": "请只回复 OK 两个字母，不要调用任何工具。",
       "expectedRecords": [
         { "stage": "pi_lifecycle", "data": { "phase": "end", "hook": "session_shutdown", "outcome": "success" } },
@@ -57,6 +57,8 @@
         { "stage": "active_context_eligibility", "data": { "branch": "no_context" } },
         { "stage": "active_context_state", "data": { "mode": "snapshot", "status": "no_context", "checkpoint": null } },
         { "stage": "active_context_takeover", "data": { "branch": "keep_full_context" } },
+        { "stage": "pi_lifecycle", "data": { "phase": "end", "hook": "session_before_compact", "outcome": "skipped" } },
+        { "stage": "active_context_compaction", "data": { "branch": "native_compaction", "eligibility": "no_context" } },
         { "stage": "checkpoint_state", "data": { "mode": "snapshot", "status": "caught_up" } },
         { "stage": "recall_request", "data": { "branch": "search" } },
         { "stage": "recall_source", "data": { "branch": "context_face" } },
@@ -68,7 +70,8 @@
         "Pi exitCode=0、extension_error=0、/viking sync notify=info",
         "observation run 完整、seq 连续、boundary op 全部配对、accepted=end.seq、dropped=0",
         "recall 注入只以 schema v2 provenance entry 记录 hash、字符数和目标 entry，不回写注入正文；观察 artifact 不含 recall 内容、prompt、session/user/URI、凭证",
-        "ACK frontier 推进且观察记录未进入 Pi JSONL 或 OpenViking event namespace"
+        "ACK frontier 推进且观察记录未进入 Pi JSONL 或 OpenViking event namespace",
+        "真实 session_before_compact hook 发出 native_compaction/no_context，compaction entry 的 fromHook=false"
       ],
       "falsification": [
         "fixture 在 deadline 内未被真实 search 命中，或命中来源不是目标 resource URI",
@@ -167,7 +170,6 @@
     "checkpoint_request",
     "checkpoint_process",
     "checkpoint_failure",
-    "active_context_compaction",
     "active_context_failure",
     "recall_failure"
   ],

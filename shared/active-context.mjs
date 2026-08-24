@@ -91,6 +91,11 @@ export function activeContextOnBranch(context, branchEvents) {
   return Boolean(context) && branchEvents.some((event) => event.eventId === context.rawTailStartEventId);
 }
 
+function sameActiveContext(left, right) {
+  return Boolean(left) && Boolean(right) && left.checkpointId === right.checkpointId &&
+    left.rawTailStartEventId === right.rawTailStartEventId;
+}
+
 /**
  * 原始用户指令 anchor：建立 raw tail 所属 turn 的 user entry 的全部事件。
  *
@@ -135,22 +140,16 @@ function sumWeight(events) {
  *
  * 每一段都由不可变来源重算——checkpoint 由自身身份自证，anchor 与 raw tail 直接引用源事件
  * 对象——因此可以逐项对照源事件校验，而不需要另存一份副本。
+ *
+ * 装不装得下不在这里判定：checkpoint 正文只有完整或不用两种形态，是否超出
+ * `checkpointTokenBudget` 与容量一样是候选的适配问题，由 `evaluateEligibility` 单点回答。
  */
-function renderBoundedCheckpointBlock(checkpoint, tokenBudget) {
-  const full = renderCheckpointBlock(checkpoint);
-  if (!Number.isSafeInteger(tokenBudget) || tokenBudget <= 0) return full;
-  if (contextTokenWeight(full) > tokenBudget) {
-    throw new Error("complete checkpoint exceeds checkpointTokenBudget");
-  }
-  return full;
-}
-
-export function materializeActiveContext({ context, checkpoint, branchEvents, systemPrompt = "", toolDefinitions = "", checkpointTokenBudget = null }) {
+export function materializeActiveContext({ context, checkpoint, branchEvents, systemPrompt = "", toolDefinitions = "" }) {
   const start = branchEvents.findIndex((event) => event.eventId === context?.rawTailStartEventId);
   if (start < 0) throw new Error("raw tail start is not on the current branch");
   const rawTail = branchEvents.slice(start);
   const anchor = anchorEvents(branchEvents, context.rawTailStartEventId);
-  const checkpointBlock = renderBoundedCheckpointBlock(checkpoint, checkpointTokenBudget);
+  const checkpointBlock = renderCheckpointBlock(checkpoint);
   const tokens = {
     system: contextTokenWeight(systemPrompt),
     tools: contextTokenWeight(toolDefinitions),
@@ -207,7 +206,7 @@ export function renderActiveContextMessages(payload) {
  * 必须为模型输出保留的容量，任何接管后的请求都不能占用它。`contextTokenThreshold` 是
  * context hook 的触发高水位，不改变候选 payload 是否装得下；余量为正表示候选上下文能在安全余量内完整装载。
  */
-export function evaluateEligibility({ capacity, takeover, payloadTokens }) {
+export function evaluateEligibility({ capacity, takeover, payloadTokens, checkpointTokens }) {
   const inactive = (eligibility) => ({
     eligibility,
     capacityTokens: Number.isFinite(capacity?.contextWindow) ? capacity.contextWindow : null,
@@ -222,8 +221,19 @@ export function evaluateEligibility({ capacity, takeover, payloadTokens }) {
 
   const usableTokens = Math.max(0, capacity.contextWindow - capacity.maxTokens);
   const headroomTokens = usableTokens - payloadTokens;
+  // checkpoint 正文只有完整装载一种可用形态。配置了独立预算时，缺少 checkpoint 权重
+  // 不能证明候选适配；超出预算与任务模型余量不足仍保留为两个可诊断成因。
+  const budget = takeover?.checkpointTokenBudget;
+  const budgetConfigured = Number.isSafeInteger(budget) && budget > 0;
+  const checkpointFactsUnavailable = budgetConfigured && !Number.isFinite(checkpointTokens);
+  const overBudget = budgetConfigured && Number.isFinite(checkpointTokens) && checkpointTokens > budget;
+  const eligibility = checkpointFactsUnavailable
+    ? "facts_unavailable"
+    : overBudget
+      ? "checkpoint_over_budget"
+      : headroomTokens > 0 ? "eligible" : "capacity_mismatch";
   return {
-    eligibility: headroomTokens > 0 ? "eligible" : "capacity_mismatch",
+    eligibility,
     capacityTokens: capacity.contextWindow,
     reserveTokens: capacity.maxTokens,
     usableTokens,
@@ -234,7 +244,7 @@ export function evaluateEligibility({ capacity, takeover, payloadTokens }) {
 
 /**
  * 当前 provider epoch 固定时始终渲染同一 ActiveContext；活动 payload 再次越过高水位时允许推进。
- * 旧候选已容量失配但存在更新 checkpoint 时，也允许尝试原子推进：新候选仍不适配则保持完整 Pi 上下文。
+ * 旧候选容量失配或 checkpoint 超预算但存在更新 checkpoint 时，也允许尝试原子推进：新候选仍不适配则保持完整 Pi 上下文。
  */
 export function evaluateTakeoverTrigger({
   enabled, eligibility, currentCheckpointId, nextCheckpointId = null, appliedCheckpointId,
@@ -250,7 +260,7 @@ export function evaluateTakeoverTrigger({
   const enabledForTakeover = enabled !== false;
   const eligible = enabledForTakeover && eligibility === "eligible";
   const recoverableMismatch = Boolean(
-    enabledForTakeover && eligibility === "capacity_mismatch" && currentCheckpointId &&
+    enabledForTakeover && ["capacity_mismatch", "checkpoint_over_budget"].includes(eligibility) && currentCheckpointId &&
     nextCheckpointId && nextCheckpointId !== currentCheckpointId,
   );
   return {
@@ -350,7 +360,6 @@ export class ActiveContextManager {
   }
 
   async publish({ branchEvents, capacity, systemPrompt, toolDefinitions, factsAvailable }) {
-    const previous = this.state;
     let candidate = null;
     let missing = !factsAvailable || this.roundFailure ? "facts_unavailable" : "no_context";
     if (this.context && factsAvailable) {
@@ -366,16 +375,28 @@ export class ActiveContextManager {
       capacity,
       takeover: this.takeover,
       payloadTokens: candidate ? candidate.tokens.payload : null,
+      checkpointTokens: candidate ? candidate.tokens.checkpoint : null,
     });
     // 没有候选时，"为什么没有"比"没有"本身更有诊断价值：区分尚未形成与来源事实不可读。
     if (!factsAvailable || (!candidate && verdict.eligibility === "no_context")) verdict.eligibility = missing;
-    this.state = {
+    this.applyState({
       checkpointId: this.context?.checkpointId ?? null,
       rawTailStartEventId: this.context?.rawTailStartEventId ?? null,
       rawTailEvents: candidate ? payloadSegment(candidate, "raw-tail").events.length : 0,
       ...verdict,
       lastFailure: this.roundFailure,
-    };
+    });
+  }
+
+  /**
+   * state 的唯一写入点。
+   *
+   * eligibility 决定与状态迁移必须成对发出：只发决定会让观察记录出现"判定变了但状态没变"的
+   * 缺口，诊断者只能从决定反推状态，而状态本来就是本模块自己承担的观察职责。
+   */
+  applyState(next) {
+    const previous = this.state;
+    this.state = next;
     this.observe.emit(
       "active_context_eligibility", this.state.eligibility,
       this.state.capacityTokens, this.state.usableTokens, this.state.payloadTokens, this.state.headroomTokens,
@@ -404,7 +425,6 @@ export class ActiveContextManager {
       branchEvents,
       systemPrompt,
       toolDefinitions,
-      checkpointTokenBudget: this.takeover.checkpointTokenBudget,
     });
   }
 
@@ -419,15 +439,11 @@ export class ActiveContextManager {
     factsAvailable = true, allowAdvance = true, advanceHighWaterTokens = null,
   } = {}) {
     if (!factsAvailable) {
-      const previous = this.state;
-      this.state = { ...this.state, eligibility: "facts_unavailable", lastFailure: "Pi task model context facts unavailable" };
-      this.observe.emit(
-        "active_context_eligibility", this.state.eligibility,
-        this.state.capacityTokens, this.state.usableTokens, this.state.payloadTokens, this.state.headroomTokens,
-      );
-      if (JSON.stringify(previous) !== JSON.stringify(this.state)) {
-        this.observe.emit("active_context_state", "change", previous, this.state);
-      }
+      this.applyState({
+        ...this.state,
+        eligibility: "facts_unavailable",
+        lastFailure: "Pi task model context facts unavailable",
+      });
       return null;
     }
     try {
@@ -441,51 +457,54 @@ export class ActiveContextManager {
       }
       const latest = advance ? selectActiveContext(branchEvents, archives, lastCheckpointId) : null;
       const candidate = latest ?? this.context;
+      const candidateIsCurrent = sameActiveContext(candidate, this.context);
       if (!activeContextOnBranch(candidate, branchEvents)) return null;
 
-      const payload = candidate === this.context && currentPayload
+      const payload = candidateIsCurrent && currentPayload
         ? currentPayload
         : await this.materializeFor(candidate, branchEvents, { systemPrompt, toolDefinitions });
-      if (!payload) return null;
       const verdict = evaluateEligibility({
         capacity,
         takeover: this.takeover,
         payloadTokens: payload.tokens.payload,
+        checkpointTokens: payload.tokens.checkpoint,
       });
 
       let rendered = null;
       if (verdict.eligibility === "eligible") {
         rendered = renderActiveContextMessages(payload);
-        if (latest && JSON.stringify(latest) !== JSON.stringify(this.context)) {
+        if (latest && !candidateIsCurrent) {
           if (this.path) await writeActiveContext(this.path, latest);
           this.context = latest;
         }
       }
 
-      const statusContext = verdict.eligibility === "eligible" ? candidate : (this.context ?? candidate);
-      const previous = this.state;
-      this.state = {
+      let statusContext = candidate;
+      let statusPayload = payload;
+      let statusVerdict = verdict;
+      if (verdict.eligibility !== "eligible" && this.context && !candidateIsCurrent) {
+        statusContext = this.context;
+        statusPayload = currentPayload ?? await this.materializeFor(
+          this.context, branchEvents, { systemPrompt, toolDefinitions },
+        );
+        statusVerdict = evaluateEligibility({
+          capacity,
+          takeover: this.takeover,
+          payloadTokens: statusPayload.tokens.payload,
+          checkpointTokens: statusPayload.tokens.checkpoint,
+        });
+      }
+      this.applyState({
         checkpointId: statusContext.checkpointId,
         rawTailStartEventId: statusContext.rawTailStartEventId,
-        rawTailEvents: payloadSegment(payload, "raw-tail")?.events?.length ?? 0,
-        ...verdict,
+        rawTailEvents: payloadSegment(statusPayload, "raw-tail").events.length,
+        ...statusVerdict,
         lastFailure: null,
-      };
-      this.observe.emit(
-        "active_context_eligibility", this.state.eligibility,
-        this.state.capacityTokens, this.state.usableTokens, this.state.payloadTokens, this.state.headroomTokens,
-      );
-      if (JSON.stringify(previous) !== JSON.stringify(this.state)) {
-        this.observe.emit("active_context_state", "change", previous, this.state);
-      }
+      });
       return rendered;
     } catch (error) {
       this.recordFailure(error, "materialize", "degrade");
-      this.state = { ...this.state, eligibility: "facts_unavailable", lastFailure: this.roundFailure };
-      this.observe.emit(
-        "active_context_eligibility", this.state.eligibility,
-        this.state.capacityTokens, this.state.usableTokens, this.state.payloadTokens, this.state.headroomTokens,
-      );
+      this.applyState({ ...this.state, eligibility: "facts_unavailable", lastFailure: this.roundFailure });
       return null;
     }
   }
@@ -497,7 +516,7 @@ export class ActiveContextManager {
       const checkpoint = await this.loadCheckpoint();
       const start = branchEvents.find((event) => event.eventId === this.context.rawTailStartEventId);
       if (!start?.source?.entryId) return null;
-      const summary = renderBoundedCheckpointBlock(checkpoint, this.takeover.checkpointTokenBudget);
+      const summary = renderCheckpointBlock(checkpoint);
       return {
         summary,
         firstKeptEntryId: start.source.entryId,
@@ -520,7 +539,7 @@ export class ActiveContextManager {
 
   /** 活动上下文失败只影响诊断与 eligibility：事件、Archive 与 checkpoint 保持不变。 */
   recordFailure(error, errorCode, disposition, branch = "keep_full_context") {
-    // `publish` 是 state 的唯一写者；调用方只声明当前产品降级分支。
+    // `applyState` 是 state 的唯一写者；这里只记录本轮失败原因与产品降级分支。
     this.roundFailure = errorMessage(error);
     this.observe.emit("active_context_failure", error, errorCode, disposition, branch);
   }

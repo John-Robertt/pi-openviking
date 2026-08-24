@@ -276,8 +276,10 @@ interface Checkpoint {
 Key Facts & Decisions、Open Issues、Next Action、Files & Context、Errors & Corrections。Task & Goals 表达全局目标，
 Key Facts & Decisions 保存当前有效的稳定约束和决定，Current State 表达当前阶段与已完成进度；下一代从上一代完整
 状态和新 Archive 生成一个新的当前状态，只保留未完成目标与仍有效的事实，删除已完成、已失效和重复表述。
-缺少原生必需章节、没有可形成执行入口的 Open Issues 或容器计数式输出不表示
-消费完成；Next Action 在协议边界从明确入口规范化生成。checkpoint 不再保存
+Task & Goals、Current State 与 Key Facts & Decisions 承载续接状态，其中任一退化为占位或容器计数式输出即不表示消费完成；
+Open Issues、Files & Context 与 Errors & Corrections 是记录性章节，必须存在而真实为空是有效事实。原生模板紧跟标题发出的
+整行斜体指引按结构剥离，不进入注入正文。Next Action 在协议边界从 Open Issues 规范化生成，没有未解决问题时表达
+等待下一条用户指令。checkpoint 不再保存
 从 narrative 重复投影出的数组或字段。checkpoint 作为新事件追加，来源 Archive 和之前的 checkpoint 始终保持不可变。
 VLM 失败由后台异步重试，raw Archive 的持久状态保持有效。
 
@@ -342,8 +344,9 @@ interface ActiveContext {
 
 `ActiveContext` 在下一次上下文高水位到达前保持固定，新产生的 assistant/tool 事件追加在该
 稳定前缀之后。下一次接管原子替换 checkpoint 和 raw-tail 起点。cache epoch 是
-`ActiveContext` 稳定期间的运行时视图。旧候选因后续增长进入容量不匹配而当前分支已有更新 checkpoint 时，
-同一次 `context` hook 可以改用更新候选重新判定并原子推进；更新候选仍不适配时保持完整 Pi 上下文。
+`ActiveContext` 稳定期间的运行时视图。旧候选因后续增长进入容量不匹配，或 checkpoint 超出配置预算，而当前分支已有
+更新 checkpoint 时，同一次 `context` hook 可以改用更新候选重新判定并原子推进；更新候选仍不适配时保留原边界并
+使用完整 Pi 上下文。
 自动高水位在首次接管时比较完整 Pi context usage 与候选 headroom；epoch 建立后比较当前 ActiveContext payload
 与任务模型的全部 usable tokens，避免把同一候选 payload 同时计入 usage 又从阈值扣除。每次 `context` hook
 都从当时的当前分支重算活动 payload 后再判定推进，不能复用上一次 hook 的长度快照。显式高水位对两个阶段均生效。
@@ -429,8 +432,8 @@ VLM request 和明确失败是追加式 `RecordedEvent`。summary、索引、通
 - `archive.chunkTokenBudget` 控制每次 Archive 的目标增量；
 - `archive.rawTailTokenBudget` 控制 Archive 后保留的最近原始上下文预算；
 - `takeover.contextTokenThreshold` 是任务模型上下文高水位，`0` 表示按当前模型容量自动确定；
-- `takeover.checkpointTokenBudget` 控制接管时可完整装载的 VLM checkpoint 上限；正文超过上限时不截断，接管与
-  ActiveContext compaction 均 fail-open 到 Pi 原生完整上下文；
+- `takeover.checkpointTokenBudget` 控制接管时可完整装载的 VLM checkpoint 上限；正文超过上限时不截断，而以独立的
+  checkpoint 超预算判定与容量不匹配区分，接管与 ActiveContext compaction 均 fail-open 到 Pi 原生完整上下文；
 - `takeover.enabled` 控制任务模型上下文替换，事件记录和 Archive 独立持续运行。
 
 Archive 与 takeover 发布默认预算由端到端预算校准（见 [`docs/roadmap.md`](./roadmap.md)）验证，根据 Archive step

@@ -16,10 +16,11 @@
 
 - 绑定 Pi 生命周期；
 - 在 `session_start` 初始化会话来源和 ACK，并启动一次会话同步；首个 `context` 或 `session_before_compact` hook 在消费
-  ActiveContext 前等待该同步收敛，普通 UI 启动不等待；
+  ActiveContext 前等待该同步及当前 Archive 范围的首次 checkpoint 事实扫描收敛，但不等待新的 VLM 生产；普通 UI 启动不等待；
 - 在 `turn_end`、`session_compact`、`session_tree`、`session_info_changed`、`model_select`、`thinking_level_select` 非阻塞调度会话来源检查或同步；
-- `session_shutdown` 仅在 Pi leaf 尚未被最近同步观察时调度最终 snapshot；随后给予既有同步 500ms grace 并取消
-  transport，未确认内容留在 Pi 来源；当前 session 只释放自己的观察 producer，进程退出时统一封存观察 run；
+- `session_shutdown` 仅在 Pi leaf 尚未被最近同步观察时调度最终 snapshot；先停止 checkpoint 后台新调度，既有同步与
+  已在途 checkpoint 共享 500ms grace；到期后取消 transport 并等待取消结果收敛，未确认内容留在 Pi 来源。当前
+  session 只释放自己的观察 producer，进程退出时统一封存观察 run；
 - `before_agent_start` 把 profile block 注入 system prompt 并排队 recall；`context` hook 首次用完整 Pi context usage 判定高水位，
   provider epoch 建立后始终渲染同一 ActiveContext，并以当前分支重算的 payload 判断是否到达任务模型 usable tokens 或显式高水位后原子推进 checkpoint；
   recall 在最终 messages 上注入；profile/recall 的实际注入只追加带内容 hash、字符数和目标 entry 的 `ov-observation`
@@ -110,7 +111,8 @@ adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
 
 - 维护 checkpoint、attempt task 及 request/failure/checkpoint 事件的版本化身份和严格解析；failure 只接受代码拥有的稳定分类、错误码与通用消息；
 - 校验并保存唯一的自包含 Working Memory narrative；按 OpenViking 原生章节规范化当前未完成目标、有效事实与决定，
-  并从 Open Issues 形成 Next Action；已完成目标、失效事实、重复表述和退化局部摘要不进入消费事实；
+  并从 Open Issues 形成 Next Action；承载续接状态的三个章节任一退化为占位或容器计数即拒绝消费，记录性章节真实为空仍然可消费；
+  原生模板的整行斜体指引按结构剥离，措辞由服务端拥有因而不进入判据；
 - 构造“上一代统一状态 + 当前 Archive 原始 Pi entries”的更新输入，不重复传输 RecordedEvent 身份、hash 与投影 envelope；
   内部 `ov-observation` 不进入 VLM 正文；
   嵌入图片正文只在临时媒体处理边界使用。
@@ -125,6 +127,8 @@ adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
 ### `shared/checkpoint-store.mjs`
 
 - 按当前分支的已提交 Archive 顺序派生未消费范围、积压 Archive/token 与 caught-up/processing/lagging/failed 状态；
+  session 启动以独立只读扫描刷新当前事实，该扫描可与在途 VLM 并行；状态发布代次使并发期间完成的旧扫描重新读取，
+  不得覆盖更新 checkpoint 已发布的状态；SyncManager 再等待对应 ActiveContext 派生更新后解除屏障；
 - 在 VLM 前追加 request，明确失败时追加 failure，成功时追加唯一 checkpoint；回读时验证 Archive、前一 checkpoint、连续 attempt、parent 与无 failure 的完整链，并在并发冲突时采用首个通过该校验的事实；
 - 每个 Archive 最多执行三个确定性 attempt；每次协调调度从 request 事实与全部 Pi 分支可重算的 Archive 链发现一次失效 task，Archive 消费循环不重复穷举，后续只重试已发现的清理义务；
 - 顺序驱动一个在途 Archive；当前分支范围变化时停止尚未开始的旧 checkpoint 写入，并清理其临时 task；
@@ -135,10 +139,12 @@ adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
 
 - 从当前分支上最后一个已消费 checkpoint 选择 `ActiveContext`，并以最小两字段对象原子替换写入本地文件；
 - 同步更新候选事实但保持当前两字段边界；来源边界离开当前分支时失效，高水位接管时只在新候选可渲染、eligible
-  且持久化成功后原子推进；旧候选容量不匹配而更新 checkpoint 可用时，直接用更新候选重新判定以避免冻结在失配边界；
+  且持久化成功后原子推进；旧候选容量不匹配或 checkpoint 超预算且更新 checkpoint 可用时，直接用更新候选重新判定；
+  更新候选仍不适配时保留原边界，状态身份与容量度量继续来自同一当前候选；
 - 从 raw tail 起点的 `turnId` 重算原始用户指令 anchor，因而 anchor 不是持久化字段；
 - materialize `system + checkpoint + anchor + raw tail` 四段候选 payload，段内直接引用不可变来源；checkpoint 只能在
-  `checkpointTokenBudget` 内完整装载，超限时保持完整 Pi 上下文，其实际权重仍统一计入 payload；
+  `checkpointTokenBudget` 内完整装载；超限由同一处 eligibility 判定为独立的 checkpoint 超预算成因（与模型余量不足区分），
+  其实际权重仍统一计入 payload；
 - 用 Pi 报告的任务模型容量与输出预留计算 takeover eligibility，高水位配置不改变容量判定；
 - 用 recorded-event 的逆投影重建原始 entry，并调用 Pi 的 `sessionEntryToContextMessages` 生成 provider messages；
   ActiveContext 不复制 Pi message 语义，事件不完整或事实不可读时返回空并保持完整 Pi 上下文；
@@ -260,7 +266,7 @@ recorded-event-adapter ───────────────────
 active-context ──► ~/.pi/openviking/active-context/<target-and-session>.json
         │ checkpoint + raw-tail 边界、候选 payload、takeover eligibility 与 provider messages 渲染
         ▼
-context hook ──► 首次完整上下文越过高水位时建立 epoch；随后复用 ActiveContext，下一高水位或失配候选的更新 checkpoint 才推进
+context hook ──► 首次完整上下文越过高水位时建立 epoch；随后复用 ActiveContext，下一高水位或不可用候选的更新 checkpoint 才推进
         │
         └──────► session_before_compact：提供自包含 checkpoint；不可用时由 Pi 原生 compaction 继续
         ▲

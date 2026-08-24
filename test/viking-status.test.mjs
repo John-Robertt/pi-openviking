@@ -136,6 +136,22 @@ test("/viking 展示活动上下文的身份、边界与容量判定", () => {
   assert.match(mismatch, /上下文容量：Pi 报告 272000，输出预留 128000，可用 1000，候选需要 10481/);
   assert.match(mismatch, /最近活动上下文失败：Error: read failed/);
 
+  const overBudget = formatVikingCommand({
+    connected: true,
+    sessionId: "pi-session",
+    sync: {
+      ...base,
+      activeContext: {
+        checkpointId: `chk_${"c".repeat(64)}`, rawTailStartEventId: `evt_${"e".repeat(64)}`, rawTailEvents: 3,
+        eligibility: "checkpoint_over_budget", capacityTokens: 272000, reserveTokens: 128000,
+        usableTokens: 144000, payloadTokens: 18000, headroomTokens: 126000, lastFailure: null,
+      },
+    },
+    observation: { state: "disabled" },
+  });
+  assert.match(overBudget, /活动上下文：inactive：checkpoint 超出配置预算，checkpoint chk_c{64}/);
+  assert.match(overBudget, /候选需要 18000/);
+
   const empty = formatVikingCommand({
     connected: true,
     sessionId: "pi-session",

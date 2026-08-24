@@ -8,7 +8,7 @@ import {
   activeContextFileKey,
   type ActiveContextStatus,
 } from "./shared/active-context.mjs";
-import { describeArchives, type ArchiveDescriptor } from "./shared/archive.mjs";
+import { describeArchives, type ArchiveDescriptor, type ArchiveManifestV1 } from "./shared/archive.mjs";
 import { ArchiveManager } from "./shared/archive-store.mjs";
 import { CheckpointManager, type CheckpointStatus } from "./shared/checkpoint-store.mjs";
 import { parsePiSessionJsonl, sessionHasAssistantEntry } from "./shared/pi-session-source.mjs";
@@ -108,14 +108,9 @@ export class SyncManager {
   private knownParents = new Map<string, string | null>();
   private checkpointBranchLeafId: string | null = null;
   private committedArchives: ArchiveDescriptor[] = [];
-  private derivedStateVersion = 0;
-  private activeContextSnapshot: {
-    version: number;
-    sessionId: string;
-    branchEvents: any[];
-    taskModel: TaskModelContext | null;
-  } | null = null;
+  private activeContextSnapshot: { branchEvents: any[]; taskModel: TaskModelContext | null } | null = null;
   private operationTail: Promise<void> = Promise.resolve();
+  private activeContextRefreshTail: Promise<void> = Promise.resolve();
   private syncStatus: SyncStatus = {
     source: "none",
     capability: "unknown",
@@ -232,7 +227,6 @@ export class SyncManager {
       this.knownParents.clear();
       this.checkpointBranchLeafId = null;
       this.committedArchives = [];
-      this.derivedStateVersion = 0;
       this.activeContextSnapshot = null;
     }
     this.piSessionId = piSessionId;
@@ -298,21 +292,31 @@ export class SyncManager {
   }
 
   async waitForIdle(timeoutMs = 500): Promise<boolean> {
-    const pending = this.operationTail;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const drained = await Promise.race([
-        pending.then(() => true),
-        new Promise<boolean>((resolve) => {
-          timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
-        }),
-      ]);
-      this.observe.emit("shutdown_grace", timeoutMs, drained);
-      return drained;
-    } finally {
-      if (timer) clearTimeout(timer);
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    let drained = true;
+    while (true) {
+      const pending = this.operationTail;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        drained = await Promise.race([
+          pending.then(() => true),
+          new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(false), Math.max(0, deadline - Date.now()));
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      if (!drained || pending === this.operationTail) break;
     }
+    this.observe.emit("shutdown_grace", timeoutMs, drained);
+    return drained;
   }
+  async refreshCheckpointFacts(): Promise<void> {
+    await this.checkpoints?.refresh();
+    await this.activeContextRefreshTail;
+  }
+
   async stopBackground(): Promise<void> {
     await this.checkpoints?.stop();
   }
@@ -551,24 +555,24 @@ export class SyncManager {
     events: any[],
     taskModel: TaskModelContext | null,
   ): Promise<void> {
-    const version = ++this.derivedStateVersion;
-    const sessionId = this.piSessionId;
     const onBranch = new Set(branch.map((entry) => entry.id));
     const branchEvents = events.filter((event) => onBranch.has(event.source.entryId));
-    this.activeContextSnapshot = { version, sessionId, branchEvents, taskModel };
+    this.activeContextSnapshot = { branchEvents, taskModel };
     await this.formArchives(branch, parentById, events);
     await this.updateActiveContext(branchEvents, taskModel);
   }
 
   /** checkpoint 事实一经发布即可收敛接管边界；临时 VLM 资源清理不阻塞派生状态。 */
   private scheduleActiveContextRefresh(): void {
-    void this.serialize(async () => {
+    const refresh = this.serialize(async () => {
       // 通知只表示 checkpoint 派生事实发生了变化。执行时读取最新分支快照，避免通知排队期间
       // 新一轮同步替换快照后，旧通知被丢弃且新 checkpoint 状态不再变化而永久漏掉收敛。
+      // 快照随会话切换清空，因此"存在快照"就等价于"属于当前会话的最新一轮"。
       const snapshot = this.activeContextSnapshot;
-      if (!snapshot || this.piSessionId !== snapshot.sessionId || this.derivedStateVersion !== snapshot.version) return;
+      if (!snapshot) return;
       await this.updateActiveContext(snapshot.branchEvents, snapshot.taskModel);
     }).catch(() => {});
+    this.activeContextRefreshTail = refresh;
   }
 
   /** 活动上下文只服务接管：它的失败不改变事件、ACK、Archive 或 checkpoint。 */

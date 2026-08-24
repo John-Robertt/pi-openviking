@@ -113,7 +113,8 @@ const TIMEOUT_ERROR_CODES = new Set([
 const DISPOSITIONS = ["degrade", "retry", "ignore", "abort_operation"];
 // 活动上下文的判定结果是单一枚举：可接管，或说明为什么还不能接管。
 const ACTIVE_CONTEXT_STATES = [
-  "eligible", "capacity_mismatch", "capacity_unknown", "facts_unavailable", "no_context", "takeover_disabled",
+  "capacity_mismatch", "capacity_unknown", "checkpoint_over_budget", "eligible", "facts_unavailable",
+  "no_context", "takeover_disabled",
 ];
 const FAILURE_BASE = {
   errorClass: ENUM(ERROR_CLASSES),
@@ -660,22 +661,11 @@ const DISABLED_STATUS = Object.freeze({
   dropped: 0,
 });
 
-const DISABLED_OBSERVATION = Object.freeze({
-  emit() {},
-  begin() { return 0; },
-  end() {},
-  bindSession() {},
-  createProducer() { return this; },
-  release() {},
-  abandon() {},
-  getStatus() { return DISABLED_STATUS; },
-  beginDrainDeadline() { return 0; },
-  finishRemaining() { return Promise.resolve(); },
-  finish() { return Promise.resolve(); },
-});
-
-function incompleteObservation(reason) {
-  const status = Object.freeze({ state: "incomplete", reason, run: null, accepted: 0, dropped: 0 });
+/**
+ * 未请求观察与观察已失效共用同一个零工作实现：两者对调用方的契约完全相同，只有
+ * `getStatus` 报告的原因不同。合成一处后，`Observation` 接口新增方法只需改这里。
+ */
+function stubObservation(status) {
   return Object.freeze({
     emit() {},
     begin() { return 0; },
@@ -689,6 +679,12 @@ function incompleteObservation(reason) {
     finishRemaining() { return Promise.resolve(); },
     finish() { return Promise.resolve(); },
   });
+}
+
+const DISABLED_OBSERVATION = stubObservation(DISABLED_STATUS);
+
+function incompleteObservation(reason) {
+  return stubObservation(Object.freeze({ state: "incomplete", reason, run: null, accepted: 0, dropped: 0 }));
 }
 
 export function createObservation(options = {}) {

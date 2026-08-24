@@ -136,13 +136,16 @@ async function checkpointFact(log, ctx, adapter, descriptor, previousCheckpoint 
   return { request, checkpoint, requestStored, checkpointStored };
 }
 
+// 前序事实缺失时门禁仍须报告事实：缺少 request 就没有可度量的 task，
+// 直接断言缺失而不是解引用 null，让失败停在它真正发生的那一项上。
 async function taskMeasurement(log, ctx, client, taskId, wallMs, label) {
-  const listed = await client.listTasks(taskId);
-  const task = Array.isArray(listed.result)
+  const listed = taskId ? await client.listTasks(taskId) : null;
+  const task = Array.isArray(listed?.result)
     ? [...listed.result].sort((a, b) => Number(b?.created_at || 0) - Number(a?.created_at || 0))[0]
     : null;
   const tokenTotal = Math.max(0, Number(task?.result?.token_usage?.llm?.total_tokens) || 0);
-  log.check(ctx.workloadId, `${label}.task-completed`, "completed", task?.status, task?.status === "completed");
+  log.check(ctx.workloadId, `${label}.task-completed`, "completed", task?.status ?? "request fact missing",
+    task?.status === "completed");
   log.check(ctx.workloadId, `${label}.tokens-measured`, ">0", tokenTotal, tokenTotal > 0);
   log.check(ctx.workloadId, `${label}.wall-threshold`, `<=${ctx.manifest.thresholds.checkpointWallMs}`, wallMs,
     wallMs <= ctx.manifest.thresholds.checkpointWallMs);
@@ -210,7 +213,7 @@ async function w1(log, ctx) {
     log.check(ctx.workloadId, "checkpoint-status", "caught_up", manager.status.mode, manager.status.mode === "caught_up");
     const fact = await checkpointFact(log, ctx, fixture.adapter, descriptor);
     await sourceStillIntact(log, ctx, fixture.adapter, fixture.manager, [descriptor], "after");
-    const measurement = await taskMeasurement(log, ctx, client, fact.request.taskId, Date.now() - started, "checkpoint");
+    const measurement = await taskMeasurement(log, ctx, client, fact.request?.taskId ?? null, Date.now() - started, "checkpoint");
     ctx.measurements = [measurement];
   });
   ctx.runs.push({ label: "checkpoint-formation", ...ctx.measurements[0], observationSha256: ctx.observationSummary.evidenceSha256 });
@@ -327,7 +330,7 @@ async function w3(log, ctx) {
     log.check(ctx.workloadId, "failure-notified", true,
       notifications.some((item) => item.message.includes("失败")), notifications.some((item) => item.message.includes("失败")));
     await sourceStillIntact(log, ctx, fixture.adapter, fixture.manager, [descriptor], "after");
-    const measurement = await taskMeasurement(log, ctx, client, retry.request.taskId, Date.now() - started, "retry");
+    const measurement = await taskMeasurement(log, ctx, client, retry.request?.taskId ?? null, Date.now() - started, "retry");
     ctx.measurements = [measurement];
   });
   ctx.runs.push({ label: "failure-retry", ...ctx.measurements[0], observationSha256: ctx.observationSummary.evidenceSha256 });
@@ -392,15 +395,15 @@ async function w4(log, ctx) {
     const continuationPreserved = secondFact.checkpoint?.narrative?.includes(globalGoal) === true &&
       secondFact.checkpoint?.narrative?.includes(currentConstraint) === true;
     log.check(ctx.workloadId, "second-unified-continuation", true, continuationPreserved, continuationPreserved);
-    log.check(ctx.workloadId, "restart-task-reused", taskBefore, firstFact.request.taskId,
-      taskBefore === firstFact.request.taskId);
+    log.check(ctx.workloadId, "restart-task-reused", taskBefore, firstFact.request?.taskId ?? "request fact missing",
+      taskBefore === firstFact.request?.taskId);
     const laggingNotices = notifications.filter((item) => item.message.includes("消费落后")).length;
     const recoveryNotices = notifications.filter((item) => item.message.includes("已恢复")).length;
     log.check(ctx.workloadId, "lagging-notify-per-process", 2, laggingNotices, laggingNotices === 2);
     log.check(ctx.workloadId, "recovery-notify-once", 1, recoveryNotices, recoveryNotices === 1);
     await sourceStillIntact(log, ctx, adapterB, archivesB, descriptors, "after");
-    const m1 = await taskMeasurement(log, ctx, clientB, firstFact.request.taskId, Date.now() - started, "first");
-    const m2 = await taskMeasurement(log, ctx, clientB, secondFact.request.taskId, Date.now() - started, "second");
+    const m1 = await taskMeasurement(log, ctx, clientB, firstFact.request?.taskId ?? null, Date.now() - started, "first");
+    const m2 = await taskMeasurement(log, ctx, clientB, secondFact.request?.taskId ?? null, Date.now() - started, "second");
     ctx.measurements = [m1, m2];
   });
   ctx.runs.push({

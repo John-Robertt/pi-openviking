@@ -22,6 +22,7 @@ export interface TakeoverPolicy {
 /** 单一判定结果：可接管，或说明为什么还不能接管。 */
 export type ActiveContextEligibility =
   | "eligible"
+  | "checkpoint_over_budget"
   | "no_context"
   | "facts_unavailable"
   | "capacity_unknown"
@@ -90,7 +91,6 @@ export function materializeActiveContext(input: {
   branchEvents: PiRecordedEventV1[];
   systemPrompt?: string;
   toolDefinitions?: string;
-  checkpointTokenBudget?: number | null;
 }): ActiveContextPayload;
 export function payloadSegment(payload: ActiveContextPayload | null, kind: string): ActiveContextSegment | null;
 export function renderActiveContextMessages(payload: ActiveContextPayload): any[];
@@ -98,6 +98,7 @@ export function evaluateEligibility(input: {
   capacity: TaskModelCapacity | null;
   takeover: TakeoverPolicy;
   payloadTokens: number | null;
+  checkpointTokens: number | null;
 }): EligibilityVerdict;
 export function evaluateTakeoverTrigger(input: {
   enabled: boolean;

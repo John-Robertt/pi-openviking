@@ -249,7 +249,6 @@ async function verifyActiveChain(log, ctx, run, source, checkpointMeasurement) {
     context: active,
     checkpoint,
     branchEvents: source.branch,
-    checkpointTokenBudget: ctx.manifest.environment.extensionConfig.takeover.checkpointTokenBudget,
   });
   const start = source.branch.findIndex((event) => event.eventId === active.rawTailStartEventId);
   const rawTail = payloadSegment(payload, "raw-tail").events;
@@ -257,6 +256,9 @@ async function verifyActiveChain(log, ctx, run, source, checkpointMeasurement) {
     recordedEventBytes(event).equals(recordedEventBytes(source.branch[start + index])));
   log.check(ctx.workloadId, "active.raw-tail", "byte-exact source suffix", exact, exact);
 
+  const checkpointBudget = ctx.manifest.environment.extensionConfig.takeover.checkpointTokenBudget;
+  log.check(ctx.workloadId, "capacity.checkpoint-budget", `<=${checkpointBudget}`, payload.tokens.checkpoint,
+    payload.tokens.checkpoint <= checkpointBudget);
   const headroom = Number(status.usableTokens) - Number(status.payloadTokens);
   log.check(ctx.workloadId, "capacity.headroom", `>=${ctx.manifest.thresholds.minHeadroomTokens}`, headroom,
     headroom >= ctx.manifest.thresholds.minHeadroomTokens);
@@ -275,7 +277,6 @@ async function verifyActiveChain(log, ctx, run, source, checkpointMeasurement) {
     Boolean(requestEntryId) && requestEnd >= 0);
   const requestPayload = requestEnd >= 0 ? materializeActiveContext({
     context: active, checkpoint, branchEvents: source.branch.slice(0, requestEnd + 1),
-    checkpointTokenBudget: ctx.manifest.environment.extensionConfig.takeover.checkpointTokenBudget,
   }) : null;
   const expectedTexts = requestPayload ? renderActiveContextMessages(requestPayload).slice(1)
     .flatMap((message) => contentTexts(message.content)).filter((text) => text.length > 0) : [];

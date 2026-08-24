@@ -50,6 +50,8 @@ export class CheckpointManager {
     this.archives = [];
     this.archiveChains = [];
     this.scopeVersion = 0;
+    this.refreshTail = Promise.resolve();
+    this.publicationVersion = 0;
     this.cleanedTaskIds = new Set();
     this.pendingCleanupTaskIds = new Set();
     this.state = initialState();
@@ -92,6 +94,27 @@ export class CheckpointManager {
     return this.kick();
   }
 
+  refresh() {
+    const scanLatest = async () => {
+      while (!this.stopped && this.sessionId) {
+        const sessionId = this.sessionId;
+        const archives = this.archives;
+        const scopeVersion = this.scopeVersion;
+        const publicationVersion = this.publicationVersion;
+        const scan = await this.scanFacts(sessionId, archives);
+        if (this.stopped) return;
+        if (sessionId !== this.sessionId || archives !== this.archives || scopeVersion !== this.scopeVersion ||
+            publicationVersion !== this.publicationVersion) continue;
+        this.publishState(scan);
+        return;
+      }
+    };
+    this.refreshTail = this.refreshTail
+      .then(scanLatest, scanLatest)
+      .catch((error) => this.recordOperationalFailure(error, "reconcile", "pending_retry"));
+    return this.refreshTail;
+  }
+
   observeFinalState() {
     this.observe.emit("checkpoint_state", "snapshot", this.state, null);
   }
@@ -100,7 +123,7 @@ export class CheckpointManager {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
-    try { await this.current; } catch { /* status already records the failure */ }
+    try { await Promise.all([this.current, this.refreshTail]); } catch { /* status already records the failure */ }
   }
 
 
@@ -273,10 +296,9 @@ export class CheckpointManager {
       if (!raced) throw error;
       return raced.event;
     }
+    // 回读本身就是接受证明：事实缺失时 readEvent 抛出，字节与 eventId 不符时
+    // verifyRecordedEventBytes 抛出，因此这里不需要再复述同一判据。
     const stored = await this.adapter.readEvent(sessionId, event.eventId);
-    if (!stored.bytes || stored.event.eventId !== event.eventId) {
-      throw new Error("checkpoint fact read-back failed");
-    }
     return stored.event;
   }
 
@@ -478,6 +500,7 @@ export class CheckpointManager {
   }
 
   publishState(scan) {
+    this.publicationVersion++;
     const previous = this.state;
     const mode = scan.pending.length === 0 ? "caught_up"
       : scan.exhausted ? "failed"

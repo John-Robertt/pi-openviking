@@ -139,8 +139,10 @@ npx pi-openviking@latest credentials
 保持 Pi 完整上下文与原生 compaction，不使用不完整 checkpoint。
 
 只有存在 eligible `ActiveContext` 且当前 context usage 到达高水位时，provider messages 才会被替换为 checkpoint、
-原始用户指令 anchor 与 raw tail；否则继续使用完整 Pi 上下文。Pi 触发 compaction 时，扩展只在同一 ActiveContext
-可读时提供自包含 checkpoint，不可用时保留 Pi 原生 compaction。`recallTokenBudget` 直接限制服务端为一次检索装配的
+原始用户指令 anchor 与 raw tail；否则继续使用完整 Pi 上下文。已接管的候选容量不匹配或 checkpoint 超预算、且当前分支
+已有更新 checkpoint 时，下一次请求直接改用更新候选重新判定；更新候选仍不适配时保留原边界并继续使用完整 Pi 上下文。
+Pi 触发 compaction 时，扩展只在同一 ActiveContext 可读时提供自包含 checkpoint，不可用时保留 Pi 原生 compaction。
+`recallTokenBudget` 直接限制服务端为一次检索装配的
 上下文 token 预算。
 
 ### 受管服务代理

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { buildArchiveManifest } from "../shared/archive.mjs";
 import { OpenVikingCheckpointProcessor } from "../shared/checkpoint-processor.mjs";
+import { validateCheckpointOverview } from "../shared/checkpoint.mjs";
 import { archiveEvents } from "./fixtures/archive-fixtures.mjs";
 import { checkpointOverview } from "./fixtures/checkpoint-fixtures.mjs";
 
@@ -33,7 +34,7 @@ test("processor 通过公开 Session/Task API 提交并读取 Working Memory", a
   const processor = new OpenVikingCheckpointProcessor(client);
   const result = await processor.advance({ taskId: TASK_ID, manifest, events, previousCheckpoint: null });
   assert.equal(result.status, "completed");
-  assert.equal(result.overview, OVERVIEW);
+  assert.equal(result.overview, validateCheckpointOverview(OVERVIEW));
   assert.deepEqual(calls, ["getSession", "addMessage", "commitSession", "getTask", "getSessionContext"]);
 });
 

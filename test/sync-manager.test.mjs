@@ -144,6 +144,17 @@ test("shutdown grace 只等待固定期限内的同步", async () => {
     assert.equal(await fast.waitForIdle(500), true);
     await fastOperation;
 
+    const dynamicStore = new MemoryEventStore();
+    dynamicStore.delayMs = 5;
+    const dynamic = manager(dynamicStore, `${root}/dynamic.json`);
+    await dynamic.ensureSession(`${trace.sessionId}-dynamic`);
+    const firstDynamic = syncBranch(dynamic, structuredClone(trace.shorter));
+    const dynamicallyDrained = dynamic.waitForIdle(500);
+    const secondDynamic = syncBranch(dynamic, structuredClone(trace.equalReplacement));
+    assert.equal(await dynamicallyDrained, true);
+    assert.ok(dynamic.status.acknowledgedLeaves.includes("entry-replacement-final"));
+    await Promise.all([firstDynamic, secondDynamic]);
+
     const slowStore = new MemoryEventStore();
     slowStore.delayMs = 25;
     const slow = manager(slowStore, `${root}/slow.json`);
@@ -651,6 +662,46 @@ test("checkpoint 状态通知以执行时的最新分支快照收敛活动上下
   assert.equal(sync.status.activeContext.checkpointId, checkpointId(descriptor.manifest));
   assert.equal(sync.status.activeContext.eligibility, "eligible");
   releaseCleanup();
+});
+
+test("启动事实刷新等待对应 ActiveContext 派生状态收敛", async () => {
+  const sessionId = "startup-checkpoint-refresh";
+  const branch = archiveEntryChain(Array.from({ length: 6 }, () => ({ role: "assistant", chars: 4000 })));
+  const events = projectPiEntries(sessionId, branch);
+  const descriptor = describeArchives(sessionId, events, ARCHIVE_BUDGETS)[0];
+  const requestEvent = buildCheckpointRequestEvent({
+    manifest: descriptor.manifest, previousCheckpointId: null, attempt: 1, submittedAt: "2026-08-21T00:00:00.000Z",
+  });
+  const checkpointEvent = buildCheckpointEvent({
+    manifest: descriptor.manifest, requestEvent,
+    overview: checkpointOverview("restore the first provider context"), completedAt: "2026-08-21T00:00:10.000Z",
+  });
+  const transport = new MemoryContentTransport();
+  for (const event of [requestEvent, checkpointEvent]) {
+    transport.files.set(
+      recordedEventStorageLocation(ARCHIVE_USER_ROOT, sessionId, event.eventId).directUri,
+      recordedEventBytes(event),
+    );
+  }
+  const sync = new SyncManager(contentClient(transport), {
+    ackPathForSession: () => null, activeContextPathForSession: () => null,
+  });
+  await sync.ensureSession(sessionId);
+  const taskModel = {
+    capacity: { contextWindow: 272000, maxTokens: 128000 },
+    factsAvailable: true,
+    systemPrompt: "",
+    toolDefinitions: "",
+  };
+  await sync.syncSession(
+    { isPersisted: () => false, getEntries: () => branch, getBranch: () => branch },
+    taskModel,
+  );
+  await sync.refreshCheckpointFacts();
+  assert.equal(sync.status.checkpoint.lastCheckpointId, checkpointId(descriptor.manifest));
+  assert.equal(sync.status.activeContext.checkpointId, checkpointId(descriptor.manifest));
+  assert.equal(sync.status.activeContext.eligibility, "eligible");
+  await sync.stopBackground();
 });
 
 test("活动上下文的 raw tail 覆盖当前分支尚未确认的最新事件", async () => {

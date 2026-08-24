@@ -42,6 +42,10 @@
         "archive": { "chunkTokenBudget": 1000, "rawTailTokenBudget": 1000 },
         "takeover": { "enabled": true, "contextTokenThreshold": 1, "checkpointTokenBudget": 16000 }
       },
+      "checkpointOverBudget": {
+        "archive": { "chunkTokenBudget": 1000, "rawTailTokenBudget": 1000 },
+        "takeover": { "enabled": true, "contextTokenThreshold": 1, "checkpointTokenBudget": 100 }
+      },
       "capacityMismatch": {
         "archive": { "chunkTokenBudget": 1000, "rawTailTokenBudget": 1000 },
         "takeover": { "enabled": true, "contextTokenThreshold": 1, "checkpointTokenBudget": 16000 }
@@ -117,18 +121,22 @@
     },
     {
       "id": "w3-capacity-compaction-fail-open",
-      "summary": "同一真实模型下追加仍可由完整 Pi 上下文承载、但超过 takeover 可用容量的原子输入，证明 capacity mismatch 保持完整上下文；无 ActiveContext 时 Pi 原生 compaction 仍可执行。",
+      "summary": "同一真实模型先以低 checkpoint budget 证明超预算时 context hook 保持完整 Pi 上下文且 compaction 使用原生路径，再追加超过 takeover 可用容量的原子输入证明 capacity mismatch 具有相同 fail-open 边界。",
       "inputs": {
         "P1": "请将 CAPACITY_ARCHIVED_ 与 ASSISTANT 拼接，只回复拼接结果，不要调用工具。",
         "A1": "CAPACITY_ARCHIVED_ASSISTANT",
-        "P2": "CAPACITY_FULL_CONTEXT：请只回复 FIT，不要调用工具。"
+        "P2": "CAPACITY_FULL_CONTEXT：请只回复 FIT，不要调用工具。",
+        "P3": "CHECKPOINT_OVER_BUDGET_FULL_CONTEXT：请只回复 SAFE，不要调用工具。"
       },
       "successCriteria": [
+        "checkpointTokenBudget=100 时 eligibility=checkpoint_over_budget，真实 provider payload 保留完整 Pi 归档前缀且不含 checkpoint",
+        "同一超预算状态下真实 context 与 session_before_compact hook 分别记录 keep_full_context 和 native_compaction",
         "候选 payloadTokens>=contextWindow-maxTokens，eligibility=capacity_mismatch",
         "真实 provider payload 不含 checkpoint 且保留大型原子来源的标记",
         "没有可用 ActiveContext 的 manual compact 使用 Pi 原生 compaction，fromHook=false，扩展不主动触发或取消 compaction"
       ],
       "falsification": [
+        "checkpoint 超预算仍替换 provider 上下文、提供 ActiveContext compaction，或 owner 观察记录缺失",
         "容量不匹配仍替换 provider 上下文或删除 ActiveContext",
         "大型原子来源在 fail-open payload 中丢失",
         "无 ActiveContext 时扩展伪造 compaction 或中止 agent"

@@ -71,6 +71,7 @@ function formatArchiveLine(archive) {
 
 const ACTIVE_CONTEXT_STATES = {
   capacity_mismatch: "容量不匹配",
+  checkpoint_over_budget: "checkpoint 超出配置预算",
   capacity_unknown: "容量未知",
   facts_unavailable: "来源事实暂不可读",
   no_context: "尚未形成",

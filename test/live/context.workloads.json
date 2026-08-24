@@ -8,7 +8,6 @@
     "candidate": "候选来自当前分支上最后一个已消费 Archive：checkpointId 由该 Archive manifest 确定性重算，rawTailStartEventId 是该 Archive lastEventId 在当前分支上的下一个事件。因此 raw tail 覆盖“已归档但尚未消费”与“尚未归档”的全部事件。",
     "anchor": "原始用户指令 anchor 不进入持久化字段，而是从 raw tail 起点自身的 turnId 重算：建立该 turn 的 user entry 的全部事件即 anchor。turn 身份由 docs/spec.md“完整记录事件”固定，因而 anchor 由不可变事件唯一确定，无需第三个字段。",
     "branchReuse": "复用条件是 rawTailStartEventId 仍在当前分支的事件链上。该判定只依赖本地分支投影，不需要网络：raw tail 起点在祖先链上等价于其来源 Archive 边界仍在祖先链上；离开祖先链即失效并重新选择。OpenViking 或 checkpoint 事实暂时不可读时保留既有 ActiveContext，不因降级销毁已选定边界。",
-    "eligibility": "usableTokens = Pi 报告 contextWindow - Pi 报告 maxTokens；payloadTokens = system + 活动工具定义 + 受 checkpointTokenBudget 约束的 checkpoint 块 + anchor + raw tail 中 Pi 实际映射为 provider messages 的 entry 权重之和；不渲染的 custom 状态 entry 不占候选容量。headroomTokens = usableTokens - payloadTokens；headroom>0 为 eligible，否则 inactive/capacity_mismatch。contextTokenThreshold 只控制接管高水位，不改变容量。权重使用与 Archive 压力轴同一策略量（UTF-8 字节数 / 4），由 shared/context-weight.mjs 单点维护。",
     "checkpointBlock": "接管块只渲染 checkpoint 身份头与唯一的统一 Working Memory narrative，使任务状态在 provider 上下文中只表达一次。",
     "takeoverInactive": "本 gate 的真实请求保持在自动高水位以下，context hook 因而继续使用完整 Pi messages；高水位后的真实替换由 verify:takeover:live 独立证明。",
     "falsifiedAlternatives": [
@@ -16,7 +15,7 @@
       "每次同步重新选择最新 checkpoint 并覆盖已持久化的 ActiveContext：会使 docs/spec.md 要求的“到下一次接管前保持固定”失去载体，接管阶段无法证明每个高水位只替换一次",
       "把 ActiveContext 存到 OpenViking：它描述本地任务模型当前使用的边界，远端存储既不提高可用性（checkpoint 正文本来就需要 OpenViking），又新增一套远端完整性协议",
       "以 provider 累计 usage 作为容量输入：开发模型身份的 provider 在 RPC 流与持久 JSONL 中报告的 usage 恒为全零（archive gate 实测），容量判定必须用 Pi 报告的模型元数据",
-      "用 contextTokenThreshold 截断候选容量：触发策略不是模型容量；checkpointTokenBudget 只约束进入候选的 checkpoint 正文，实际权重仍统一计入 payloadTokens"
+      "用 contextTokenThreshold 截断候选容量：触发策略不是模型容量；checkpointTokenBudget 只判定完整 checkpoint 是否 eligible，不截断或排除候选正文"
     ]
   },
   "identities": {
@@ -43,7 +42,7 @@
       "activeContextFields": ["checkpointId", "rawTailStartEventId"],
       "anchorRule": "anchor = 建立 rawTailStart.turnId 的 user entry 的全部事件；rawTailStart 无 turnId 时 anchor 为空",
       "payloadSegments": ["system", "checkpoint", "anchor", "raw-tail"],
-      "eligibilityFormula": "headroomTokens = contextWindow - maxTokens - (systemTokens + toolTokens + boundedCheckpointTokens + anchorTokens + rawTailTokens)；contextTokenThreshold 不参与容量判定",
+      "eligibilityFormula": "headroomTokens = contextWindow - maxTokens - (systemTokens + toolTokens + checkpointTokens + anchorTokens + rawTailTokens)；checkpointTokens > checkpointTokenBudget 时判定为 checkpoint_over_budget；contextTokenThreshold 不参与容量判定",
       "tokenWeight": "provider-visible entry 内容取 ceil(UTF-8 byteLength / 4)，与 Archive 压力轴同一策略量；Pi 不映射为 provider message 的 custom 状态 entry 为 0"
     },
     "extensionLoadOrder": ["index.ts", "scripts/e2e-probe.ts"]

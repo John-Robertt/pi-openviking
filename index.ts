@@ -120,6 +120,7 @@ export default async function (pi: ExtensionAPI) {
       observation.emit("profile_result", profileBlock);
       observation.emit("sync_schedule", "session_start", client.connected);
       sessionReady = sync.syncSession(snapshotSessionSource(ctx.sessionManager), taskModelContext(ctx))
+        .then(() => sync.refreshCheckpointFacts())
         .catch((error: unknown) => {
           observation.emit("index_failure", error, "sync_schedule", "degrade", "continue_pi");
         });
@@ -515,16 +516,26 @@ export default async function (pi: ExtensionAPI) {
     let observationDeadline = 0;
     try {
       await stopHealthPolling(ctx);
+      const backgroundStopped = sync.stopBackground();
       observationDeadline = observation.beginDrainDeadline(500);
+      const shutdownDeadline = Date.now() + 500;
       if (sync.sourceIsCurrent(ctx.sessionManager)) {
         observation.emit("sync_schedule", "session_shutdown", client.connected, "skip_current");
       } else {
         scheduleSync(ctx, "session_shutdown");
       }
-      const drained = await sync.waitForIdle(500);
-      if (!drained) observation.abandon();
+      let backgroundTimer: ReturnType<typeof setTimeout> | undefined;
+      const backgroundDrained = await Promise.race([
+        backgroundStopped.then(() => true),
+        new Promise<boolean>((resolve) => {
+          backgroundTimer = setTimeout(() => resolve(false), Math.max(0, shutdownDeadline - Date.now()));
+        }),
+      ]);
+      if (backgroundTimer) clearTimeout(backgroundTimer);
+      const syncDrained = await sync.waitForIdle(Math.max(0, shutdownDeadline - Date.now()));
+      if (!syncDrained || !backgroundDrained) observation.abandon();
       await client.close(true);
-      await sync.stopBackground();
+      await backgroundStopped;
       sync.observeFinalState();
       endHook(op, "session_shutdown", reason);
     } catch (error) {

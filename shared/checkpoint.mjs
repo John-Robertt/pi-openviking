@@ -186,11 +186,20 @@ function sectionItems(value) {
   return bullets.length > 0 ? bullets : [value.trim()];
 }
 
-function withoutTemplateGuidance(value) {
-  const lines = String(value || "").split("\n");
-  const first = lines.findIndex((line) => line.trim());
-  if (first >= 0 && /^_.*_$/.test(lines[first].trim()) && /(?:What is the purpose|Stable facts|Referenced resources|Mistakes, misunderstandings|Unresolved questions)/.test(lines[first])) {
-    lines.splice(first, 1);
+/**
+ * 章节正文 = 章节内容去掉紧跟标题的模板指引。
+ *
+ * 指引由 OpenViking 的 Working Memory 模板发出，本仓库不拥有其措辞；唯一稳定的信号是
+ * 它以整行斜体紧跟标题。按措辞匹配会随模板改写而静默失效，把样板当成正文注入上下文。
+ */
+function sectionBody(value) {
+  const lines = String(value ?? "").split("\n");
+  const dropLeadingBlank = () => { while (lines.length > 0 && !lines[0].trim()) lines.shift(); };
+  dropLeadingBlank();
+  // 标题后的首个整行斜体是模板指引；正文为空时记录章节由协议统一规范化为 `- None.`。
+  if (lines.length > 0 && /^_.+_$/.test(lines[0].trim())) {
+    lines.shift();
+    dropLeadingBlank();
   }
   return lines.join("\n").trim();
 }
@@ -206,31 +215,23 @@ function continuationItem(value) {
   return Boolean(normalized) && !PLACEHOLDER_ITEM.test(normalized) && !CONTAINER_COUNT_ITEM.test(normalized);
 }
 
-function requireContinuationSection(sections, name) {
-  const value = withoutTemplateGuidance(sections.get(name));
-  if (!value) throw new TypeError(`checkpoint overview is missing ${name}`);
-  if (!sectionItems(value).some(continuationItem)) {
-    throw new TypeError(`checkpoint overview has no continuation content in ${name}`);
-  }
-  return value;
-}
+/**
+ * 承载续接状态的章节：三者共同表达"要做什么、现在在哪、哪些事实仍然有效"。
+ * 其中任一退化成占位或容器计数时，checkpoint 都不构成可续接状态。
+ */
+const CONTINUATION_SECTIONS = Object.freeze(["Task & Goals", "Current State", "Key Facts & Decisions"]);
 
-const REQUIRED_CHECKPOINT_SECTIONS = Object.freeze([
-  "Task & Goals",
-  "Current State",
-  "Key Facts & Decisions",
-  "Open Issues",
-  "Files & Context",
-  "Errors & Corrections",
-]);
+/**
+ * 记录性章节：必须存在，但"没有未解决问题""没有引用文件"本身就是有效的续接事实。
+ * 要求它们非空会把真实为空的会话判成 VLM 失败，使该 Archive 永远无法被消费。
+ */
+const RECORD_SECTIONS = Object.freeze(["Open Issues", "Files & Context", "Errors & Corrections"]);
 
-function nextActionFrom(sections) {
-  const explicit = withoutTemplateGuidance(sections.get("Next Action"));
-  if (sectionItems(explicit).some(continuationItem)) return explicit;
-  const open = sectionItems(withoutTemplateGuidance(sections.get("Open Issues")))
-    .find(continuationItem);
-  if (!open) throw new TypeError("checkpoint overview has no executable Open Issues");
-  return `- Address the highest-priority open issue: ${open}`;
+const NO_OPEN_ISSUE_ACTION = "- No open issue remains; await the next user instruction.";
+
+function nextActionFrom(body) {
+  const open = sectionItems(body.get("Open Issues")).find(continuationItem);
+  return open ? `- Address the highest-priority open issue: ${open}` : NO_OPEN_ISSUE_ACTION;
 }
 
 export function validateCheckpointOverview(overview) {
@@ -242,22 +243,32 @@ export function validateCheckpointOverview(overview) {
     throw new TypeError("checkpoint overview is missing Working Memory root");
   }
   const sections = sectionMap(source);
-  for (const name of REQUIRED_CHECKPOINT_SECTIONS) {
-    if (!withoutTemplateGuidance(sections.get(name))) throw new TypeError(`checkpoint overview is missing ${name}`);
+  const body = new Map();
+  for (const name of [...CONTINUATION_SECTIONS, ...RECORD_SECTIONS]) {
+    if (!sections.has(name)) throw new TypeError(`checkpoint overview is missing ${name}`);
+    const value = sectionBody(sections.get(name));
+    if (RECORD_SECTIONS.includes(name) &&
+        (!value || !sectionItems(value).some(continuationItem))) {
+      body.set(name, "- None.");
+      continue;
+    }
+    if (!value) throw new TypeError(`checkpoint overview is missing ${name}`);
+    body.set(name, value);
   }
-  const goals = requireContinuationSection(sections, "Task & Goals");
-  const currentState = requireContinuationSection(sections, "Current State");
-  const facts = requireContinuationSection(sections, "Key Facts & Decisions");
-  const openIssues = requireContinuationSection(sections, "Open Issues");
+  for (const name of CONTINUATION_SECTIONS) {
+    if (!sectionItems(body.get(name)).some(continuationItem)) {
+      throw new TypeError(`checkpoint overview has no continuation content in ${name}`);
+    }
+  }
   return [
     "# Working Memory",
-    `## Task & Goals\n${goals}`,
-    `## Current State\n${currentState}`,
-    `## Key Facts & Decisions\n${facts}`,
-    `## Open Issues\n${openIssues}`,
-    `## Next Action\n${nextActionFrom(sections)}`,
-    `## Files & Context\n${withoutTemplateGuidance(sections.get("Files & Context"))}`,
-    `## Errors & Corrections\n${withoutTemplateGuidance(sections.get("Errors & Corrections"))}`,
+    `## Task & Goals\n${body.get("Task & Goals")}`,
+    `## Current State\n${body.get("Current State")}`,
+    `## Key Facts & Decisions\n${body.get("Key Facts & Decisions")}`,
+    `## Open Issues\n${body.get("Open Issues")}`,
+    `## Next Action\n${nextActionFrom(body)}`,
+    `## Files & Context\n${body.get("Files & Context")}`,
+    `## Errors & Corrections\n${body.get("Errors & Corrections")}`,
   ].join("\n\n");
 }
 

@@ -382,9 +382,23 @@ function seedCapacityMismatch(ctx, sessionFile) {
 async function w3(log, ctx) {
   const established = await establishActiveContext(log, ctx, ctx.workload.inputs);
   if (!established?.active) return;
+  writeExtensionConfig(ctx, ctx.manifest.environment.extensionConfig.checkpointOverBudget);
+  const overBudget = await runPi(ctx, {
+    workloadId: ctx.workloadId, turn: 3, endpoint: ctx.endpoint,
+    actions: [{ prompt: ctx.workload.inputs.P3 }, { command: "/viking" }],
+  });
+  assertRunHealthy(log, ctx, overBudget, { requireCapture: true });
+  const overBudgetStatus = vikingActiveContext(overBudget);
+  log.check(ctx.workloadId, "checkpoint-budget.status", "checkpoint 超出配置预算", overBudgetStatus.reason,
+    overBudgetStatus.reason === "checkpoint 超出配置预算");
+  const overBudgetPayload = JSON.stringify(providerPayloads(overBudget)[0]);
+  log.check(ctx.workloadId, "checkpoint-budget.full-context", true, overBudgetPayload.includes(ctx.archivedMarker),
+    overBudgetPayload.includes(ctx.archivedMarker) && !overBudgetPayload.includes(established.checkpointId));
+
+  writeExtensionConfig(ctx, ctx.manifest.environment.extensionConfig.capacityMismatch);
   seedCapacityMismatch(ctx, established.formation.sessionFile);
   const capacity = await runPi(ctx, {
-    workloadId: ctx.workloadId, turn: 3, endpoint: ctx.endpoint,
+    workloadId: ctx.workloadId, turn: 4, endpoint: ctx.endpoint,
     actions: [
       { command: "/viking sync" },
       { rpc: { type: "set_auto_compaction", enabled: false } },
@@ -401,7 +415,7 @@ async function w3(log, ctx) {
     payloadText.includes(LARGE_MARKER) && !payloadText.includes(established.checkpointId));
 
   const native = await runPi(ctx, {
-    workloadId: ctx.workloadId, turn: 4, endpoint: ctx.endpoint,
+    workloadId: ctx.workloadId, turn: 5, endpoint: ctx.endpoint,
     actions: [{ rpc: { type: "compact" }, timeoutMs: ctx.manifest.thresholds.agentSettledMs }],
   });
   assertRunHealthy(log, ctx, native, { requireCapture: true, expectedCaptureCount: 0 });
@@ -411,8 +425,43 @@ async function w3(log, ctx) {
   log.check(ctx.workloadId, "compaction.native", false, entry?.fromHook ?? false,
     entry?.fromHook !== true && result?.details?.type !== "openviking-active-context" && Boolean(result?.usage));
 
-  ctx.runs.push(summarizeRun(capacity), summarizeRun(native));
-  const parsed = parsePiSessionJsonl(await readFile(native.sessionFile, "utf8"), { sessionId: ctx.sessionId });
+  writeExtensionConfig(ctx, ctx.manifest.environment.extensionConfig.checkpointOverBudget);
+  const observed = await runPi(ctx, {
+    workloadId: ctx.workloadId, turn: 6, endpoint: ctx.endpoint, capture: "observation",
+    actions: [
+      { rpc: { type: "set_auto_compaction", enabled: false } },
+      { prompt: ctx.workload.inputs.P3 },
+      { rpc: { type: "compact" }, timeoutMs: ctx.manifest.thresholds.agentSettledMs },
+    ],
+  });
+  log.check(ctx.workloadId, "checkpoint-budget.observation-exit", 0, observed.exitCode, observed.exitCode === 0);
+  const observedErrors = observed.events.filter((event) => event.type === "extension_error");
+  log.check(ctx.workloadId, "checkpoint-budget.observation-errors", 0, observedErrors.length, observedErrors.length === 0);
+  const overBudgetObservation = parseObservationRun(readFileSync(observed.observationPath));
+  log.check(ctx.workloadId, "checkpoint-budget.observation-complete", true, overBudgetObservation.summary.complete,
+    overBudgetObservation.summary.complete, overBudgetObservation.errors.join(","));
+  const takeoverRecord = overBudgetObservation.records.find((record) =>
+    record.stage === "active_context_takeover" && record.data?.branch === "keep_full_context" &&
+      record.data?.eligibility === "checkpoint_over_budget");
+  log.check(ctx.workloadId, "checkpoint-budget.takeover-observed", "keep_full_context/checkpoint_over_budget",
+    takeoverRecord ? `${takeoverRecord.data.branch}/${takeoverRecord.data.eligibility}` : null, Boolean(takeoverRecord));
+  const compactionRecord = overBudgetObservation.records.find((record) =>
+    record.stage === "active_context_compaction" && record.data?.branch === "native_compaction" &&
+      record.data?.eligibility === "checkpoint_over_budget");
+  log.check(ctx.workloadId, "checkpoint-budget.compaction-observed", "native_compaction/checkpoint_over_budget",
+    compactionRecord ? `${compactionRecord.data.branch}/${compactionRecord.data.eligibility}` : null, Boolean(compactionRecord));
+  const observedManager = SessionManager.open(observed.sessionFile);
+  const observedEntry = observedManager.getBranch().findLast((candidate) => candidate.type === "compaction");
+  const observedCompaction = observed.actions[2]?.response?.data;
+  log.check(ctx.workloadId, "checkpoint-budget.compaction-native", false, observedEntry?.fromHook ?? false,
+    observedEntry?.fromHook !== true && observedCompaction?.details?.type !== "openviking-active-context" &&
+      Boolean(observedCompaction?.usage));
+
+  ctx.runs.push(summarizeRun(overBudget), summarizeRun(capacity), summarizeRun(native), {
+    turn: observed.turn, ms: observed.ms, exitCode: observed.exitCode,
+    observation: overBudgetObservation.summary, observationPath: observed.observationPath,
+  });
+  const parsed = parsePiSessionJsonl(await readFile(observed.sessionFile, "utf8"), { sessionId: ctx.sessionId });
   const events = projectPiEntries(ctx.sessionId, parsed.entries);
   const onBranch = new Set(parsed.branch.map((branchEntry) => branchEntry.id));
   const branch = events.filter((event) => onBranch.has(event.source.entryId));

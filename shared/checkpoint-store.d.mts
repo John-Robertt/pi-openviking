@@ -42,6 +42,7 @@ export class CheckpointManager {
     archives: CheckpointArchiveDescriptor[],
     archiveChains?: CheckpointArchiveDescriptor[][],
   ): Promise<void>;
+  refresh(): Promise<void>;
   observeFinalState(): void;
   stop(): Promise<void>;
 }

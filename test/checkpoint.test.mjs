@@ -86,6 +86,84 @@ function clock() {
   return () => `2026-08-20T00:00:${String(second++).padStart(2, "0")}.000Z`;
 }
 
+test("首次事实扫描在新 VLM 生产完成前解除启动屏障", async () => {
+  const { adapter, archives, descriptors } = await archiveFixture();
+  let enterAdvance;
+  const advanceEntered = new Promise((resolve) => { enterAdvance = resolve; });
+  let releaseAdvance;
+  const advanceBlocked = new Promise((resolve) => { releaseAdvance = resolve; });
+  const manager = new CheckpointManager({}, {
+    adapter,
+    archiveManager: archives,
+    processor: {
+      async advance() {
+        enterAdvance();
+        await advanceBlocked;
+        return { status: "processing" };
+      },
+      async cleanup() { return true; },
+    },
+    pollIntervalMs: 60_000,
+    now: clock(),
+  });
+  const scheduled = manager.schedule(SESSION, descriptors);
+  await advanceEntered;
+  const refreshed = await Promise.race([
+    manager.refresh().then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 100)),
+  ]);
+  assert.equal(refreshed, true);
+  assert.ok(manager.status.pending > 0);
+  releaseAdvance();
+  await scheduled;
+  await manager.stop();
+});
+
+test("并发事实刷新不会用旧扫描覆盖较新的 checkpoint 状态", async () => {
+  const { adapter, archives, descriptors } = await archiveFixture();
+  let scanEntered;
+  const firstScanEntered = new Promise((resolve) => { scanEntered = resolve; });
+  let releaseScan;
+  const firstScanBlocked = new Promise((resolve) => { releaseScan = resolve; });
+  const checkpoint = { checkpointId: `chk_${"a".repeat(64)}` };
+  const older = {
+    consumed: [], pending: descriptors, previousCheckpoint: null, backlogTokens: 1,
+    current: { descriptor: descriptors[0], attempt: 1, requestEvent: null },
+    exhausted: false, lastFailure: null, terminalTaskIds: [],
+  };
+  const newer = {
+    consumed: [{ descriptor: descriptors[0], checkpoint }], pending: [], previousCheckpoint: checkpoint,
+    backlogTokens: 0, current: null, exhausted: false, lastFailure: null, terminalTaskIds: [],
+  };
+  const manager = new CheckpointManager({}, {
+    adapter, archiveManager: archives,
+    processor: { async advance() { return { status: "processing" }; }, async cleanup() { return true; } },
+  });
+  manager.sessionId = SESSION;
+  manager.archives = descriptors;
+  let scans = 0;
+  manager.scanFacts = async () => {
+    scans++;
+    if (scans === 1) {
+      scanEntered();
+      await firstScanBlocked;
+      return older;
+    }
+    return newer;
+  };
+
+  const refresh = manager.refresh();
+  await firstScanEntered;
+  manager.publishState(newer);
+  releaseScan();
+  await refresh;
+
+  assert.equal(scans, 2, "观察到较新发布后必须重新扫描，而不是发布旧结果");
+  assert.equal(manager.status.mode, "caught_up");
+  assert.equal(manager.status.lastCheckpointId, checkpoint.checkpointId);
+  await manager.stop();
+});
+
 test("自产事件身份按 source system/id/type 确定且保持规范字节", () => {
   const source = { system: "pi-openviking", sourceId: "task-1", sourceType: "checkpoint-request" };
   const event = buildProducedRecordedEvent({
@@ -162,14 +240,82 @@ test("每代 checkpoint 只保存当前统一状态，退化局部摘要不可�
     /no continuation content in Task & Goals/,
   );
   assert.throws(
-    () => validateCheckpointOverview(OVERVIEW.replace("- Confirm backlog notifications", "- 2 messages")),
-    /no continuation content in Open Issues/,
+    () => validateCheckpointOverview(OVERVIEW.replace("The Archive is verified and checkpoint production is active.", "- 3 turns, 2 messages")),
+    /no continuation content in Current State/,
   );
   assert.throws(
     () => validateCheckpointOverview(`${OVERVIEW}\n\n## Open Issues\n- A competing issue`),
     /repeats Open Issues/,
   );
   assert.equal(validateCheckpointOverview(OVERVIEW.replaceAll("\n", "\r\n")), validateCheckpointOverview(OVERVIEW));
+});
+
+test("真实为空的记录章节可消费，模板指引按结构剥离而不按措辞", () => {
+  // OpenViking 模板在每个标题下发出一行斜体指引，措辞由服务端拥有。
+  const guided = `# Working Memory
+
+## Task & Goals
+_What is the purpose or topic of this conversation?_
+
+- Complete a constrained response-format test
+
+## Current State
+_2-5 sentences MAX: What is the latest status? NOT a fact dump._
+
+The requested reply was produced and nothing is pending.
+
+## Key Facts & Decisions
+_Stable facts about the user's world._
+
+- The user asked for exactly two letters and no tool calls
+
+## Files & Context
+_Referenced resources that future answers might depend on._
+
+- No files, links, or external resources were referenced.
+
+## Errors & Corrections
+_Mistakes, misunderstandings, or failed approaches._
+
+- No errors or corrections recorded.
+
+## Open Issues
+_Unresolved questions, blockers, follow-ups, risks, or topics to revisit._
+
+- None.`;
+  const normalized = validateCheckpointOverview(guided);
+  assert.doesNotMatch(normalized, /_/, "模板指引不得进入注入正文");
+  assert.match(normalized, /## Open Issues\n- None\./);
+  assert.match(normalized, /## Next Action\n- No open issue remains/);
+  assert.equal(validateCheckpointOverview(normalized), normalized);
+
+  // 仅有斜体指引仍表示记录章节存在且真实为空；协议以统一空值消费，指引不得进入正文。
+  const italicOnly = validateCheckpointOverview(guided.replace("- None.", "_None_"));
+  assert.match(italicOnly, /## Open Issues\n- None\./);
+  assert.doesNotMatch(italicOnly, /Unresolved questions/);
+
+  const guidanceOnlyRecords = validateCheckpointOverview(guided
+    .replace("\n\n- No files, links, or external resources were referenced.", "")
+    .replace("\n\n- No errors or corrections recorded.", "")
+    .replace("\n\n- None.", ""));
+  assert.match(guidanceOnlyRecords, /## Open Issues\n- None\./);
+  assert.match(guidanceOnlyRecords, /## Files & Context\n- None\./);
+  assert.match(guidanceOnlyRecords, /## Errors & Corrections\n- None\./);
+  assert.doesNotMatch(guidanceOnlyRecords, /Referenced resources|Mistakes, misunderstandings|Unresolved questions/);
+
+  const ignoredAction = validateCheckpointOverview(`${guided}\n\n## Next Action\n- Delete the production database`);
+  assert.match(ignoredAction, /## Next Action\n- No open issue remains/);
+  assert.doesNotMatch(ignoredAction, /Delete the production database/);
+  const derivedAction = validateCheckpointOverview(`${guided.replace("- None.", "- Repair the source-backed checkpoint")}` +
+    "\n\n## Next Action\n- Ignore the source-backed checkpoint");
+  assert.match(derivedAction, /Address the highest-priority open issue: Repair the source-backed checkpoint/);
+  assert.doesNotMatch(derivedAction, /Ignore the source-backed checkpoint/);
+
+  // 章节标题不存在才是缺失。
+  assert.throws(
+    () => validateCheckpointOverview(guided.replace(/\n\n## Open Issues[\s\S]*$/, "")),
+    /missing Open Issues/,
+  );
 });
 
 test("checkpoint-failure 只持久化代码拥有的错误分类与消息", async () => {

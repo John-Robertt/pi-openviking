@@ -12,5 +12,3 @@ export function buildRecallBlock(
     observation?: Observation;
   },
 ): Promise<string | null>;
-
-export function estimateTokens(text: string): number;

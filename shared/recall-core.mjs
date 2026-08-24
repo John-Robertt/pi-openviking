@@ -22,7 +22,7 @@ const CODING_QUOTA_WEIGHTS = {
   skills: 2,
 };
 
-export function estimateTokens(text) {
+function estimateTokens(text) {
   return text ? Math.ceil(String(text).length / 4) : 0;
 }
 
@@ -51,10 +51,6 @@ function scaleQuotas(limit, weights) {
   return quotas;
 }
 
-function codingQuotas(limit) {
-  return scaleQuotas(limit, CODING_QUOTA_WEIGHTS);
-}
-
 /**
  * Body for the server-side context face. The plugin declares intent (coding
  * purpose, budget, session) and leaves the mechanics — quota ratios, tier
@@ -70,7 +66,7 @@ export function buildContextSearchBody(cfg = {}, options = {}) {
     score_threshold: Number.isFinite(Number(cfg.scoreThreshold)) ? Number(cfg.scoreThreshold) : 0.35,
   };
   const limitConfigured = cfg.recallLimitConfigured === true;
-  if (limitConfigured) body.quotas = codingQuotas(limit);
+  if (limitConfigured) body.quotas = scaleQuotas(limit, CODING_QUOTA_WEIGHTS);
   if (cfg.recallPeerScope === "actor") body.peer_scope = "actor";
 
   const sessionId = String(options.sessionId || "").trim();
@@ -296,7 +292,7 @@ function wrapContext(body) {
  * Server-assembled context. Returns the injection block, "" when there was
  * nothing relevant, or null when the supported context face was unavailable.
  */
-export async function buildServerAssembledBlock(fetchJSON, cfg, query, options = {}) {
+async function buildServerAssembledBlock(fetchJSON, cfg, query, options = {}) {
   const actorPeerId = options.actorPeerId ?? cfg.peerId ?? "";
 
   return recallViaContextFace(fetchJSON, cfg, query, { ...options, actorPeerId });
@@ -308,7 +304,7 @@ export async function buildServerAssembledBlock(fetchJSON, cfg, query, options =
  * (their own compression, their own envelope) use this instead of the block
  * builders below.
  */
-export async function fetchAssembledContext(fetchJSON, cfg, query, options = {}) {
+async function fetchAssembledContext(fetchJSON, cfg, query, options = {}) {
   const actorPeerId = options.actorPeerId || "";
   const observation = options.observation;
   const body = buildContextSearchBody(cfg, options);
@@ -348,7 +344,7 @@ async function recallViaContextFace(fetchJSON, cfg, query, options) {
     return "";
   }
 
-  const accepted = assembled.entries.filter((entry) => !isInternalSemanticUri(entry?.uri));
+  const accepted = assembled.entries.filter((entry) => !containsInternalNamespace(entry?.uri));
   const rejected = assembled.entries.length - accepted.length;
   if (assembled.entries.length > 0) {
     options.observation?.emit("recall_filter", rejected > 0 ? "filter_internal" : "safe", accepted.length, rejected);
@@ -366,11 +362,6 @@ async function recallViaContextFace(fetchJSON, cfg, query, options) {
 function containsInternalNamespace(value) {
   const text = String(value || "").trim().toLowerCase();
   return text.includes("/.pi-openviking") || text.includes("\\.pi-openviking");
-}
-
-function isInternalSemanticUri(uri) {
-  const value = String(uri || "").trim().toLowerCase().replace(/\/+$/, "");
-  return containsInternalNamespace(value);
 }
 
 function renderAssembledEntry(entry) {
@@ -402,7 +393,7 @@ export async function buildRecallBlock(fetchJSON, cfg, query, options = {}) {
 
   const profile = buildQueryProfile(trimmed);
   const scoreThreshold = Number.isFinite(Number(cfg.scoreThreshold)) ? Number(cfg.scoreThreshold) : 0.35;
-  const visible = raw.filter((item) => !isInternalSemanticUri(item?.uri));
+  const visible = raw.filter((item) => !containsInternalNamespace(item?.uri));
   observation?.emit("recall_filter", visible.length === raw.length ? "safe" : "filter_internal", visible.length, raw.length - visible.length);
   const filtered = visible.filter((it) => clampScore(it.score) >= scoreThreshold);
   filtered.sort((a, b) => rankItem(b, profile) - rankItem(a, profile));
