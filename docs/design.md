@@ -401,6 +401,30 @@ extension or OpenViking failure
 6. Managed OpenViking Service 只向装配阶段提供 endpoint 与部署状态；
 7. 模块之间通过窄数据契约协作，并各自拥有一个变化原因。
 
+## 源码组织
+
+模块划分决定源码划分。每个模块在 `src/` 下拥有一个目录，目录名表达该模块的职责；按关系而非职责命名的
+目录——`shared`、`utils`、`common`——不满足这一条。`contracts/` 是封闭列表，扩充它需要先修改
+「模块协作契约」。
+
+```text
+src/
+├── index.ts              Composition Root：唯一装配点与 Pi 扩展入口
+├── contracts/            「模块协作契约」表中的四个数据值
+├── pi-adapter/
+├── fact-synchronizer/
+├── cue-provider/
+├── openviking-client/
+├── observation/
+├── config/
+└── managed-service/
+```
+
+新文件必须落在某个模块目录内。找不到归属时只有两种情况：它属于某个模块而该模块的责任表述不清，回到本文
+核对；或者它需要一个新模块，按「新模块准入」上报。
+
+目录边界使上述依赖规则成为可静态检查的事实。
+
 ## 演进与扩展边界
 
 ### 可演进方向

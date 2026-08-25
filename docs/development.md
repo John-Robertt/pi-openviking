@@ -8,7 +8,8 @@
 安全清理。
 
 **职责边界**：本文只定义环境本身及其运行方式。目标架构与模块职责见 [`docs/design.md`](./design.md)，
-阶段顺序与验收见 [`docs/roadmap.md`](./roadmap.md)，证据类型与 live gate 契约见 `docs/verification.md`。
+阶段顺序与验收见 [`docs/roadmap.md`](./roadmap.md)，证据类型与 live gate 契约见
+[`docs/verification.md`](./verification.md)。
 精确版本由 `package.json`、`package-lock.json` 与 `scripts/toolchain.mjs` 的 `TOOLCHAIN` 维护，本文不建立
 第二份版本清单。
 
@@ -46,6 +47,21 @@ dev/                      # tracked：机器事实
 ```
 
 `.dev/` 可整体删除，由 `bootstrap` 与 `up` 重建；重建会重新下载 embedding 模型。凭证不写入上述任一目录。
+
+## 仓库工具
+
+`scripts/` 只放仓库开发与维护使用的可执行工具及其原语：
+
+| 文件 | 职责 |
+| --- | --- |
+| `dev.mjs` | 开发环境入口 |
+| `toolchain.mjs` | 受管工具链的安装原语，按 home 参数化且不做决策 |
+| `openviking-oauth.mjs` | 服务端模型的 OAuth provider 注册表 |
+
+面向最终用户的产品命令随其所属模块放置，见 [`docs/design.md`](./design.md)「源码组织」；测试探针与
+gate 设施放在 `test/live/helpers/`，见 [`docs/verification.md`](./verification.md)。
+
+出现两类明显不同的工具后再建子目录；当前三个文件同属开发环境，保持扁平。
 
 ## 开发模型身份
 

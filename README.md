@@ -11,6 +11,7 @@
 - [`docs/design.md`](./docs/design.md)：目标架构与稳定边界的总纲；
 - [`docs/roadmap.md`](./docs/roadmap.md)：阶段路径、实施状态与下一实施入口；
 - [`docs/development.md`](./docs/development.md)：开发环境、开发循环与清理；
+- [`docs/verification.md`](./docs/verification.md)：证据类型、测试组织与 gate 契约；
 - [`docs/documentation.md`](./docs/documentation.md)：文档规划与格式规范；
 - [`AGENTS.md`](./AGENTS.md)：编码代理的仓库工作指引。
 

@@ -7,13 +7,15 @@
 **核心目标**：接手工作的人立即知道三件事——现在在哪、下一步做什么、这一步做完的判定标准是什么。
 
 **职责边界**：本文维护阶段划分、实施状态、各阶段验收判定和下一实施入口。目标架构、模块职责与数据契约由
-`docs/design.md` 维护，本文只引用不复制；证据类型与 live gate 契约由 `docs/verification.md` 维护。本文随每次
+`docs/design.md` 维护，本文只引用不复制；证据类型与 live gate 契约由
+[`docs/verification.md`](./verification.md) 维护。本文随每次
 工作推进更新，因而与架构规范分离——使进度变化与架构变化在评审中始终可区分。
 
 ## 实施状态
 
-「运行边界与观察」进行中。开发环境已建立：受管工具链、隔离 OpenViking 服务与隔离 Pi 可重复获得，流程见
-[`docs/development.md`](./development.md)。扩展入口、fail-open 边界、观察 sink 与证据契约尚未建立。
+「运行边界与观察」进行中。开发环境与证据标准已建立：受管工具链、隔离 OpenViking 服务与隔离 Pi 可重复
+获得，流程见 [`docs/development.md`](./development.md)；证据类型、测试组织与 gate 契约见
+[`docs/verification.md`](./verification.md)。扩展入口、fail-open 边界与观察 sink 尚未建立。
 
 ## 阶段路径
 
@@ -46,7 +48,7 @@
 - 完成 `docs/design.md`「Observation」与「Configuration & Credentials」的责任、「状态所有权」定义的
   Composition Root 装配，以及「1. Pi Adapter」的 fail-open 保证；
 - 最小 `package.json` 与构建配置：只声明当前扩展入口、运行时要求与实际使用的依赖；
-- `docs/verification.md`：证据类型与 live gate 契约；
+- [`docs/verification.md`](./verification.md)：证据类型、测试组织与 live gate 契约；
 - `docs/development.md`：开发环境、开发循环与清理，含其余阶段所需 OpenViking endpoint 的获得方式。
 
 **验收**
@@ -188,7 +190,8 @@
    识别主导约束；
 5. deterministic checks、live gate 与文档自检共同通过后关闭阶段出口，并更新本文的实施状态。
 
-证据类型与 live gate 契约见 `docs/verification.md`。阶段出口关闭后，下一阶段才可消费其结果。
+证据类型与 live gate 契约见 [`docs/verification.md`](./verification.md)。阶段出口关闭后，下一阶段才可
+消费其结果。
 
 ## 下一实施入口
 
@@ -199,4 +202,4 @@
 1. 建立扩展入口、构建配置、Composition Root 与 fail-open 边界，用 `npm run dev -- pi` 在真实 Pi 上完成
    一次加载、会话与 shutdown；
 2. 接入结构化 observation，使上一步产生第一份可关联的运行证据；
-3. 在 `docs/verification.md` 固定证据类型与 live gate 契约，并按其建立本阶段的验证入口。
+3. 按 [`docs/verification.md`](./verification.md) 的证据类型与测试组织建立本阶段的验证入口。
