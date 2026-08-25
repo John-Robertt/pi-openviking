@@ -71,7 +71,7 @@ npx pi-openviking@latest server doctor
 ```
 
 包内 `config.json` 是经过 schema 测试的出厂默认值，生成的 JSONC 模板列出可覆盖字段；
-`docs/spec.md` 定义策略语义。配置加载器拒绝未知字段并报告完整路径。用户文件只需写覆盖项，例如：
+`docs/v1/spec.md` 定义策略语义。配置加载器拒绝未知字段并报告完整路径。用户文件只需写覆盖项，例如：
 
 ```jsonc
 {
@@ -87,7 +87,7 @@ OpenViking 地址与凭证按以下顺序解析：
 3. `~/.pi/openviking/ov.conf`。
 
 `managedServer.proxy` 是服务连接配置，只影响本包启动的 OpenViking 子进程。完整说明见
-[`docs/usage.md`](./docs/usage.md)。
+[`docs/v1/usage.md`](./docs/v1/usage.md)。
 
 ## 状态与命令
 
@@ -128,19 +128,21 @@ shared/checkpoint*.mjs       checkpoint 身份、VLM 处理、事实与状态派
 shared/pi-session-source.mjs 持久 Pi JSONL 分支恢复
 shared/sync-ack.mjs          最小 ACK frontier
 scripts/cli.mjs              安装与服务管理 CLI
-docs/                        规范、设计、开发环境、用户文档与可观测性标准
+docs/design.md                 当前长期记忆扩展架构总纲
+docs/v1/                      v1 实现规范、设计、开发和使用文档
 ```
 
 ## 文档
 
-- [`docs/spec.md`](./docs/spec.md)：目标架构、协议和配置语义的唯一权威规范；
-- [`docs/roadmap.md`](./docs/roadmap.md)：阶段划分、当前实施状态和下一实施入口；
-- [`docs/verification.md`](./docs/verification.md)：证据标准与阶段门禁契约；
-- [`docs/development.md`](./docs/development.md)：开发环境的安装、运行、开发循环和清理；
-- [`docs/models.md`](./docs/models.md)：Pi/OpenViking 模型 provider、认证、配置字段与变更流程；
-- [`docs/design.md`](./docs/design.md)：当前实现的职责与数据流；
-- [`docs/usage.md`](./docs/usage.md)：安装、配置和故障排查；
-- [`docs/observability.md`](./docs/observability.md)：观察点契约、记录形状与脱敏边界。
+- [`docs/design.md`](./docs/design.md)：当前长期记忆扩展的模块化架构总纲；
+- [`docs/v1/spec.md`](./docs/v1/spec.md)：v1 产品职责、协议和配置语义；
+- [`docs/v1/roadmap.md`](./docs/v1/roadmap.md)：v1 阶段状态和实施入口；
+- [`docs/v1/design.md`](./docs/v1/design.md)：v1 实现职责与数据流；
+- [`docs/v1/verification.md`](./docs/v1/verification.md)：v1 证据标准与门禁契约；
+- [`docs/v1/development.md`](./docs/v1/development.md)：开发环境、开发循环和清理；
+- [`docs/v1/models.md`](./docs/v1/models.md)：Pi/OpenViking 模型、认证和变更流程；
+- [`docs/v1/usage.md`](./docs/v1/usage.md)：安装、配置和故障排查；
+- [`docs/v1/observability.md`](./docs/v1/observability.md)：观察点契约、记录形状与脱敏边界。
 - [`AGENTS.md`](./AGENTS.md)：给编码代理的地图——需要答案时去哪里找。
 
 ## 许可证

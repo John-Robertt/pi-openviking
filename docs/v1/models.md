@@ -7,8 +7,8 @@
 **核心目标**：维护者只依赖仓库、本机 CLI 和本文即可选择、配置、切换并验证模型，不再为同类变更重新搜索外部资料。
 
 **职责边界**：本文维护 provider、配置字段、认证方式、动态枚举方法和执行流程；当前开发模型身份只由
-[`dev/model-profile.json`](../dev/model-profile.json) 维护，外部版本只由 `package-lock.json` 与
-`shared/toolchain.mjs` 维护，阶段是否通过只由 [`docs/roadmap.md`](./roadmap.md) 和对应 live gate 维护。
+[`dev/model-profile.json`](../../dev/model-profile.json) 维护，外部版本只由 `package-lock.json` 与
+`shared/toolchain.mjs` 维护，阶段是否通过只由 [`docs/v1/roadmap.md`](./roadmap.md) 和对应 live gate 维护。
 模型市场目录、账户授权和 deployment ID 是动态事实，不复制为静态清单。
 
 ## 基本原则
@@ -40,7 +40,7 @@ node -p "require('./node_modules/@earendil-works/pi-coding-agent/package.json').
 node -e "import('./shared/toolchain.mjs').then(({TOOLCHAIN}) => console.log(TOOLCHAIN.openvikingVersion))"
 ```
 
-版本不一致时先按 [`docs/development.md`](./development.md) 的依赖升级流程处理；模型配置必须与当前 lock/pin 对应。
+版本不一致时先按 [`docs/v1/development.md`](./development.md) 的依赖升级流程处理；模型配置必须与当前 lock/pin 对应。
 
 ### 2. 枚举 Pi 模型，不猜 model ID
 
@@ -153,12 +153,12 @@ VLM 的 doctor 只证明配置和 credential 可用，不发送 completion。最
 npm run dev -- vlm-probe
 ```
 
-模型变更影响阶段结论时，运行该阶段对应的 live gate；阶段与 gate 的对应关系由 [`docs/roadmap.md`](./roadmap.md) 维护。
+模型变更影响阶段结论时，运行该阶段对应的 live gate；阶段与 gate 的对应关系由 [`docs/v1/roadmap.md`](./roadmap.md) 维护。
 
 `dev/model-profile.json` 中的开发模型组合是 accepted baseline 的身份源，对应 live manifest/hash 维护该组合的
 实测阈值、结果和适用范围。用户在 Pi 中选择任务模型，takeover eligibility 使用当前模型报告的容量；通过 live gate
 的模型组合获得其证据记录的性能与吞吐保证。发布验收基线变更时，以原成功标准测量新组合，再更新 live
-manifest/hash 和 `docs/roadmap.md`。阈值调整以实测结果和原成功标准为依据；回退使用原 `dev/model-profile.json`，
+manifest/hash 和 `docs/v1/roadmap.md`。阈值调整以实测结果和原成功标准为依据；回退使用原 `dev/model-profile.json`，
 随后执行 `down`/`up` 并核对 `status`。
 
 ## Pi 模型配置参考
@@ -414,7 +414,7 @@ openviking-server doctor
 
 ## 最终用户服务模型变更
 
-最终用户配置路径由 [`docs/usage.md`](./usage.md) 维护。通用顺序：
+最终用户配置路径由 [`docs/v1/usage.md`](./usage.md) 维护。通用顺序：
 
 ```bash
 $EDITOR ~/.pi/openviking/ov.conf
@@ -439,9 +439,9 @@ npx pi-openviking@latest server status
 
 ## 维护规则
 
-- Pi provider/auth 结构变化：以当前 lock 中 `pi-ai` 的 `dist/types.d.ts`（`KnownProvider`）与 `dist/providers/all.js`（各 provider 的 `oauth` 定义）、Pi `docs/providers.md`/`docs/models.md` 和本地 CLI 重新核对本文；注意 Pi 自带文档可能滞后于 registry，以代码为准；
+- Pi provider/auth 结构变化：以当前 lock 中 `pi-ai` 的 `dist/types.d.ts`（`KnownProvider`）与 `dist/providers/all.js`（各 provider 的 `oauth` 定义）、Pi `docs/providers.md`/`docs/v1/models.md` 和本地 CLI 重新核对本文；注意 Pi 自带文档可能滞后于 registry，以代码为准；
 - OpenViking provider/schema 变化：以 `shared/toolchain.mjs` pin 对应安装中的 `models/vlm/registry.py`（`VALID_PROVIDERS`）、`models/vlm/backends/codex_auth.py` 与 `openviking_cli/utils/config/`（`vlm_config.py`、`embedding_config.py`）重新核对本文；
-- OpenViking 新增 OAuth provider 时：在 [`shared/openviking-oauth.mjs`](../shared/openviking-oauth.mjs) 注册表新增一条注册项（label、store 文件名、pin/bootstrap 环境变量、bootstrap 源、就绪探测），消费方无需改动；同步聚焦测试、本文与 `docs/development.md`。注册表镜像的是上游能力边界，不是仓库偏好；
+- OpenViking 新增 OAuth provider 时：在 [`shared/openviking-oauth.mjs`](../../shared/openviking-oauth.mjs) 注册表新增一条注册项（label、store 文件名、pin/bootstrap 环境变量、bootstrap 源、就绪探测），消费方无需改动；同步聚焦测试、本文与 `docs/v1/development.md`。注册表镜像的是上游能力边界，不是仓库偏好；
 - 只替换 model ID：仅修改当前身份源和 live evidence，不修改 provider 章节；
-- 新增 provider/credential kind 或改变凭证边界：同步 `scripts/dev.mjs`、聚焦测试、本文和 `docs/development.md`；
+- 新增 provider/credential kind 或改变凭证边界：同步 `scripts/dev.mjs`、聚焦测试、本文和 `docs/v1/development.md`；
 - 不把一次运行结果、用户账户 inventory 或凭证写进本文。

@@ -3,7 +3,7 @@
 // 覆盖 AGENTS.md“文档位置与命名”“引用与同步”的规则。检查区分大小写：macOS 的
 // 文件系统大小写不敏感，会掩盖在 Linux 与 GitHub 上真实存在的断链。
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -28,19 +28,36 @@ function existsExact(relPath) {
   return true;
 }
 
+function filesUnder(relDir, accept) {
+  const out = [];
+  const visit = (dir) => {
+    for (const entry of readdirSync(join(REPO, dir), { withFileTypes: true })) {
+      const rel = dir ? `${dir}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (["node_modules", ".artifacts", ".dev", ".obs", ".git"].includes(entry.name)) continue;
+        visit(rel);
+      }
+      else if (accept(rel)) out.push(rel);
+    }
+  };
+  visit(relDir);
+  return out;
+}
+
+function docsMarkdownFiles() {
+  return filesUnder("docs", (file) => file.endsWith(".md"));
+}
+
 function markdownFiles() {
   const root = readdirSync(REPO).filter((name) => name.endsWith(".md"));
-  const docs = readdirSync(join(REPO, "docs")).map((name) => `docs/${name}`);
-  return [...root, ...docs];
+  return [...root, ...docsMarkdownFiles()];
 }
 
 function codeFiles() {
-  const out = [];
-  for (const dir of ["", "shared", "scripts", "lib", "test"]) {
-    const abs = dir ? join(REPO, dir) : REPO;
-    for (const name of readdirSync(abs)) {
-      if (/\.(mjs|ts|mts)$/.test(name)) out.push(dir ? `${dir}/${name}` : name);
-    }
+  const out = readdirSync(REPO)
+    .filter((name) => /\.(mjs|ts|mts)$/.test(name));
+  for (const dir of ["shared", "scripts", "lib", "test"]) {
+    out.push(...filesUnder(dir, (file) => /\.(mjs|ts|mts)$/.test(file)));
   }
   return out;
 }
@@ -50,25 +67,32 @@ test("根目录只保留自动发现的文档，其余全部在 docs/", () => {
   assert.deepEqual(rootMarkdown.sort(), [...ROOT_DOCS].sort());
 });
 
-test("docs/ 内文档一律小写命名且保持扁平", () => {
-  for (const name of readdirSync(join(REPO, "docs"))) {
-    assert.match(name, /^[a-z0-9-]+\.md$/, `docs/${name} 需为小写 .md 文件`);
+test("docs/ 只保留当前总纲，v1 文档位于 docs/v1/", () => {
+  const entries = readdirSync(join(REPO, "docs"), { withFileTypes: true });
+  assert.deepEqual(entries.map((entry) => entry.name).sort(), ["design.md", "v1"]);
+  assert.ok(entries.find((entry) => entry.name === "design.md")?.isFile());
+  assert.ok(entries.find((entry) => entry.name === "v1")?.isDirectory());
+});
+
+test("docs/ 内目录和文档一律小写命名", () => {
+  for (const file of docsMarkdownFiles()) {
+    assert.match(file, /^docs\/[a-z0-9-]+(?:\/[a-z0-9-]+)*\.md$/, `${file} 需为小写 .md 路径`);
   }
 });
 
 test("docs/ 内每份文档都声明架构定位、核心目标与职责边界", () => {
   const missing = [];
-  for (const name of readdirSync(join(REPO, "docs"))) {
-    const text = readFileSync(join(REPO, "docs", name), "utf8");
+  for (const file of docsMarkdownFiles()) {
+    const text = readFileSync(join(REPO, file), "utf8");
     const start = text.indexOf("## 文档职责");
     if (start < 0) {
-      missing.push(`docs/${name}: 缺少“## 文档职责”`);
+      missing.push(`${file}: 缺少“## 文档职责”`);
       continue;
     }
     const next = text.indexOf("\n## ", start + 1);
     const section = text.slice(start, next < 0 ? undefined : next);
     for (const field of ["架构定位", "核心目标", "职责边界"]) {
-      if (!section.includes(field)) missing.push(`docs/${name}: 文档职责缺少“${field}”`);
+      if (!section.includes(field)) missing.push(`${file}: 文档职责缺少“${field}”`);
     }
   }
   assert.deepEqual(missing, []);
@@ -95,9 +119,8 @@ test("权威事实路径表登记的文档全部存在", () => {
     if (!existsExact(target)) missing.push(target);
   }
   assert.deepEqual(missing, []);
-  // docs/ 下的每份文档都必须在表中登记，否则会失去维护与验证路径。
-  for (const name of readdirSync(join(REPO, "docs"))) {
-    assert.ok(table.includes(`docs/${name}`), `docs/${name} 未登记在权威事实路径表`);
+  for (const file of docsMarkdownFiles()) {
+    assert.ok(table.includes(file), `${file} 未登记在权威事实路径表`);
   }
 });
 
@@ -117,8 +140,6 @@ test("文档中的 OpenViking 与 Node 版本与安装 pin 一致", async () => 
   let occurrences = 0;
   for (const file of markdownFiles()) {
     const text = readFileSync(join(REPO, file), "utf8");
-    // 文档正文保留可读的版本号；此处保证它们不会与唯一 pin 脱节。
-    // 同时覆盖散文中的 `OpenViking x.y.z` 与安装说明中的 `openviking[...]==x.y.z`。
     for (const [, found] of text.matchAll(/openviking(?:\[[^\]\s]*\])?(?:==)?[`\s]*`?(\d+\.\d+\.\d+)`?/gi)) {
       occurrences += 1;
       if (found !== TOOLCHAIN.openvikingVersion) {
@@ -137,9 +158,7 @@ test("代码引用的文档路径存在，且不写小节编号", () => {
   const problems = [];
   for (const file of codeFiles()) {
     const text = readFileSync(join(REPO, file), "utf8");
-    for (const [, target] of text.matchAll(/((?:docs\/)?[A-Za-z0-9._-]+\.md)/g)) {
-      // viking:// 命名空间内的记忆文件不是仓库文档
-      if (!/^(docs\/|README|AGENTS|CLAUDE)/.test(target)) continue;
+    for (const [, target] of text.matchAll(/(docs\/[A-Za-z0-9._/-]+\.md|README\.md|AGENTS\.md|CLAUDE\.md)/g)) {
       if (!existsExact(target)) problems.push(`${file}: 引用了不存在的 ${target}`);
     }
     for (const [match] of text.matchAll(/\.md\s*§\s*[0-9]/g)) {

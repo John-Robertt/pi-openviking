@@ -7,8 +7,8 @@
 **核心目标**：安装、配置、运行和排查故障所需的全部信息，读者不必了解内部实现即可完成这些事。
 
 **职责边界**：本文只描述用户可见的行为与操作，不描述目标架构、阶段路径、内部数据流和验证方法——
-那些分别由 [`docs/spec.md`](./spec.md)、[`docs/roadmap.md`](./roadmap.md)、
-[`docs/design.md`](./design.md) 和 [`docs/verification.md`](./verification.md) 维护。
+那些分别由 [`docs/v1/spec.md`](./spec.md)、[`docs/v1/roadmap.md`](./roadmap.md)、
+[`docs/v1/design.md`](./design.md) 和 [`docs/v1/verification.md`](./verification.md) 维护。
 本文随用户可见行为的变化更新。
 
 ## 1. 当前行为
@@ -45,7 +45,7 @@ npx pi-openviking@latest setup
 
 首次 `setup` 生成的受管服务配置默认使用 `openai-codex/gpt-5.6-luna` 作为 VLM，OpenViking 自动使用
 Codex CLI OAuth 登录态，凭证由 OpenViking OAuth store 管理。`setup` 在运行 doctor 前确认 Codex CLI
-已登录；使用其他 provider 时，按 [docs/models.md](./models.md) 的“OpenViking VLM 配置参考”修改 `vlm` 段。
+已登录；使用其他 provider 时，按 [docs/v1/models.md](./models.md) 的“OpenViking VLM 配置参考”修改 `vlm` 段。
 已存在的 `~/.pi/openviking/ov.conf` 保持原样。
 
 仅安装扩展：
@@ -72,7 +72,7 @@ npx pi-openviking@latest server doctor
 
 受管服务文件位于 `~/.pi/openviking/`。`server status` 展示进程、健康、模型和代理摘要；
 `server doctor` 执行完整环境与模型诊断。Pi/OpenViking 支持的 provider、认证方式、模型字段和完整切换流程见
-[`docs/models.md`](./models.md)。
+[`docs/v1/models.md`](./models.md)。
 
 卸载：
 
@@ -119,7 +119,7 @@ npx pi-openviking@latest credentials
 ```
 
 只写需要覆盖的字段。出厂默认值以包内 [`config.json`](./config.json) 为可执行来源；字段语义以
-`docs/spec.md` 的“目标配置”为准。损坏 JSONC、错误类型和未知字段都会报错，错误包含完整路径。
+`docs/v1/spec.md` 的“目标配置”为准。损坏 JSONC、错误类型和未知字段都会报错，错误包含完整路径。
 
 示例：
 

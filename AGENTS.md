@@ -7,23 +7,24 @@
 
 ## 快速开始
 
-1. 阅读 [`docs/roadmap.md`](./docs/roadmap.md) 的“实施状态”和“下一实施入口”，确认当前阶段及前置 gate。
+1. 阅读 [`docs/v1/roadmap.md`](./docs/v1/roadmap.md) 的“实施状态”和“下一实施入口”，确认当前阶段及前置 gate。
 2. 按“任务定位”找到当前任务的权威文档、生产代码和聚焦测试。
 3. 以对应测试建立基线；阶段工作同时核对 `package.json` 中实际存在的 live gate。
-4. 需要 OpenViking 或隔离 Pi 时，按 [`docs/development.md`](./docs/development.md) 使用 `.dev/` 环境。
+4. 需要 OpenViking 或隔离 Pi 时，按 [`docs/v1/development.md`](./docs/v1/development.md) 使用 `.dev/` 环境。
 
 ## 权威事实路径
 
 | 事实                                                   | 维护位置                                                                                 | 验证位置                                            |
 | ------------------------------------------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| 产品职责、目标架构、协议、配置语义、质量边界           | [`docs/spec.md`](./docs/spec.md)                                                         | `docs/verification.md` 定义的证据与阶段 gate        |
-| 阶段划分、每阶段范围与验收、实施状态、下一实施入口     | [`docs/roadmap.md`](./docs/roadmap.md)                                                   | 对应阶段的 deterministic checks 与 live gate        |
-| 证据种类、live verifier 契约、各阶段门禁必须断言的结果 | [`docs/verification.md`](./docs/verification.md)                                         | `test/live/` 的 verifier 与其 summary               |
-| 当前模块职责和数据流                                   | [`docs/design.md`](./docs/design.md)                                                     | 生产代码及对应测试                                  |
-| 观察点契约、记录形状、关联字段、脱敏边界、完成门       | [`docs/observability.md`](./docs/observability.md)                                       | `docs/verification.md`“观察证据”定义的检查          |
-| 开发环境、隔离服务、凭证桥接、调试和安全清理           | [`docs/development.md`](./docs/development.md)                                           | `test/dev-*.test.mjs` 与 `npm run dev -- <command>` |
-| Pi/OpenViking 模型 provider、字段、认证与变更流程     | [`docs/models.md`](./docs/models.md)                                                     | 模型配置聚焦测试、服务状态与真实模型调用            |
-| 最终用户安装、配置、命令和故障排查                     | [`docs/usage.md`](./docs/usage.md)                                                       | CLI、配置和服务管理测试                             |
+| 当前长期记忆扩展的模块定位、战略目标、业务需求与职责边界 | [`docs/design.md`](./docs/design.md) | 对应模块设计、生产代码和集成验证 |
+| v1 产品职责、目标架构、协议、配置语义、质量边界 | [`docs/v1/spec.md`](./docs/v1/spec.md) | `docs/v1/verification.md` 定义的证据与阶段 gate |
+| 阶段划分、每阶段范围与验收、实施状态、下一实施入口     | [`docs/v1/roadmap.md`](./docs/v1/roadmap.md)                                                   | 对应阶段的 deterministic checks 与 live gate        |
+| 证据种类、live verifier 契约、各阶段门禁必须断言的结果 | [`docs/v1/verification.md`](./docs/v1/verification.md)                                         | `test/live/` 的 verifier 与其 summary               |
+| 当前模块职责和数据流                                   | [`docs/v1/design.md`](./docs/v1/design.md)                                                     | 生产代码及对应测试                                  |
+| 观察点契约、记录形状、关联字段、脱敏边界、完成门       | [`docs/v1/observability.md`](./docs/v1/observability.md)                                       | `docs/v1/verification.md`“观察证据”定义的检查          |
+| 开发环境、隔离服务、凭证桥接、调试和安全清理           | [`docs/v1/development.md`](./docs/v1/development.md)                                           | `test/dev-*.test.mjs` 与 `npm run dev -- <command>` |
+| Pi/OpenViking 模型 provider、字段、认证与变更流程     | [`docs/v1/models.md`](./docs/v1/models.md)                                                     | 模型配置聚焦测试、服务状态与真实模型调用            |
+| 最终用户安装、配置、命令和故障排查                     | [`docs/v1/usage.md`](./docs/v1/usage.md)                                                       | CLI、配置和服务管理测试                             |
 | 项目简介和文档入口                                     | [`README.md`](./README.md)                                                               | 本地链接检查与 `npm pack --dry-run`                 |
 | npm 命令、发布文件、Node 和 peer 边界                  | [`package.json`](./package.json)                                                         | `package-lock.json`、npm 命令和打包检查             |
 | Node/Pi 依赖解析                                       | [`package-lock.json`](./package-lock.json)                                               | `npm ci`                                            |
@@ -37,7 +38,7 @@
 
 ## 最小系统心智模型
 
-当前实现的主干是三条协作链路；更完整的职责和数据流见 [`docs/design.md`](./docs/design.md)。
+当前实现的主干是三条协作链路；更完整的职责和数据流见 [`docs/v1/design.md`](./docs/v1/design.md)。
 
 ```text
 Pi JSONL / in-memory entries
@@ -80,12 +81,12 @@ user prompt
 checkpoint manager 经同一 adapter 追加）；`shared/checkpoint-store.mjs` 从已提交 Archive 与追加事实协调 VLM
 消费；`shared/active-context.mjs` 从已消费 checkpoint 固定接管边界并判定 eligibility；`client.ts` 只负责
 OpenViking transport。
-Checkpoint、`ActiveContext` 和上下文接管的当前可用范围由 `docs/roadmap.md` 的实施状态及对应阶段
+Checkpoint、`ActiveContext` 和上下文接管的当前可用范围由 `docs/v1/roadmap.md` 的实施状态及对应阶段
 gate 共同证明；配置字段只表达其权威文档定义的策略。
 
 ## 必须保持的系统保证
 
-以下保证直接保护事实完整性、可用性和安全性；修改相关代码前先回到 `docs/spec.md` 核对完整契约。
+以下保证直接保护事实完整性、可用性和安全性；修改相关代码前先回到 `docs/v1/spec.md` 核对完整契约。
 
 - 持久 Pi JSONL 保持为 Pi 来源事件及 payload 的唯一事实源；同步层只持久化最小 `SyncAck` 并从来源重建待同步内容。
 - 同步覆盖完整 entry tree，包括活动 leaf、祖先和所有 sibling branch；同步进度由已确认的 entry 前沿表达。
@@ -104,23 +105,23 @@ gate 共同证明；配置字段只表达其权威文档定义的策略。
 
 | 任务                                    | 先读                                          | 主要代码                                                                                       | 聚焦验证                                                                       |
 | --------------------------------------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Pi 生命周期、启动、shutdown、状态或命令 | `docs/design.md`、Pi 相关接口                 | `index.ts`、`shared/status-refresh.mjs`、`shared/viking-status.mjs`                            | `test/status-refresh.test.mjs`、`test/viking-status.test.mjs`、相关 live gate  |
-| JSONL、分支或 session 恢复              | `docs/spec.md`“完整记录事件/可靠增量同步”     | `shared/pi-session-source.mjs`、`sync.ts`                                                      | `test/pi-session-runtime.test.mjs`、`test/session-source-ack.test.mjs`         |
-| 事件身份、payload、turn/step            | `docs/spec.md`“完整记录事件”                  | `shared/canonical-json.mjs`、`shared/recorded-event.mjs`                                       | `test/recorded-event.test.mjs`、`test/generated-session-invariants.test.mjs`   |
-| ACK、重放、并发或 fail-open             | `docs/spec.md`“可靠增量同步”                  | `sync.ts`、`shared/sync-ack.mjs`                                                               | `test/sync-manager.test.mjs`、`test/session-source-ack.test.mjs`               |
-| Content API、批次、大对象或冲突         | `docs/spec.md` 存储契约                       | `client.ts`、`shared/content-objects.mjs`、`shared/recorded-event-adapter.mjs`                 | `test/client-content.test.mjs`、`test/content-objects.test.mjs`、`test/recorded-event-adapter.test.mjs` |
-| Archive 身份、边界、提交或 expand       | `docs/spec.md`“Archive 是一个原子对象”         | `shared/archive.mjs`、`shared/archive-store.mjs`、`sync.ts`                                    | `test/archive.test.mjs`、`verify:archive:live`                                 |
-| checkpoint 身份、VLM、重试、恢复或积压 | `docs/spec.md`“Checkpoint 生成与消费状态”       | `shared/checkpoint*.mjs`、`shared/recorded-event*.mjs`、`sync.ts`                               | `test/checkpoint*.test.mjs`、`verify:checkpoint:live`                           |
-| 活动上下文边界、分支复用或容量判定     | `docs/spec.md`“活动上下文与 prompt cache 稳定性” | `shared/active-context.mjs`、`shared/context-weight.mjs`、`sync.ts`、`index.ts`                 | `test/active-context.test.mjs`、`verify:context:live`                           |
-| recall、profile 或 provider context     | `docs/spec.md` 检索/上下文边界                | `recall.ts`、`shared/recall-core.mjs`、`shared/profile-inject.mjs`                             | `test/recall.test.mjs`、阶段 provider payload gate                             |
-| 检索索引、search locator 或事件切片     | `docs/spec.md`“检索与恢复”                     | `shared/retrieval-index.mjs`、`tools.ts`、`sync.ts`                                             | `test/retrieval-index.test.mjs`、`verify:retrieval:live`                        |
-| 观察 registry、sink、脱敏或点位        | `docs/observability.md`                       | `shared/observe.mjs` 与 registry 声明的 owner                                                   | `test/observe.test.mjs`、`test/observability-integration.test.mjs`、observability gate |
-| `viking_*` 工具及 URI 权限              | `docs/usage.md`“会话隔离与数据位置”、“工具”   | `tools.ts`、`lib/uri-guard-adapter.mjs`、`shared/uri-guard.mjs`                                | `test/tools-boundary.test.mjs`                                                 |
-| 配置、用户空间、peer 或凭证解析         | `docs/spec.md`“目标配置”、`docs/usage.md`     | `config.ts`、`shared/config-schema.mjs`、`shared/credentials.mjs`、`shared/workspace-peer.mjs` | `test/config-schema.test.mjs` 及对应新增测试                                   |
-| 最终用户安装和服务管理                  | `docs/usage.md`                               | `scripts/cli.mjs`、`shared/toolchain.mjs`、`shared/managed-server-*.mjs`                       | `test/server-status-cli.test.mjs`、`test/toolchain.test.mjs`、相关 server 测试 |
-| 仓库开发环境和隔离 Pi                   | `docs/development.md`                         | `scripts/dev.mjs`、`dev/model-profile.json`                                                    | `test/dev-bootstrap.test.mjs`、`test/dev-lifecycle.test.mjs`                   |
-| Pi/OpenViking 模型配置与切换             | `docs/models.md`                              | `dev/model-profile.json`、`scripts/dev.mjs`、`shared/openviking-oauth.mjs`                                | 模型配置聚焦测试、`dev status` 与 `dev vlm-probe`                              |
-| live gate、workload 或 artifact         | `docs/verification.md`、`docs/development.md` | `test/live/` 与 `package.json` 中实际存在的 gate                                               | 对应 `verify:<gate>:live` 结果；建设中的 gate 以“真实边界待验证”记录阶段状态  |
+| Pi 生命周期、启动、shutdown、状态或命令 | `docs/v1/design.md`、Pi 相关接口                 | `index.ts`、`shared/status-refresh.mjs`、`shared/viking-status.mjs`                            | `test/status-refresh.test.mjs`、`test/viking-status.test.mjs`、相关 live gate  |
+| JSONL、分支或 session 恢复              | `docs/v1/spec.md`“完整记录事件/可靠增量同步”     | `shared/pi-session-source.mjs`、`sync.ts`                                                      | `test/pi-session-runtime.test.mjs`、`test/session-source-ack.test.mjs`         |
+| 事件身份、payload、turn/step            | `docs/v1/spec.md`“完整记录事件”                  | `shared/canonical-json.mjs`、`shared/recorded-event.mjs`                                       | `test/recorded-event.test.mjs`、`test/generated-session-invariants.test.mjs`   |
+| ACK、重放、并发或 fail-open             | `docs/v1/spec.md`“可靠增量同步”                  | `sync.ts`、`shared/sync-ack.mjs`                                                               | `test/sync-manager.test.mjs`、`test/session-source-ack.test.mjs`               |
+| Content API、批次、大对象或冲突         | `docs/v1/spec.md` 存储契约                       | `client.ts`、`shared/content-objects.mjs`、`shared/recorded-event-adapter.mjs`                 | `test/client-content.test.mjs`、`test/content-objects.test.mjs`、`test/recorded-event-adapter.test.mjs` |
+| Archive 身份、边界、提交或 expand       | `docs/v1/spec.md`“Archive 是一个原子对象”         | `shared/archive.mjs`、`shared/archive-store.mjs`、`sync.ts`                                    | `test/archive.test.mjs`、`verify:archive:live`                                 |
+| checkpoint 身份、VLM、重试、恢复或积压 | `docs/v1/spec.md`“Checkpoint 生成与消费状态”       | `shared/checkpoint*.mjs`、`shared/recorded-event*.mjs`、`sync.ts`                               | `test/checkpoint*.test.mjs`、`verify:checkpoint:live`                           |
+| 活动上下文边界、分支复用或容量判定     | `docs/v1/spec.md`“活动上下文与 prompt cache 稳定性” | `shared/active-context.mjs`、`shared/context-weight.mjs`、`sync.ts`、`index.ts`                 | `test/active-context.test.mjs`、`verify:context:live`                           |
+| recall、profile 或 provider context     | `docs/v1/spec.md` 检索/上下文边界                | `recall.ts`、`shared/recall-core.mjs`、`shared/profile-inject.mjs`                             | `test/recall.test.mjs`、阶段 provider payload gate                             |
+| 检索索引、search locator 或事件切片     | `docs/v1/spec.md`“检索与恢复”                     | `shared/retrieval-index.mjs`、`tools.ts`、`sync.ts`                                             | `test/retrieval-index.test.mjs`、`verify:retrieval:live`                        |
+| 观察 registry、sink、脱敏或点位        | `docs/v1/observability.md`                       | `shared/observe.mjs` 与 registry 声明的 owner                                                   | `test/observe.test.mjs`、`test/observability-integration.test.mjs`、observability gate |
+| `viking_*` 工具及 URI 权限              | `docs/v1/usage.md`“会话隔离与数据位置”、“工具”   | `tools.ts`、`lib/uri-guard-adapter.mjs`、`shared/uri-guard.mjs`                                | `test/tools-boundary.test.mjs`                                                 |
+| 配置、用户空间、peer 或凭证解析         | `docs/v1/spec.md`“目标配置”、`docs/v1/usage.md`     | `config.ts`、`shared/config-schema.mjs`、`shared/credentials.mjs`、`shared/workspace-peer.mjs` | `test/config-schema.test.mjs` 及对应新增测试                                   |
+| 最终用户安装和服务管理                  | `docs/v1/usage.md`                               | `scripts/cli.mjs`、`shared/toolchain.mjs`、`shared/managed-server-*.mjs`                       | `test/server-status-cli.test.mjs`、`test/toolchain.test.mjs`、相关 server 测试 |
+| 仓库开发环境和隔离 Pi                   | `docs/v1/development.md`                         | `scripts/dev.mjs`、`dev/model-profile.json`                                                    | `test/dev-bootstrap.test.mjs`、`test/dev-lifecycle.test.mjs`                   |
+| Pi/OpenViking 模型配置与切换             | `docs/v1/models.md`                              | `dev/model-profile.json`、`scripts/dev.mjs`、`shared/openviking-oauth.mjs`                                | 模型配置聚焦测试、`dev status` 与 `dev vlm-probe`                              |
+| live gate、workload 或 artifact         | `docs/v1/verification.md`、`docs/v1/development.md` | `test/live/` 与 `package.json` 中实际存在的 gate                                               | 对应 `verify:<gate>:live` 结果；建设中的 gate 以“真实边界待验证”记录阶段状态  |
 | 文档                                    | 本表“权威事实路径”                            | 对应维护位置中的文档                                                                           | 链接检查、`git diff --check`、从新维护者视角复核                               |
 
 `shared/` 由本仓库维护，没有外部生成源：直接修改文件并用对应测试验证。其中只保留在本仓库有当前
@@ -136,12 +137,12 @@ npm test
 npm pack --dry-run   # 发布文件、入口或 package 元数据变化时
 ```
 
-`npm test` 提供 deterministic 证据；阶段完成由 `package.json` 已暴露且 `docs/spec.md` 要求的对应 live gate
+`npm test` 提供 deterministic 证据；阶段完成由 `package.json` 已暴露且 `docs/v1/spec.md` 要求的对应 live gate
 提供证据。gate 处于建设中、服务尚待启动或身份仍需匹配时，相应范围记录为“真实边界待验证”。
 
 ## 仓库开发环境
 
-仓库开发只使用 [`docs/development.md`](./docs/development.md) 定义的 `.dev/` 隔离环境：
+仓库开发只使用 [`docs/v1/development.md`](./docs/v1/development.md) 定义的 `.dev/` 隔离环境：
 
 ```bash
 npm run dev -- bootstrap
@@ -158,32 +159,29 @@ npm run dev -- down
 
 ## 文档维护规则
 
-- 产品目标、架构、协议、配置语义或质量边界变化：更新 `docs/spec.md`。
-- 阶段划分、每阶段验收、实施进展或下一入口变化：更新 `docs/roadmap.md`。
-- 证据种类、live verifier 契约或门禁断言变化：更新 `docs/verification.md`。
-- 当前模块职责或数据流变化：更新 `docs/design.md`。
-- 观察点契约、记录形状、脱敏边界或完成门变化：更新 `docs/observability.md`。
-- 开发命令、环境、调试、凭证桥接或清理变化：更新 `docs/development.md`。
-- Pi/OpenViking provider、模型字段、认证方式或变更流程变化：更新 `docs/models.md`。
-- 用户可见安装、配置、行为或排障变化：更新 `docs/usage.md`，必要时同步 `README.md` 的入口说明。
+- 当前长期记忆扩展的模块定位、战略目标、业务需求或职责边界变化：更新 `docs/design.md`。
+- v1 产品职责、协议、配置语义或质量边界变化：更新 `docs/v1/spec.md`。
+- v1 阶段验收、实施进展或下一入口变化：更新 `docs/v1/roadmap.md`。
+- v1 证据种类、live verifier 契约或门禁断言变化：更新 `docs/v1/verification.md`。
+- v1 当前实现职责或数据流变化：更新 `docs/v1/design.md`。
+- v1 观察点、开发环境、模型或用户行为变化：更新 `docs/v1/` 下对应权威文档。
+- 用户可见文档入口变化时同步 `README.md`。
 - 导航、任务路由或本文承担的仓库专属边界变化时更新本文。
 
 ### 文档位置与命名
 
-文档按“消费者能否自动发现”分居两处：
+文档按消费者与版本职责分布：
 
-- **根目录**只放不需要被告知路径就能找到的文件：`README.md`（npm 与 GitHub 自动渲染）、`LICENSE`、
-  `CLAUDE.md` 与 `AGENTS.md`（编码代理按约定读取根目录）。这四个文件沿用大写命名，使其在代码文件
-  中可辨识。
-- **`docs/`** 放其余全部文档，一律小写命名。大写的作用是在代码文件中制造区分度，而 `docs/` 内没有
-  代码文件，该信号没有作用对象。
-- `docs/` 保持扁平。出现需要分组的多份同层文档时再引入子目录。
+- **根目录**只放无需告知路径即可发现的 `README.md`、`LICENSE`、`CLAUDE.md` 与 `AGENTS.md`；
+- **`docs/design.md`** 是当前长期记忆扩展架构总纲；
+- **`docs/v1/`** 保存 v1 实现的规范、设计、验证、开发、模型、使用和观察文档；
+- `docs/` 下所有文档和版本目录使用小写名称。
 
-新增文档仍须满足上文的建档三要件；满足后放入 `docs/`，并在“权威事实路径”表登记维护与验证位置。
+新增文档须具有独立职责、当前消费者和维护验证路径，并在“权威事实路径”表登记。
 
 ### 引用与同步
 
-- 正文引用文档使用仓库根相对路径（`docs/spec.md`），与代码路径的书写方式一致，便于检索。
+- 正文引用文档使用仓库根相对路径（`docs/v1/spec.md`），与代码路径的书写方式一致，便于检索。
 - 代码中的文档引用只写文件路径与小节标题，**不写小节编号**：编号会随文档演进漂移，且静态检查无法
   验证自由文本中的编号。
 - 移动或新增文档时同步以下五处：`package.json` 的 `files`、文档之间的相对链接、本文“权威事实路径”
@@ -210,7 +208,7 @@ npm run dev -- down
 
 ### 行动规范
 
-项目使用统一的行动规范标准，避免按问题位置临时增加零碎日志。运行日志、执行追踪、关联字段、代码放置、启停、安全与完成门的唯一规范是[全局可观测性标准](./docs/observability.md)。
+项目使用统一的行动规范标准，避免按问题位置临时增加零碎日志。运行日志、执行追踪、关联字段、代码放置、启停、安全与完成门的唯一规范是[全局可观测性标准](./docs/v1/observability.md)。
 
 新增、修改或修复功能时，必须同步满足该标准的“完成门”：成功路径与每条降级路径都有符合分类和必带字段的
 点位、附一次真实运行产生的记录、相关测试与该标准“验证”一节的检查同时通过。问题调查先读取实际记录，

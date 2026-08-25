@@ -8,8 +8,8 @@
 完整可信——并找到实际结果最早偏离预期的位置。
 
 **职责边界**：本文定义观察记录的语义、关联、安全、输出和完成条件，不定义产品事实、业务决策或阶段进度。
-持久事实由 Pi JSONL 与产品对象承载，实施进度由 [`docs/roadmap.md`](./roadmap.md) 维护，证据方法与 live gate
-由 [`docs/verification.md`](./verification.md) 维护，调查命令由 [`docs/development.md`](./development.md) 维护。
+持久事实由 Pi JSONL 与产品对象承载，实施进度由 [`docs/v1/roadmap.md`](./roadmap.md) 维护，证据方法与 live gate
+由 [`docs/v1/verification.md`](./verification.md) 维护，调查命令由 [`docs/v1/development.md`](./development.md) 维护。
 
 ## 架构边界
 
@@ -134,7 +134,7 @@ session 结束或 shutdown 再记录最终 `snapshot`。`turn_end` 只有在当�
 
 点位覆盖只从当前产品责任推导，不另建路径矩阵。本文定义语义和推导规则，现行点位明细只保留一份：
 
-1. 当前产品责任来自 `docs/spec.md`；`docs/roadmap.md` 的实施状态排除尚未落地的目标，`docs/design.md` 与生产代码确认
+1. 当前产品责任来自 `docs/v1/spec.md`；`docs/v1/roadmap.md` 的实施状态排除尚未落地的目标，`docs/v1/design.md` 与生产代码确认
    已存在的行为及其责任模块，`AGENTS.md` 只提供导航，不作为观察契约来源；
 2. `shared/observe.mjs` 的 stage registry 是现行点位的唯一机器可读清单；每个 stage 只声明一个 owner、kind、必需/允许
    字段与有限 outcome，调用点和 verifier 都引用该清单，不另写一份 schema；
@@ -208,7 +208,7 @@ reason、accepted/dropped 数量。该状态只服务诊断和验收，任何产
   通知、配置错误和 `/viking` 状态不属于第二套观察点。
 - `ov-observation` Pi entry 只记录注入发生的 provenance（类型、目标 entry、内容 hash 与字符数），是产品事实，不属于本标准；
   实际注入正文不回写 Pi 事件链。
-- `scripts/e2e-probe.ts` 捕获原始 provider payload，是受 `docs/verification.md` 约束的测试证据，不得套用观察记录
+- `scripts/e2e-probe.ts` 捕获原始 provider payload，是受 `docs/v1/verification.md` 约束的测试证据，不得套用观察记录
   schema 或脱敏规则；它与观察实现只能共享无业务语义的私有 JSONL sink 能力。
 - verifier 的 expected/actual/check 结果是断言产物，不是运行过程观察。
 

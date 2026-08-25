@@ -1,6 +1,6 @@
 // 活动上下文：任务模型当前使用的 checkpoint 与 raw-tail 起点。
 //
-// 目标机制见 docs/spec.md 的“活动上下文与 prompt cache 稳定性”。本模块回答三个问题：
+// 目标机制见 docs/v1/spec.md 的“活动上下文与 prompt cache 稳定性”。本模块回答三个问题：
 // 当前分支上应当固定哪一段上下文，这段上下文在 Pi 报告的任务模型容量内是否装得下，
 // 以及接管阶段如何把该段上下文渲染为 Pi context hook 可返回的 provider messages。
 
@@ -32,7 +32,7 @@ export function activeContextFileKey(target, sessionId) {
 }
 
 /**
- * 只接受 `docs/spec.md` 定义的两个字段。
+ * 只接受 `docs/v1/spec.md` 定义的两个字段。
  *
  * 该文件不是事实源：任何无法自证的内容都等价于“没有活动上下文”，随后从 Archive 与
  * checkpoint 事实重新选择，因此这里不抛错、只返回 null。

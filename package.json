@@ -44,14 +44,15 @@
     "scripts/cli.mjs",
     "README.md",
     "AGENTS.md",
-    "docs/spec.md",
-    "docs/roadmap.md",
-    "docs/verification.md",
-    "docs/observability.md",
     "docs/design.md",
-    "docs/development.md",
-    "docs/models.md",
-    "docs/usage.md"
+    "docs/v1/spec.md",
+    "docs/v1/roadmap.md",
+    "docs/v1/verification.md",
+    "docs/v1/observability.md",
+    "docs/v1/design.md",
+    "docs/v1/development.md",
+    "docs/v1/models.md",
+    "docs/v1/usage.md"
   ],
   "dependencies": {
     "undici": "^7"

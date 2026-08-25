@@ -6,7 +6,7 @@
  * （scripts/dev.mjs、scripts/cli.mjs、shared/managed-server-state.mjs）只按
  * credentialKind=oauth + provider 查表，不各自硬编码 provider 细节。上游新增 auth 来源时
  * 在此增加一条注册项；上游能力边界以安装中的 models/vlm/backends/ auth 实现为准。
- * store 位置约定与凭证边界见 docs/models.md 的 Codex OAuth 一节。
+ * store 位置约定与凭证边界见 docs/v1/models.md 的 Codex OAuth 一节。
  */
 import { homedir } from "node:os";
 import { join } from "node:path";

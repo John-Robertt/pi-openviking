@@ -1,344 +1,535 @@
-# 当前实现设计
+# Pi—OpenViking 长期记忆扩展架构总纲
 
 ## 文档职责
 
-**架构定位**：当前代码实际形态的说明。
+本文定义扩展及其功能模块的架构总纲。每个模块以相同章程说明：
 
-**核心目标**：修改代码前先知道“现在的职责边界和数据流是什么”，据此判断改动落在哪个模块。
+- **架构定位**：模块在系统中的存在理由和依赖位置；
+- **核心目标**：模块长期保持不变的战略目标；
+- **业务需求**：实现战略目标必须满足的产品行为；
+- **战术执行**：模块可以自主决定和实施的职责；
+- **职责边界**：模块不得拥有或替代的外部职责。
 
-**职责边界**：本文只描述已经存在的实现，不描述目标形态、阶段路径和验收标准——那些分别由
-[`docs/spec.md`](./spec.md)、[`docs/roadmap.md`](./roadmap.md) 和
-[`docs/verification.md`](./verification.md) 维护。本文不复制 wire/storage 协议，随代码变化更新。
+具体数据结构、接口字段、算法、预算和测试用例由后续模块设计维护，但不得改变本总纲规定的战略目标与责任边界。
 
-## 责任边界
+## 系统战略目标
 
-### `index.ts`
+本扩展依附于 Pi，并使用 OpenViking 的完整历史能力。系统唯一目标是：
 
-- 绑定 Pi 生命周期；
-- 在 `session_start` 初始化会话来源和 ACK，并启动一次会话同步；首个 `context` 或 `session_before_compact` hook 在消费
-  ActiveContext 前等待该同步及当前 Archive 范围的首次 checkpoint 事实扫描收敛，但不等待新的 VLM 生产；普通 UI 启动不等待；
-- 在 `turn_end`、`session_compact`、`session_tree`、`session_info_changed`、`model_select`、`thinking_level_select` 非阻塞调度会话来源检查或同步；
-- `session_shutdown` 仅在 Pi leaf 尚未被最近同步观察时调度最终 snapshot；先停止 checkpoint 后台新调度，既有同步与
-  已在途 checkpoint 共享 500ms grace；到期后取消 transport 并等待取消结果收敛，未确认内容留在 Pi 来源。当前
-  session 只释放自己的观察 producer，进程退出时统一封存观察 run；
-- `before_agent_start` 把 profile block 注入 system prompt 并排队 recall；`context` hook 首次用完整 Pi context usage 判定高水位；
-  provider epoch 建立后复用同一 ActiveContext，用完整来源 `pressure` 判定推进，并用有界 provider `payload` 判定模型容量；
-  recall 在最终 messages 上注入；profile/recall 的实际注入只追加带内容 hash、字符数和目标 entry 的 `ov-observation`
-  provenance，再由同一事件链同步；takeover 本身只进入私有观察记录，不追加 Pi entry；
-- `tool_call` 阻止通用文件与 shell 工具直接处理 `viking://` URI，并引导使用对应 `viking_*` 工具；
-- 在调度同步和接管判定时提供 Pi 报告的任务模型容量、输出预留、system prompt、活动工具定义与当前 context usage；
-- 已建立的 epoch 在 OpenViking 或来源事实暂不可用时，从上次有界投影与当前 Pi messages 的最后一个精确交点追加后缀；
-  完整候选容量不匹配或 checkpoint 超预算时改用 checkpoint/Archive 身份引用；尚无有界投影的真实服务降级由 Pi 的
-  原生上下文管理继续主任务；
-- ActiveContext 容量和渲染复用同一 Pi entry→message 映射；已提交的 checkpoint 后续 Archive 用有界省略说明替代，
-  不产生 provider message 的 custom 状态 entry 保留在来源链中但不计入候选 payload；
-- `session_before_compact` 在 eligible ActiveContext 可读时提供 checkpoint 正文与其 hash、Archive 身份、raw-tail
-  边界；不可用时不返回结果，让 Pi 使用原生 compaction；
-- 不触发 Pi compaction，不构造 Archive。
+> **让任务模型在 Pi 长期会话中经过 compaction 和 branch 变化后，仍能意识到与当前任务相关的历史记忆存在，并在需要精确细节时通过 OpenViking 找回。**
 
-### `shared/observe.mjs`
-
-- 维护唯一 active stage registry、版本化记录与字段白名单；
-- 未请求观察时提供固定 no-op，调用不读取时钟、不序列化、不散列也不分配操作号；
-- 启用时将职责模块提供的既有安全值写入单个私有 JSONL sink；有界队列、schema 或 sink 失败只把观察状态转为
-  `incomplete`；
-- 进程 runtime 拥有 sink 和最终封存，各扩展实例使用 session-scoped producer；producer 固定自己的 session 归属且
-  shutdown 只注销自身，不能关闭同进程其他 session 的 run；非终止会话替换保持 run 开放给新扩展实例，进程终止时
-  由最后一个 producer 在既有 shutdown deadline 内封存；`beforeExit` 只承担兜底；
-- 不读取产品状态，不写 Pi JSONL、ACK 或 OpenViking，也不向任何业务路径提供决策输入。
-
-### `shared/pi-session-source.mjs`
-
-- 解析持久 Pi JSONL，校验 session header、entry ID 和 parent tree；
-- 根据 leaf 恢复活动分支，同时返回完整 entry tree 和 parent map；
-- 持久 session 快照保留是否已产生 assistant entry 的事实，用于识别 Pi 首次写入 JSONL 前的等待状态；
-- 为非持久化 session 在同步触发时分别冻结完整 entry tree 与当前分支，保持触发时刻状态；
-- 同步层处理完整 tree，Archive 只处理当前分支，活动分支不排除 sibling branch 的同步事实。
-
-### `shared/recorded-event.mjs`
-
-- 将 Pi entry/content part 投影为 `RecordedEventV1`；
-- 保留 message envelope、原始 part、错误和终止状态，并从一个 entry 的完整有序事件重建原始 Pi entry；
-- 生成 Pi event/turn/step identity，以及自产 request/failure/checkpoint event identity、parent 关系和内容 hash；
-- 以独立常量维护事件 schema 与 identity 版本，普通依赖升级不改变协议身份；
-- 不清洗、过滤、截断或解释 payload。
-
-### `shared/canonical-json.mjs`
-
-- 校验 JSON 值域；
-- 生成 RFC 8785 规范 JSON 和 UTF-8 字节；
-- 拒绝非有限数字、孤立 surrogate、稀疏数组、循环和非 JSON 类型。
-
-### `shared/content-objects.mjs`
-
-- 维护 OpenViking Content API 的请求限制、批次拆分与目录链准备；
-- 严格核对 `batch-write` 响应形状，并返回按 created/updated/unchanged 分组的 URI；
-- 按显式 `conflict_type` 优先区分不可覆盖的字节冲突与可重试路径占用，字段缺失时才采用 `retryable` 兼容判据；
-- 提供有界且可由 lifecycle signal 中止的 busy 重试，由事件、Archive 和 checkpoint 写入 owner 记录各自降级点位；
-- 不拥有任何收录规则：是否允许 `updated`、用哪种 precondition 由调用方决定。
-
-### `shared/recorded-event-adapter.mjs`
-
-- 将规范事件映射到绑定用户下的 dot-prefixed event files；
-- 处理 direct 或 claim/chunks/commit 表示，并按 event ID 回读校验到规范字节；
-- 独立维护存储身份、claim/commit schema 与路径版本；
-- 以“任何 `updated` 都是既有事件被改写”表达事件命名空间的 append-only 约束；
-- 将冲突、transport failure 和 capability mismatch 返回同步层。
-
-adapter 不读取 Pi session、不持久化 ACK，也不决定 Archive 范围。
-
-### `shared/context-weight.mjs`
-
-- 维护"内容进入任务模型上下文的权重"这一条策略量，供 Archive 压力轴与 `ActiveContext` 容量判定共同使用；
-- 不读取产品状态，也不决定任何边界。
-
-### `shared/archive.mjs`
-
-- 生成 `archiveId`、聚合 `contentHash` 与 manifest 规范字节；
-- 从字节复原 manifest 并要求其自证（复算 `archiveId`、拒绝未知字段与非规范编码）；
-- 按事件自身的上下文权重确定 Archive 边界，并把候选边界退回完整 Pi entry 与 step 之前；
-- 从边界统一构造 manifest、tokenCount 与索引范围，供提交和分支候选链共同使用；
-- 不接触传输，也不持久化任何状态。
-
-### `shared/archive-store.mjs`
-
-- 维护 Archive manifest 的存储位置与身份版本；
-- 提交前逐项回读被引用事件并复算聚合 hash，作为 Archive 的接受证明；
-- 当前分支计划仅追加且 manifest 字节与来源前沿未变时复用本进程已经完成的接受证明；分支/scope 变化、对象缺失或
-  新进程都会失效并重新回读，显式 expand 始终重新证明；
-- 以单个 manifest 对象为唯一提交点，按残留/已提交/冲突三种情形决定写入方式；
-- 按 `archiveId` 确定性读取，并沿事件 `parentId` 链 materialize 与重新验证；
-- 发布 Archive 提交状态；暂时性传输失败只保留待重试并禁止替换 checkpoint 消费范围，完整性冲突只排除对应 Archive；
-- 失败不改变事件与 ACK。
-
-### `shared/checkpoint.mjs`
-
-- 维护 checkpoint、attempt task 及 request/failure/checkpoint 事件的版本化身份和严格解析；failure 只接受代码拥有的稳定分类、错误码与通用消息；
-- 校验并保存唯一的自包含 Working Memory narrative；按 OpenViking 原生章节规范化当前未完成目标、有效事实与决定，
-  并从 Open Issues 形成 Next Action；承载续接状态的三个章节任一退化为占位或容器计数即拒绝消费，记录性章节真实为空仍然可消费；
-  原生模板的整行斜体指引按结构剥离，措辞由服务端拥有因而不进入判据；
-- 构造“上一代统一状态 + 当前 Archive 原始 Pi entries”的更新输入，不重复传输 RecordedEvent 身份、hash 与投影 envelope；
-  内部 `ov-observation` 不进入 VLM 正文；
-  嵌入图片正文只在临时媒体处理边界使用。
-
-### `shared/checkpoint-processor.mjs`
-
-- 使用 OpenViking 公开 Session/Task API 提交或恢复一次 VLM 处理，不接触 VLM 凭证；
-- 将嵌入图片写入 attempt 专属临时 Resource；每个媒体获得非空 abstract 后才把摘要交给 checkpoint 输入，否则保持 pending；
-- 只把 OpenViking task 的明确终态作为成功或失败；网络与进程中断保留 pending，供相同 task 恢复；
-- 对终态 attempt 幂等删除所属 Session 与媒体根，并分别回读确认二者不存在；清理结果不成为产品事实。
-
-### `shared/checkpoint-store.mjs`
-
-- 按当前分支的已提交 Archive 顺序派生未消费范围、积压 Archive/token 与 caught-up/processing/lagging/failed 状态；
-  session 启动以独立只读扫描刷新当前事实，该扫描可与在途 VLM 并行；状态发布代次使并发期间完成的旧扫描重新读取，
-  不得覆盖更新 checkpoint 已发布的状态；SyncManager 再等待对应 ActiveContext 派生更新后解除屏障；
-- 在 VLM 前追加 request，明确失败时追加 failure，成功时追加唯一 checkpoint；回读时验证 Archive、前一 checkpoint、连续 attempt、parent 与无 failure 的完整链，并在并发冲突时采用首个通过该校验的事实；
-- 已验证的 immutable 事实按身份在进程内复用，缺失事实不缓存；处理中轮询只读取 task 状态，Archive 仅在提交输入和终态回读时展开验证；
-- 每个 Archive 最多执行三个确定性 attempt；每次协调调度从 request 事实与全部 Pi 分支可重算的 Archive 链发现一次失效 task，Archive 消费循环不重复穷举，后续只重试已发现的清理义务；
-- 顺序驱动一个在途 Archive；当前分支范围变化时停止尚未开始的旧 checkpoint 写入，并清理其临时 task；
-- 已进入追加事实写入的首写者可以完成，但当前状态只从新范围扫描并派生；
-- 发布失败、落后与恢复通知；失败不改变 raw event、ACK 或 Archive。
-
-### `shared/retrieval-index.mjs`
-
-- 从已提交 Archive 的 raw events 与已验证 checkpoint 投影同一形状的语义记录；每条记录只保留来源类型、Archive/event/checkpoint 身份和最多 32000 code points 的正文；
-- 以 session 与来源身份确定不可变位置；新进程从权威事件链重建，进程内跳过已成功写出的来源，失败不缓存并由下一次同步重试；
-- 把服务端返回的索引文件或派生 face 解析为稳定 locator；不读取公共知识、不决定工具权限，也不成为权威历史；
-- 写入失败只发布降级观察，不改变 ACK、Archive、checkpoint 或接管状态。
-
-### `shared/active-context.mjs`
-
-- 从当前分支上最后一个已消费 checkpoint 选择 `ActiveContext`，并以最小两字段对象原子替换写入本地文件；
-- 同步更新候选事实但保持当前两字段边界；来源边界离开当前分支时失效，高水位接管时只在新候选可渲染、
-  容量适配且持久化成功后原子推进；更新候选仍不适配时保留原边界；
-- 从 raw tail 起点的 `turnId` 重算原始用户指令 anchor，因而 anchor 不是持久化字段；
-- materialize `system + checkpoint + anchor + omitted + raw tail` 候选，段内直接引用不可变来源；`omitted` 固定描述
-  checkpoint 来源之后已提交 Archive 的身份和边界，raw tail 从最后一个省略 Archive 之后开始；
-- 分别计算 provider 可见 `payload` 与完整来源 `pressure`：前者决定容量，后者决定 epoch 推进；完整 checkpoint
-  超出策略预算或使候选超出容量时，provider 只装载 checkpoint/Archive 身份引用，checkpoint 事实保持完整；
-- 用 Pi 报告的任务模型容量与输出预留计算 takeover eligibility，高水位配置不改变容量判定；
-- 用 recorded-event 的逆投影重建原始 entry，并调用 Pi 的 `sessionEntryToContextMessages` 生成 provider messages；
-  ActiveContext 不复制 Pi message 语义；事实暂不可读时由 lifecycle 层延续已建立的有界投影，尚无投影时由 Pi 原生上下文管理接手；
-- 从同一 ActiveContext 生成 Pi compaction summary、first-kept entry 与自证 details，不触发 compaction。
-
-### `shared/task-model-context.mjs`
-
-- 从 Pi lifecycle 读取模型容量、system prompt 和当前活动工具定义；
-- system/tools API 任一缺失或抛错时显式返回 `factsAvailable=false`，空字符串不代表读取成功；
-- 只向 lifecycle 协调层提供事实，不拥有 takeover 策略或状态。
-
-### `shared/state-file.mjs`
-
-- 维护本地最小状态文件的键派生与原子写入：私有目录/文件权限、同目录临时文件 rename、失败不留残件；
-- 由 `SyncAck` 与 `ActiveContext` 共同消费；不拥有任何读路径语义——损坏内容如何处置属于各自模块。
-
-### `shared/sync-ack.mjs`
-
-- 保存最小 `acknowledgedLeaves`；
-- 根据完整 parent map 判断祖先是否已确认；
-- 在分支产生共同祖先或 sibling leaves 时保持最小 frontier；
-- 维护 ACK 文件键的确定性身份版本；
-- 原子替换 ACK 文件。
-
-ACK 文件不包含 transcript 或事件 payload。丢失 ACK 只会触发幂等重放。
-
-### `sync.ts`
-
-`SyncManager` 是唯一协调者：
-
-1. 获取持久 JSONL、等待 Pi 首次持久化，或读取进程内 branch；
-2. 计算当前未确认 entry；
-3. 投影该 entry 的全部事件；
-4. 调用 Content adapter；
-5. 只有全部事件确认后推进 entry ACK；
-6. 分支不再延续上一 leaf 时，在 Archive I/O 前使旧 checkpoint scope 失效；
-7. 以统一 descriptor 规划在当前分支已确认前缀上形成 Archive；暂时性传输失败不提交新的消费范围；
-8. 把当前分支已提交 Archive 交给 checkpoint manager 异步消费，并提供全树 Archive 候选链恢复失效 request 清理；
-9. 从已提交 Archive 写出 raw event 检索记录，并在 checkpoint 事实验证后写出同形状记录；失败只保留下一轮重试；
-10. 在同一轮同步内用当前分支事件、已提交 Archive 与 checkpoint 消费状态推进 `ActiveContext`；checkpoint 状态一经发布便再次收敛，临时 VLM 资源清理不阻塞接管边界；
-11. 发布 source、capability、pending、Archive、checkpoint、活动上下文和 failure 状态。
-
-`SyncManager` 自身只持久化 `SyncAck`，不持久化待发送事件副本；Archive 由来源事件重算。checkpoint manager
-把 request/failure/checkpoint 写成现有 event namespace 内的追加事实，积压与通知状态均从这些事实和当前 Archive 重建，
-没有第二份本地队列状态。
-Archive 只取当前分支：跨 sibling branch 的范围没有对应的上下文。
-
-### `shared/openviking-api.mjs`
-
-- 唯一维护 OpenViking API 版本前缀；
-- 只把职责模块提供的相对路径组合为版本化路径，不拥有 HTTP 方法、payload 或业务决策。
-
-### `client.ts`
-
-- 提供认证、account/user/peer header 和 loopback proxy 隔离；
-- 提供 Content batch-write、raw download、stat、mkdir，以及 checkpoint 使用的 Session/Task transport；
-- 不决定 event identity、ACK 或重放策略。
-
-### `config.ts` 与 `shared/config-schema.mjs`
-
-- `config-schema` 是扩展策略字段的运行时校验器；
-- `config.ts` 合并包内默认值和用户覆盖，再解析外部服务凭证；
-- `managedServer.proxy` 与扩展策略共享 JSONC 文件，但由服务管理模块消费；
-- 未知字段和损坏 JSONC 不静默回退。
-
-### `recall.ts` 与 `shared/recall-core.mjs`
-
-- `RecallManager` 在 `before_agent_start` 收到用户 prompt 时排队检索，同一次 provider 请求的 `context` hook 等待结果并注入消息；
-- 检索 body 只声明意图（coding purpose、session、预算上限），quota 配比、分层降级与跨轮去重留给服务端默认值；
-- 会话内跨轮去重与查询扩展由服务端账本承担，扩展只在显式配置时覆盖；
-- server-assembled context 只消费来源可证明且不属于 `/.pi-openviking` 的 entries；混合结果由安全 entries 重建，
-  只有无来源聚合正文时退回 raw find；raw find 同样先排除内部 namespace；
-- 两条检索路径共用 `docs/spec.md`“检索与恢复”定义的 provider-facing 固定引导，并在每个结果中保留来源 URI；
-- recall 失败不阻塞 prompt：注入被跳过，诊断进入 `/viking`。
-
-### `shared/profile-inject.mjs`
-
-- 在 `session_start` 从 `viking://user/<space>/memories/` 的 profile、preferences、entities 装配 `<user-profile>` 上下文块，供 `before_agent_start` 注入 system prompt；
-- 读取失败时返回空块，不改变 provider 上下文。
-
-### `tools.ts` 与 `lib/uri-guard-adapter.mjs`
-
-- `tools.ts` 对每个输入只构造一次 canonical URI：保留 OpenViking path 字节，仅展开 current-user shorthand，归属判断与 transport 共用该值；所有模式都拒绝非法 URI；
-- Resource API 不能绑定会话用户命名空间，因而隔离模式在请求前拒绝资源导入，非隔离模式按服务身份执行；
-- `uri-guard-adapter` 在 `tool_call` hook 阻止通用文件与 shell 工具直接处理 `viking://` URI，并返回对应 `viking_*` 工具提示；
-- session 隔离关闭时不施加跨用户命名空间边界；所有模式都禁止记忆删除工具修改用户空间中 adapter 独占的 `.pi-openviking` 内部事实；
-- `viking_search` 并行查询公共知识与当前 session 的检索根，过滤未证明的内部对象，把索引 face 转为有界 abstract 和来源 locator；合法越界 scope 夹回绑定根；
-- `viking_archive_expand` 只访问当前会话推导出的 Archive：无 ID 时有界列举，指定 Archive 时分页返回事件索引，
-  指定事件时返回 direct URI 或有界 Unicode code-point 切片；不返回完整 Archive payload。
-
-### `shared/viking-status.mjs` 与 `shared/status-refresh.mjs`
-
-- `viking-status` 维护 `/viking` 命令与页脚的只读诊断视图；
-- `status-refresh` 只拥有 status 刷新的并发与生命周期，状态数据归调用方。
-## 数据流
+三方关系是：
 
 ```text
-Pi JSONL / in-memory branch
-        │
-        ▼
-pi-session-source
-        │ complete entry tree + parent map
-        ▼
-recorded-event
-        │ canonical RecordedEventV1
-        ▼
-recorded-event-adapter ───► content-objects ───► OpenViking Content API
-        │ accepted event IDs
-        ▼
-sync-ack
-        │ acknowledged entry leaves
-        ▼
-archive ──► archive-store ───► content-objects ───► OpenViking Content API
-        │ committed archive descriptors
-        ▼
-checkpoint-store ───► checkpoint-processor ───► OpenViking Session/Task API
-        │                    │ embedded image semantic processing
-        │                    └──────────────────► temporary Content Resource
-        │ request / failure / checkpoint RecordedEventV1
-        ▼
-recorded-event-adapter ────────────────────────► OpenViking Content API
-        ├── committed Archive raw events + verified checkpoint
-        ▼
-retrieval-index ───────────────────────────────► OpenViking Content API ──► viking_search locator
-        │ derived checkpoint/backlog state
-        ▼
-active-context ──► ~/.pi/openviking/active-context/<target-and-session>.json
-        │ checkpoint + raw-tail 边界、候选 payload、takeover eligibility 与 provider messages 渲染
-        ▼
-context hook ──► 首次完整上下文越过高水位时建立 epoch；随后复用 ActiveContext，下一高水位或不可用候选的更新 checkpoint 才推进
-        │
-        └──────► session_before_compact：提供自包含 checkpoint；不可用时由 Pi 原生 compaction 继续
-        ▲
-        │
-user prompt
-        │
-        ▼
-before_agent_start: profile-inject（system prompt）+ recall.queueSearch
-        │
-        ▼
-recall-core ───► OpenViking search API
-        │ recall block（失败时为空，不阻塞 prompt）
-        └────────► context hook: recall.injectRecall（作用于接管或完整上下文的最终 messages）
+Pi summary：我现在在做什么
+Memory Cues：我记得哪些相关事情
+OpenViking：这些事情的完整历史是什么
 ```
-观察链与上述产品链正交：各责任模块在实际 boundary、decision、state 或 failure 处调用固定 no-op/observer，统一写入
-私有 JSONL；该 JSONL 没有返回产品链的依赖边。
 
-## 失败语义
+Pi 是会话与模型上下文的权威，OpenViking 是存储与检索能力的提供者，扩展是二者之间的集成与语义桥。
 
-失败、冲突、重放和可用性边界由 [`docs/spec.md`](./spec.md) 的“准确性与可用性边界”统一定义；
-当前实现不建立第二份规则。
+## 外部责任边界
 
-## 验证
+### Pi
 
-验证证据分类、live gate 契约与阶段出口由 [`docs/verification.md`](./verification.md)
-统一定义；开发环境的安装、运行和清理见 [`docs/development.md`](./development.md)。
-当前 deterministic 自动化入口为：
+Pi 拥有：
 
-- `test/recorded-event.test.mjs`：规范字节、投影、身份和合成 100k+ golden 基线；
-- `test/generated-session-invariants.test.mjs`：版本化 seed、源 entry 重建、树/上下文/ACK 不变量和长工具循环；
-- `test/pi-session-runtime.test.mjs`：真实 Pi `SessionManager` 的持久 JSONL、分支、重启和投影；
-- `test/session-source-ack.test.mjs`：JSONL golden 分支恢复和树形 ACK；
-- `test/content-objects.test.mjs`：协议限制、批次拆分、目录链与 409 分类；
-- `test/recorded-event-adapter.test.mjs`：127/128/129 项、8/16 MiB、冲突和 chunk/commit 边界；
-- `test/archive.test.mjs`：Archive 身份、manifest 自证、边界选择、提交/恢复/冲突与 expand；
-- `test/checkpoint.test.mjs`、`test/checkpoint-processor.test.mjs`：checkpoint 身份/事实链、结构化投影、并发首写、三次重试、恢复清理、媒体失败与 Session/Task 边界；
-- `test/active-context.test.mjs`：活动上下文身份与持久化、候选选择、分支复用与失效、anchor、省略边界、payload/pressure 和引用 fallback；
-- `test/retrieval-index.test.mjs`：索引位置、派生 face locator、有界正文、raw/checkpoint 同形状写入及进程内幂等；
-- `test/tools-boundary.test.mjs`：search scope clamp、内部 face 过滤、来源 locator 与 Archive 分页/切片权限；
-- `test/budget-live-verifier.test.mjs`：发布默认预算、三类 100k+ workload 的三次重复、manifest/hash 与 live 入口；
-- `test/client-content.test.mjs`：HTTP transport；
-- `test/openviking-api.test.mjs`：版本前缀与相对路径组合；
-- `test/sync-manager.test.mjs`：重启、ACK 丢失、分支和 fail-open；
-- `test/config-schema.test.mjs`：唯一配置 schema；
-- `test/package-metadata.test.mjs`：manifest/lock 一致与 peer 最低兼容基线；
-- `test/observe.test.mjs`：registry、记录 schema、关闭零工作、sink 失败和字节一致性；
-- `test/observability-integration.test.mjs`：职责模块接点、脱敏及 fail-open 产品等价性；
-- `test/observation-evidence.test.mjs`、`test/observability-live-verifier.test.mjs`：完整 run 与 manifest 契约；
-- `test/viking-status.test.mjs`：运行诊断。
+- SessionEntry、session tree、branch 和 leaf；
+- entry 到模型消息的映射；
+- system、tools 和 provider payload；
+- 模型能力、上下文计量和 cache usage；
+- compaction 触发、边界、summary 和 `CompactionEntry`；
+- tool result 持久化及文本、图片的 provider 映射。
 
-真实边界由各 live gate 覆盖，各 gate 的断言范围见
-[`docs/verification.md`](./verification.md)。sync、archive、checkpoint、context、takeover、budget、retrieval 与 observability gate 共用
-`test/live/live-support.mjs` 的身份核对、ownership、清理与 summary 骨架；Pi 驱动由需要 lifecycle 的 gate 使用，
-observability gate 的 Pi 观察采集经骨架的 capture 选项接入，checkpoint gate 直接为 Archive/VLM 边界建立同一 schema 的完整 run；
-tool-uri-rejection 与 retrieval 工具循环由 `test/live/scripted-provider.mjs` 的确定性脚本 provider 承担。
+扩展只消费 Pi 已接受和已提交的事实。
+
+### OpenViking
+
+OpenViking 拥有：
+
+- 内容存储；
+- 索引和语义搜索；
+- URI、读取和分页；
+- memory、profile 和 resource；
+- 服务端模型、身份、权限与存储协议。
+
+扩展只调用 OpenViking 对外能力，不复制其内部实现。
+
+## 模块地图
+
+```text
+                         ┌──────────────────────────┐
+                         │ Extension Composition Root│
+                         └─────────────┬────────────┘
+                                       │ Pi lifecycle
+                 ┌─────────────────────┼─────────────────────┐
+                 ▼                     ▼                     ▼
+        Pi Session Source       Fact Synchronization    Memory Cues
+                 │                     │                     │
+                 └──────────────┐      ▼      ┌──────────────┘
+                                │ OpenViking  │
+        Scope Binding ──────────┼── Gateway ──┼──────── Tool Bridge
+                                │             │
+                                └──────┬──────┘
+                                       ▼
+                                  OpenViking
+
+Configuration & Credentials ── supplies validated assembly facts
+Managed Service ─────────────── supplies an optional OpenViking endpoint
+Observation & Status ───────── observes extension-owned integration facts
+```
+
+依赖方向只从编排模块指向边界适配模块。业务模块之间通过明确结果协作，不读取彼此内部状态。
+
+# 核心运行模块
+
+## 1. Extension Composition Root
+
+**架构定位**
+
+Pi 扩展入口和运行时装配层。它连接 Pi 生命周期与各独立模块，不承载领域行为。
+
+**核心目标**
+
+> 按 Pi 已完成的生命周期事实，以确定顺序协调各模块，同时保持 Pi 主任务独立可运行。
+
+**业务需求**
+
+- 扩展加载时完成配置、依赖、工具和生命周期注册；
+- session 启动、turn 完成、compaction、branch 变化和 shutdown 均有明确调度；
+- compaction 后先形成可搜索的历史事实，再建立当前 Memory Cues；
+- session 替换或重载后不复用失效的 Pi 上下文对象；
+- 任一子模块失败不阻断 Pi 主任务。
+
+**战术执行**
+
+- 创建模块实例并注入依赖；
+- 将 Pi lifecycle event 路由给对应模块；
+- 管理启动、取消、串行化和 shutdown 顺序；
+- 汇总模块公开状态供命令和 UI 使用。
+
+**职责边界**
+
+- 不解释 SessionEntry；
+- 不执行存储、搜索或结果排序；
+- 不生成 Memory Cues；
+- 不替换 Pi context 或 compaction；
+- 不保存模块私有业务状态。
+
+## 2. Pi Session Source
+
+**架构定位**
+
+Pi SessionManager 到扩展内部接口的来源适配层。
+
+**核心目标**
+
+> 原样暴露 Pi 已接受的会话事实，使所有下游功能基于同一个 Pi 权威来源运行。
+
+**业务需求**
+
+- 支持持久 session 和 in-memory session；
+- 暴露完整 entry tree、当前 branch、leaf 和 session identity；
+- 生命周期处理使用触发时刻的一致快照；
+- 任意 Pi 已接受字符串、custom entry、compaction entry 和多模态 payload 均可通过；
+- session 重开和 branch 切换后继续使用 Pi 当前事实。
+
+**战术执行**
+
+- 调用 SessionManager 的公开读取接口；
+- 创建触发时刻的只读来源快照；
+- 向同步和 Memory Cues 模块提供所需的 Pi entry、branch 与 summary；
+- 标识来源当前是否持久化。
+
+**职责边界**
+
+- 不重新解析或裁决 Pi session tree；
+- 不拒绝 Pi 已接受的 payload；
+- 不推导扩展自己的 turn、step、role 或 content-part 事实；
+- 不修改 SessionEntry、branch 或 leaf；
+- 不承担 Pi JSONL 的持久化职责。
+
+## 3. Scope Binding
+
+**架构定位**
+
+Pi 身份与 OpenViking 调用范围之间的安全绑定层，由同步、Memory Cues 和工具桥共同使用。
+
+**核心目标**
+
+> 确保每次 OpenViking 操作都绑定正确的用户、workspace、Pi session 和当前 branch 事实。
+
+**业务需求**
+
+- 从当前 Pi runtime 取得不可伪造的 session 与 workspace 身份；
+- 从授权来源取得 OpenViking 用户身份；
+- session-scoped 操作不能由模型参数覆盖当前 session；
+- branch-scoped Memory Cues 只使用当前 branch；
+- 跨 session memory/resource 只通过 OpenViking 明确授权能力访问。
+
+**战术执行**
+
+- 生成不可变的 operation scope；
+- 为 ingestion、search、read 和其他工具请求附加 scope；
+- 在 session 或 branch 变化时更新绑定；
+- 拒绝与当前绑定冲突的调用参数。
+
+**职责边界**
+
+- 不实现 OpenViking 服务端认证与权限；
+- 不决定 OpenViking namespace 结构；
+- 不保存用户凭证正文；
+- 不根据语义相关性扩大访问范围。
+
+## 4. OpenViking Gateway
+
+**架构定位**
+
+所有运行时模块访问 OpenViking 的唯一出站端口。
+
+**核心目标**
+
+> 以稳定、可诊断、可取消的接口消费 OpenViking 对外能力，而不泄漏传输细节给业务模块。
+
+**业务需求**
+
+- 支持 ingestion、search、read、browse、memory/resource 和 health 能力；
+- 所有请求携带 Scope Binding 提供的身份；
+- 响应明确区分成功、服务错误、协议错误、超时和取消；
+- 凭证只在授权进程内存和请求环境中传递；
+- OpenViking 不可用时返回可诊断失败。
+
+**战术执行**
+
+- 映射 OpenViking API 或 MCP 参数；
+- 处理连接、超时、取消和有界重试；
+- 解析公开响应并返回类型稳定的结果；
+- 提供服务健康状态。
+
+**职责边界**
+
+- 不实现 OpenViking 存储、索引、搜索和分页算法；
+- 不重新计算或调整搜索排名；
+- 不创建扩展私有内容协议；
+- 不决定业务重试、同步前沿或 cue 选择。
+
+## 5. Fact Synchronization
+
+**架构定位**
+
+Pi Session Source 到 OpenViking Gateway 的可靠增量交付协调器。
+
+**核心目标**
+
+> 将每个 Pi 已接受的会话事实最终交给 OpenViking，并且任何外部失败都不反向改变 Pi。
+
+**业务需求**
+
+- 同步完整 Pi entry tree，包括当前 branch、祖先和 sibling branch；
+- 一个 Pi entry 作为一个不透明来源事实提交；
+- 只有 OpenViking 明确接受后才推进同步进度；
+- 网络、服务和进程失败后可以从 Pi 来源重放；
+- session 重开、branch 切换和重复提交保持幂等；
+- 同步不阻断 Pi 主任务。
+
+**战术执行**
+
+- 比较 Pi 来源与最小 `SyncFrontier`；
+- 按依赖顺序选择尚未确认的 entries；
+- 通过 Gateway 提交 Pi 来源身份和原 entry；
+- 根据明确接受结果推进并持久化 frontier；
+- 暴露 pending、accepted 和 failure 状态。
+
+**职责边界**
+
+- 不创建 Archive、Checkpoint 或第二套事件语义；
+- 不拆分或重写 Pi payload；
+- 不实现 OpenViking 存储与索引；
+- 不生成 Memory Cues；
+- 不因派生能力失败回退已确认进度。
+
+## 6. Memory Cues
+
+**架构定位**
+
+Pi compaction summary 与 OpenViking 长期历史之间的识别记忆层，是扩展的核心语义功能。
+
+**核心目标**
+
+> 在每次 Pi compaction 后提供少量与当前工作相关的线索，使任务模型意识到“我记得这个”，并能在需要时通过 OpenViking 找回精确细节。
+
+**业务需求**
+
+- 使用当前 branch 的 Pi `CompactionEntry` summary 表达当前工作语义；
+- 只消费 OpenViking 已接受历史的搜索候选；
+- 使用 OpenViking 原有排名，不建立本地索引或重新计算相关性；
+- 只呈现少量自然语言主题线索，不呈现历史正文；
+- 不承诺覆盖全部历史；
+- 没有相关候选时不注入内容；
+- 同一 compaction 周期内 cues 保持稳定；
+- 新 compaction 或 branch 变化后重新选择；
+- cues 不进入下一次 Pi compaction summary。
+
+**战术执行**
+
+- 从 Pi Session Source 取得当前 summary；
+- 通过 Gateway 在当前 Scope Binding 内执行一次相关历史搜索；
+- 按 OpenViking 顺序选择有界候选；
+- 从 OpenViking 已提供的 title、abstract 或等价字段形成 cues；
+- 通过 Pi system-context 扩展点加入当前 cues；
+- 在 provider context 中保持当前周期 cues 不变。
+
+**职责边界**
+
+- 不生成第二份任务 summary；
+- 不复制完整历史、搜索结果正文、URI、entry ID 或分数；
+- 不生成全量主题目录；
+- 不实现检索、重排或内容摘要；
+- 不创建模型可见 conversation entry；
+- 不替换 Pi context、recent tail 或 compaction；
+- 不保证概率模型一定使用某条 cue。
+
+## 7. OpenViking Tool Bridge
+
+**架构定位**
+
+任务模型调用 OpenViking 能力的 Pi 工具适配层。
+
+**核心目标**
+
+> 让任务模型能够沿 Memory Cues 搜索、读取和使用历史来源，并执行明确授权的 OpenViking memory/resource 操作。
+
+**业务需求**
+
+- 提供历史搜索和精确来源读取；
+- 提供 OpenViking browse、remember 和明确对象操作；
+- 每次调用自动绑定当前 Scope Binding；
+- 文本和图片结果能进入 Pi tool result；
+- 大内容遵循 OpenViking 分页或有界读取接口；
+- 破坏性操作只接受精确 canonical URI；
+- 工具失败不阻断 Pi agent loop。
+
+**战术执行**
+
+- 注册薄 Pi 工具定义；
+- 将工具参数转发给 Gateway；
+- 将 OpenViking 文本映射为 Pi `TextContent`；
+- 将 OpenViking 图片映射为 Pi `ImageContent`；
+- 将失败映射为可诊断的 Pi tool result。
+
+**职责边界**
+
+- 不实现 OpenViking 搜索、读取、分页和对象管理；
+- 不根据语义分数自动选择破坏性对象；
+- 不自行解释图片或未知内容；
+- 不临时改写 user/system message；
+- 不主动执行模型未请求的历史恢复。
+
+# 支撑模块
+
+## 8. Configuration & Credentials
+
+**架构定位**
+
+向 Composition Root 提供经过验证的、可移植的运行装配事实。
+
+**核心目标**
+
+> 以最少配置安全地连接 Pi 与 OpenViking，并使同一仓库在不同机器上可重建运行。
+
+**业务需求**
+
+- 配置 schema 有明确默认值并拒绝未知字段；
+- 配置只包含扩展集成策略；
+- 凭证从授权来源进入进程内存，不写入仓库、状态和日志；
+- 路径基于用户空间、workspace 或包位置推导；
+- Memory Cues 只配置有界数量和字符预算；
+- Pi 模型和 compaction 配置继续由 Pi 管理；
+- OpenViking 存储、索引和模型配置继续由 OpenViking 管理。
+
+**战术执行**
+
+- 解析、验证和规范化扩展配置；
+- 解析 endpoint、scope 策略、同步策略和 cue 预算；
+- 在运行时解析凭证引用；
+- 向 Composition Root 输出不可变配置。
+
+**职责边界**
+
+- 不保存凭证值；
+- 不复制 Pi 或 OpenViking 的内部配置 schema；
+- 不根据机器状态静默改变产品语义；
+- 不承载运行时业务流程。
+
+## 9. Managed OpenViking Service
+
+**架构定位**
+
+为需要本地托管的用户提供可选 OpenViking 服务生命周期，不参与记忆语义。
+
+**核心目标**
+
+> 安全、可重建地提供一个可由 Gateway 使用的 OpenViking endpoint。
+
+**业务需求**
+
+- 安装和启动使用声明并固定的工具链；
+- setup、start、status、doctor 和 stop 提供明确结果；
+- 服务配置和数据位于用户可发现的空间；
+- 凭证只通过授权环境和 OpenViking 认证机制传递；
+- stop 和清理必须验证 ownership marker、state、PID 和进程身份；
+- 外部 OpenViking endpoint 可以完全绕过本模块。
+
+**战术执行**
+
+- 管理 OpenViking 工具链、配置和进程；
+- 建立健康检查和状态摘要；
+- 将可用 endpoint 提供给 Composition Root 和 OpenViking Gateway；
+- 执行有 ownership 证明的停止和安全清理。
+
+**职责边界**
+
+- 不读取 Pi session；
+- 不执行同步、cue 选择或工具调用；
+- 不定义 OpenViking 存储和模型语义；
+- 不把机器特定路径带入发布实现；
+- 不管理外部 OpenViking 服务。
+
+## 10. Observation & Status
+
+**架构定位**
+
+扩展自有集成链路的统一运行证据和状态投影层。
+
+**核心目标**
+
+> 让开发者能够定位 Pi—扩展—OpenViking 链路从哪一步开始偏离预期，而不建立第二套业务状态。
+
+**业务需求**
+
+- 同步、cue 选择、工具桥接、scope 和服务连接均有成功与降级点位；
+- 一次操作具有可关联的 session、operation 和阶段字段；
+- 状态只投影当前可执行事实和最近失败；
+- 用户内容、图片 base64、凭证和未脱敏 URI 不进入记录；
+- observation 失败不改变业务结果。
+
+**战术执行**
+
+- 维护唯一 observation registry；
+- 接收各模块的结构化事件；
+- 执行分类、关联、脱敏和 sink 输出；
+- 向 `/viking`、CLI 和 live verifier 提供有界状态摘要。
+
+**职责边界**
+
+- 不复制 Pi 的 context、cache 或 compaction 观察；
+- 不复制 OpenViking 的存储、索引或搜索内部观察；
+- 不保存业务正文；
+- 不生成独立“诊断事实”替代实际运行记录；
+- 不参与业务决策和重试。
+
+# 核心业务链路
+
+## 会话事实同步
+
+```text
+Pi lifecycle
+  → Composition Root
+  → Pi Session Source
+  → Fact Synchronization
+  → Scope Binding
+  → OpenViking Gateway
+  → OpenViking
+  → accepted result
+  → SyncFrontier
+```
+
+## Compaction 后长期记忆线索
+
+```text
+Pi CompactionEntry
+  → Pi Session Source
+  → Fact Synchronization confirms accepted history
+  → Memory Cues queries OpenViking Gateway with current summary
+  → bounded OpenViking candidates
+  → Memory Cues in Pi system context
+```
+
+## 历史细节恢复
+
+```text
+Task model recognizes a Memory Cue
+  → OpenViking Tool Bridge
+  → Scope Binding
+  → OpenViking Gateway
+  → OpenViking search/read
+  → Pi TextContent / ImageContent tool result
+  → Pi native context
+```
+
+## 降级
+
+```text
+any extension/OpenViking failure
+  → Observation & Status
+  → bounded diagnostic result
+  → Pi native context and agent loop continue
+```
+
+# 模块依赖规则
+
+1. Composition Root 只负责装配和时序，不承载模块业务；
+2. Pi Session Source 是所有 Pi 会话事实的唯一扩展入口；
+3. OpenViking Gateway 是所有 OpenViking 运行时调用的唯一出站端口；
+4. Scope Binding 是同步、Memory Cues 和工具调用共享的身份来源；
+5. Fact Synchronization、Memory Cues 和 Tool Bridge 彼此不读取私有状态；
+6. Memory Cues 只消费 Pi summary 与 OpenViking 候选，不消费自建历史投影；
+7. Observation & Status 只接收事件，不反向控制业务模块；
+8. Managed Service 只提供 endpoint，不依赖任何会话业务模块；
+9. Configuration 只向装配层输出事实，不调用运行时业务；
+10. 任何新增模块必须具有独立消费者、独立战略目标和无法由现有模块承担的职责。
+
+# 全局系统保证
+
+- Pi 已接受的 SessionEntry 是唯一会话事实标准；
+- Pi 独立拥有 context、compaction、branch 和模型能力；
+- OpenViking 独立拥有存储、索引、搜索和读取；
+- 一个 Pi entry 对应一个不透明来源事实；
+- OpenViking 明确接受后才推进 SyncFrontier；
+- Memory Cues 只提示少量相关历史存在，不复制详情或构建第二份 summary；
+- Memory Cues 在同一 compaction 周期保持稳定且不进入下一次 compaction；
+- 文本、图片和未知 payload 保持 Pi 已接受语义；
+- 破坏性操作只接受精确 canonical URI；
+- 外部失败不改变 Pi 原生上下文和主任务执行；
+- 凭证不进入仓库、状态、日志、测试输入或 artifact；
+- 统一 observation registry 是扩展运行证据的唯一入口。
+
+# 验证责任
+
+模块验证只证明扩展拥有的接口与协作行为：
+
+- Pi Session Source 证明公开读取和快照适配，不重复验证 Pi 内部实现；
+- Gateway 证明请求与响应适配，不重复验证 OpenViking 内部实现；
+- Fact Synchronization 证明交付、frontier 和重放；
+- Memory Cues 证明候选来源、边界、稳定注入和 fail-open；
+- Tool Bridge 证明 scope、参数、结果类型和精确破坏性边界；
+- Managed Service 证明工具链、ownership 和安全生命周期；
+- Observation 证明点位、关联和脱敏；
+- live gate 证明真实 Pi、扩展与 OpenViking 可以互操作；
+- 任务模型是否采用 cue 与 OpenViking 搜索质量作为运行测量，不作为确定性机制断言。
+
+# 后续设计入口
+
+后续模块设计按本总纲分别确定：
+
+- Pi Session Source 的最小来源接口；
+- Scope Binding 的身份结构；
+- OpenViking Gateway 的公开端口；
+- SyncFrontier 的最小数据结构；
+- Memory Cues 的候选字段、查询、数量、字符预算和呈现格式；
+- Tool Bridge 的工具集合和结果映射；
+- Managed Service 的 ownership 与清理协议；
+- Observation registry 的点位契约；
+- Composition Root 的生命周期时序。
+
+任一详细设计如果需要改变模块的架构定位、核心目标或职责边界，必须回到本总纲重新决策。
