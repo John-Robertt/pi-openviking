@@ -8,8 +8,8 @@
 配置语义和质量边界。
 
 **职责边界**：本文只描述目标系统，全文不含进度、阶段划分和下一步。实施路径与当前位置由
-[`docs/v1/roadmap.md`](./roadmap.md) 维护；证据标准由 [`docs/v1/verification.md`](./verification.md) 维护；
-当前代码的实际结构由 [`docs/v1/design.md`](./design.md) 维护。本文变更只应由架构或产品目标的决定触发。
+[`docs/roadmap.md`](./roadmap.md) 维护；证据标准由 [`docs/verification.md`](./verification.md) 维护；
+当前代码的实际结构由 [`docs/design.md`](./design.md) 维护。本文变更只应由架构或产品目标的决定触发。
 
 ## 产品定位
 
@@ -456,11 +456,11 @@ VLM request 和明确失败是追加式 `RecordedEvent`。summary、索引、通
   provider 请求改用 checkpoint/Archive 身份引用，ActiveContext compaction 保持 Pi 原生实现；
 - `takeover.enabled` 控制任务模型上下文替换，事件记录和 Archive 独立持续运行。
 
-Archive 与 takeover 发布默认预算由端到端预算校准（见 [`docs/v1/roadmap.md`](./roadmap.md)）验证，根据 Archive step
-边界、raw-tail 完整性、真实 provider token 和接管后上下文大小确定。开发和真实验收使用 [`docs/v1/development.md`](./development.md#开发模型身份与凭证桥接)
+Archive 与 takeover 发布默认预算由端到端预算校准（见 [`docs/roadmap.md`](./roadmap.md)）验证，根据 Archive step
+边界、raw-tail 完整性、真实 provider token 和接管后上下文大小确定。开发和真实验收使用 [`docs/development.md`](./development.md#开发模型身份与凭证桥接)
 定义的开发模型组合作为可重复的发布验收基线。对应 live gate manifest/summary 维护基线模型身份、实测阈值、
 结果及适用范围；扩展发布配置维护通过验收的通用预算默认值。VLM 运行时使用服务配置指定的身份，模型身份变更
-遵循 `docs/v1/models.md` 的验证流程并建立对应证据。
+遵循 `docs/models.md` 的验证流程并建立对应证据。
 
 Pi 负责选择当前任务模型，takeover eligibility 读取该模型报告的 `contextWindow` 和 `maxTokens`。
 `contextTokenThreshold=0` 时，首次接管高水位为候选 `headroomTokens`，接管后的 epoch 高水位为

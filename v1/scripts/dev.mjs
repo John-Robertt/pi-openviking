@@ -7,7 +7,7 @@
  * tracked settings are never read and non-credential runtime state stays under
  * .dev/. Model credentials use the user's authorized Pi/OpenViking stores;
  * secrets are referenced or injected, never copied into repository files.
- * See docs/v1/development.md.
+ * See docs/development.md.
  *
  *   npm run dev -- bootstrap|up|down|status|vlm-probe|pi [args...]
  */
@@ -323,7 +323,7 @@ async function bootstrap() {
     if (ready) {
       say(`${label}凭证就绪: ${identity.provider}/${identity.model}`);
     } else {
-      say(`${label}凭证未就绪: ${identity.provider}/${identity.model}；参照 docs/v1/models.md 完成认证。`);
+      say(`${label}凭证未就绪: ${identity.provider}/${identity.model}；参照 docs/models.md 完成认证。`);
     }
   }
 
@@ -584,7 +584,7 @@ async function up() {
       fail(e.message);
     }
   } else if (!openVikingCredentialReady(profile.vlm)) {
-    fail(`OpenViking OAuth 凭证未就绪：参照 docs/v1/models.md 配置 ${profile.vlm.provider}。`);
+    fail(`OpenViking OAuth 凭证未就绪：参照 docs/models.md 配置 ${profile.vlm.provider}。`);
   }
 
   const config = buildDevServerConfig(profile);
@@ -712,7 +712,7 @@ async function status() {
       ["VLM", profile.vlm, openVikingCredentialReady(profile.vlm)],
     ];
     for (const [label, identity, ready] of readiness) {
-      say(`${label}凭证: ${ready ? "ready" : `not ready（参照 docs/v1/models.md 配置 ${identity.provider}）`}`);
+      say(`${label}凭证: ${ready ? "ready" : `not ready（参照 docs/models.md 配置 ${identity.provider}）`}`);
     }
   } else {
     say(`credential: profile 无效（${profileError?.message || "未知错误"}）`);
@@ -826,7 +826,7 @@ async function vlmProbe() {
     fail(`开发服务配置不匹配（${configCheck.reason}），请先 npm run dev -- down，再重新 up。`);
   }
   if (!openVikingCredentialReady(profile.vlm)) {
-    fail(`OpenViking VLM 凭证未就绪：参照 docs/v1/models.md 配置 ${profile.vlm.provider}。`);
+    fail(`OpenViking VLM 凭证未就绪：参照 docs/models.md 配置 ${profile.vlm.provider}。`);
   }
 
   const client = new OVClient({

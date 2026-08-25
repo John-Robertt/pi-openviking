@@ -110,7 +110,7 @@ async function confirm(question) {
 
 async function ensureServerConfig() {
   if (existsSync(OV_CONF)) {
-    say(`服务端配置已存在: ${OV_CONF}（如需修改直接编辑该文件；配置项说明见 docs/v1/usage.md「服务端配置」）`);
+    say(`服务端配置已存在: ${OV_CONF}（如需修改直接编辑该文件；配置项说明见 docs/usage.md「服务端配置」）`);
     return;
   }
   mkdirSync(OV_HOME, { recursive: true });
@@ -122,7 +122,7 @@ async function ensureServerConfig() {
   say("  · 凭证由 OpenViking OAuth store 管理，生成配置声明 provider 与 model");
   say("  · 使用其他 provider 时，编辑该严格 JSON 文件中的 vlm 段");
   say("  · embedding 使用本地 bge-small-zh 模型（约 24MB，首次启动自动下载）");
-  say("  · 全部 provider 示例见 docs/v1/usage.md「服务端配置」与 docs/v1/models.md「OpenViking VLM 配置参考」");
+  say("  · 全部 provider 示例见 docs/usage.md「服务端配置」与 docs/models.md「OpenViking VLM 配置参考」");
   say("");
   if (!(await confirm("Codex CLI 已登录（或已配置其他 VLM provider），继续运行 doctor 验证? [y/N] "))) {
     fail(`请先登录 Codex CLI 或配置 ${OV_CONF} 的 vlm 段，然后重新运行 \`npx pi-openviking@latest setup\`。`);
@@ -484,7 +484,7 @@ async function setup() {
   say("完成。下一步：");
   say("  · 本地模式（默认 127.0.0.1:1933 无认证）无需再配置，直接启动 pi 即可。");
   say("  · 连接远端或需要 API key 时运行: npx pi-openviking@latest credentials");
-  say("  · 验证扩展生效见 docs/v1/usage.md「状态与手动重放」。");
+  say("  · 验证扩展生效见 docs/usage.md「状态与手动重放」。");
 }
 
 async function main() {

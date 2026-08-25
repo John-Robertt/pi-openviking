@@ -7,8 +7,8 @@
 **核心目标**：修改代码前先知道“现在的职责边界和数据流是什么”，据此判断改动落在哪个模块。
 
 **职责边界**：本文只描述已经存在的实现，不描述目标形态、阶段路径和验收标准——那些分别由
-[`docs/v1/spec.md`](./spec.md)、[`docs/v1/roadmap.md`](./roadmap.md) 和
-[`docs/v1/verification.md`](./verification.md) 维护。本文不复制 wire/storage 协议，随代码变化更新。
+[`docs/spec.md`](./spec.md)、[`docs/roadmap.md`](./roadmap.md) 和
+[`docs/verification.md`](./verification.md) 维护。本文不复制 wire/storage 协议，随代码变化更新。
 
 ## 责任边界
 
@@ -229,7 +229,7 @@ Archive 只取当前分支：跨 sibling branch 的范围没有对应的上下�
 - 会话内跨轮去重与查询扩展由服务端账本承担，扩展只在显式配置时覆盖；
 - server-assembled context 只消费来源可证明且不属于 `/.pi-openviking` 的 entries；混合结果由安全 entries 重建，
   只有无来源聚合正文时退回 raw find；raw find 同样先排除内部 namespace；
-- 两条检索路径共用 `docs/v1/spec.md`“检索与恢复”定义的 provider-facing 固定引导，并在每个结果中保留来源 URI；
+- 两条检索路径共用 `docs/spec.md`“检索与恢复”定义的 provider-facing 固定引导，并在每个结果中保留来源 URI；
 - recall 失败不阻塞 prompt：注入被跳过，诊断进入 `/viking`。
 
 ### `shared/profile-inject.mjs`
@@ -306,13 +306,13 @@ recall-core ───► OpenViking search API
 
 ## 失败语义
 
-失败、冲突、重放和可用性边界由 [`docs/v1/spec.md`](./spec.md) 的“准确性与可用性边界”统一定义；
+失败、冲突、重放和可用性边界由 [`docs/spec.md`](./spec.md) 的“准确性与可用性边界”统一定义；
 当前实现不建立第二份规则。
 
 ## 验证
 
-验证证据分类、live gate 契约与阶段出口由 [`docs/v1/verification.md`](./verification.md)
-统一定义；开发环境的安装、运行和清理见 [`docs/v1/development.md`](./development.md)。
+验证证据分类、live gate 契约与阶段出口由 [`docs/verification.md`](./verification.md)
+统一定义；开发环境的安装、运行和清理见 [`docs/development.md`](./development.md)。
 当前 deterministic 自动化入口为：
 
 - `test/recorded-event.test.mjs`：规范字节、投影、身份和合成 100k+ golden 基线；
@@ -338,7 +338,7 @@ recall-core ───► OpenViking search API
 - `test/viking-status.test.mjs`：运行诊断。
 
 真实边界由各 live gate 覆盖，各 gate 的断言范围见
-[`docs/v1/verification.md`](./verification.md)。sync、archive、checkpoint、context、takeover、budget、retrieval 与 observability gate 共用
+[`docs/verification.md`](./verification.md)。sync、archive、checkpoint、context、takeover、budget、retrieval 与 observability gate 共用
 `test/live/live-support.mjs` 的身份核对、ownership、清理与 summary 骨架；Pi 驱动由需要 lifecycle 的 gate 使用，
 observability gate 的 Pi 观察采集经骨架的 capture 选项接入，checkpoint gate 直接为 Archive/VLM 边界建立同一 schema 的完整 run；
 tool-uri-rejection 与 retrieval 工具循环由 `test/live/scripted-provider.mjs` 的确定性脚本 provider 承担。

@@ -172,7 +172,7 @@ export function ensurePython({ home, log = () => {} }) {
   log(`安装托管 Python ${TOOLCHAIN.pythonVersion} → ${paths.pythonDir}`);
   // --no-bin：阻止 uv 向 ~/.local/bin 写 python3.x 链接，保证全部产物收敛在 home。
   if (!runProcess(paths.uvBin, ["python", "install", "--no-bin", TOOLCHAIN.pythonVersion], { env: uvEnv(paths) }).ok) {
-    throw new Error(`托管 Python 安装失败。网络受限时可设置 UV_PYTHON_INSTALL_MIRROR（见 docs/v1/usage.md）后重试。`);
+    throw new Error(`托管 Python 安装失败。网络受限时可设置 UV_PYTHON_INSTALL_MIRROR（见 docs/usage.md）后重试。`);
   }
   return paths;
 }

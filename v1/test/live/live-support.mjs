@@ -109,7 +109,7 @@ export function createRpcLineParser() {
 // Live gate 运行骨架
 //
 // 各 live gate 共享同一套真实边界：Pi 子进程驱动、身份核对、本地/远端
-// ownership、清理与 summary 的契约由 docs/v1/verification.md 统一规定，因此由本模块承担。
+// ownership、清理与 summary 的契约由 docs/verification.md 统一规定，因此由本模块承担。
 // 各 gate 只提供自己的 workload、断言和“本次写入了哪些远端对象”。
 // ---------------------------------------------------------------------------
 
@@ -409,7 +409,7 @@ export async function runPi(ctx, {
       actions,
     };
   } finally {
-    // 先终止可能残存的子进程，再由父进程同步并关闭其保留的 artifact FD（docs/v1/verification.md“观察证据”）。
+    // 先终止可能残存的子进程，再由父进程同步并关闭其保留的 artifact FD（docs/verification.md“观察证据”）。
     if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
     try { fsyncSync(capFd); } finally { closeSync(capFd); }
   }

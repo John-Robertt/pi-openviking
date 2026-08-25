@@ -2,20 +2,20 @@
 
 ## 文档职责
 
-**架构定位**：从当前实现到 [`docs/v1/spec.md`](./spec.md) 所定义目标架构之间的路径与位置。
+**架构定位**：从当前实现到 [`docs/spec.md`](./spec.md) 所定义目标架构之间的路径与位置。
 
 **核心目标**：接手工作的人立即知道三件事——现在在哪、下一步做什么、这一步做完的判定标准是什么。
 
-**职责边界**：本文只描述路径与位置。目标机制和契约引用 `docs/v1/spec.md`，不在此复制；证据标准和门禁
-契约引用 [`docs/v1/verification.md`](./verification.md)，不在此复制；当前代码结构见
-[`docs/v1/design.md`](./design.md)。本文随每次工作推进更新，因而与架构规范分离——使进度变化与架构变化
-在评审中始终可区分。各阶段以所建立的系统保证命名，gate 命名契约见 `docs/v1/verification.md`。
+**职责边界**：本文只描述路径与位置。目标机制和契约引用 `docs/spec.md`，不在此复制；证据标准和门禁
+契约引用 [`docs/verification.md`](./verification.md)，不在此复制；当前代码结构见
+[`docs/design.md`](./design.md)。本文随每次工作推进更新，因而与架构规范分离——使进度变化与架构变化
+在评审中始终可区分。各阶段以所建立的系统保证命名，gate 命名契约见 `docs/verification.md`。
 
 ## 实施状态
 
 **完整记录与可靠同步的出口已关闭。** 事件投影、身份、确认前沿与重放在真实 Pi lifecycle、真实
 `SessionManager` 和受管 OpenViking 上成立：`npm test` 提供 deterministic 证据，`verify:sync:live`
-提供真实边界证据。该门禁断言的范围见 [`docs/v1/verification.md`](./verification.md) 的门禁表；
+提供真实边界证据。该门禁断言的范围见 [`docs/verification.md`](./verification.md) 的门禁表；
 workload、身份与阈值由 `test/live/sync.workloads.json` 及其固定 hash 承载。事件、Archive 与 checkpoint 的 Content 写入
 只对路径占用执行可由 shutdown 中止的有界重试，字节冲突仍立即进入完整性失败。
 
@@ -71,14 +71,14 @@ checkpoint 同形状索引观察、完整脱敏 observation 和 ownership 清理
 每个阶段按同一调查闭环执行：
 
 1. 在实现前建立 manifest，固定阶段成功标准、当前可重现现象、与目标的差距、证伪条件、输入和机器
-   观察点；观察点按 [`docs/v1/observability.md`](./observability.md) 的分类和必带字段声明；
+   观察点；观察点按 [`docs/observability.md`](./observability.md) 的分类和必带字段声明；
 2. 对真实边界运行最小基线探针，用同一标准的观察记录收集足以区分候选机制的证据，把 baseline、
    阈值和预期变化写回 manifest 并固定 hash；原子 Archive 的机制选择必须先完成该调查；
 3. 选择当前主导约束，实施能闭合该约束的最小结构，并先运行聚焦 deterministic checks；
 4. 运行阶段 live verifier，把结果与基线和预期变化逐项比较；结果偏离时回到步骤 1，重新调查并识别
    主导约束；
 5. deterministic checks、live gate、完整 `npm test`、`git diff --check`、文档自检和
-   `docs/v1/observability.md` 的完成门共同通过后关闭阶段出口。
+   `docs/observability.md` 的完成门共同通过后关闭阶段出口。
 
 若某阶段的实现先于其 live gate 存在，则按补建处理：先用独立协议向量和真实探针建立 reference baseline
 并固定 manifest，再实现 verifier；verifier 失败即重新打开对应的实现约束。

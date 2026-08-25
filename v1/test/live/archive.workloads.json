@@ -63,7 +63,7 @@
 
   "pressureSource": {
     "mechanism": "verifier 通过真实 SessionManager 向持久 JSONL 追加确定性 entry：先是一个由 assistant toolCall 与 toolResults 组成的真实多事件 step，再是 pressureEntries 个 custom entry；它们与真实 Pi 轮次一起构成分支事件链。多事件 step 使“边界不拆 step”成为可证伪断言。",
-    "rationale": "Archive 压力轴度量的是事件进入上下文的重量（每 4 字节约 1 token，沿用 Pi 的保守估算），不是一次请求的累计 usage。开发模型身份的 provider 在 RPC 流与持久 JSONL 中报告的 usage 恒为全零（实测），因此以请求累计值作为压力轴在真实边界上不可用；权重度量同时避免把请求总量（含 system prompt 与工具定义）当作事件范围的重量。发布预算的真实 token 校准属于端到端预算校准阶段（见 docs/v1/roadmap.md）。",
+    "rationale": "Archive 压力轴度量的是事件进入上下文的重量（每 4 字节约 1 token，沿用 Pi 的保守估算），不是一次请求的累计 usage。开发模型身份的 provider 在 RPC 流与持久 JSONL 中报告的 usage 恒为全零（实测），因此以请求累计值作为压力轴在真实边界上不可用；权重度量同时避免把请求总量（含 system prompt 与工具定义）当作事件范围的重量。发布预算的真实 token 校准属于端到端预算校准阶段（见 docs/roadmap.md）。",
     "pressureEntries": 3,
     "toolResults": 2,
     "blobChars": 8000
@@ -81,7 +81,7 @@
     "extensionConfig": {
       "path": "<run>/home/.pi/pi-openviking.jsonc",
       "content": { "archive": { "chunkTokenBudget": 1000, "rawTailTokenBudget": 1000 } },
-      "rationale": "Archive 预算是用户策略，发布值由端到端预算校准阶段（见 docs/v1/roadmap.md）确定。本门禁验证机制本身，因此取 schema 允许的最小预算，配合 pressureSource 的确定性注入使真实会话越过归档压力，避免用长对话换取与机制无关的成本。"
+      "rationale": "Archive 预算是用户策略，发布值由端到端预算校准阶段（见 docs/roadmap.md）确定。本门禁验证机制本身，因此取 schema 允许的最小预算，配合 pressureSource 的确定性注入使真实会话越过归档压力，避免用长对话换取与机制无关的成本。"
     },
     "storageUserDerivation": "dev--pi-<sessionId>（config sessionScopedMemory 默认值与 OPENVIKING_USER=dev 的既有语义）",
     "sessionIdDerivation": "每个 workload 一个 randomUUID；启动前以此预计算 namespace 并做存在性检查",

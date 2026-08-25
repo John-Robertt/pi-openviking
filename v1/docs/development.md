@@ -6,9 +6,9 @@
 
 **核心目标**：在任意一台机器上克隆仓库后，能安装依赖、运行隔离服务、进入开发循环并安全清理。
 
-**职责边界**：本文只定义环境本身。产品职责、目标架构和配置语义以 [`docs/v1/spec.md`](./spec.md) 为准，
-阶段顺序与验收以 [`docs/v1/roadmap.md`](./roadmap.md) 为准，当前代码职责见
-[`docs/v1/design.md`](./design.md)，最终用户操作见 [`docs/v1/usage.md`](./usage.md)。本文不复制协议字段、
+**职责边界**：本文只定义环境本身。产品职责、目标架构和配置语义以 [`docs/spec.md`](./spec.md) 为准，
+阶段顺序与验收以 [`docs/roadmap.md`](./roadmap.md) 为准，当前代码职责见
+[`docs/design.md`](./design.md)，最终用户操作见 [`docs/usage.md`](./usage.md)。本文不复制协议字段、
 存储规则或阶段验收标准；精确依赖版本由机器可验证的 lock 与安装常量维护，不在此建立第二份版本清单。
 
 ## 环境边界
@@ -20,7 +20,7 @@
 3. **调得通**：进入隔离 Pi，加载仓库扩展，模型凭证可用。
 
 探针、workload manifest、live verifier、summary 和阶段清理断言的契约由
-[`docs/v1/verification.md`](./verification.md) 定义，其实现消费本文的服务生命周期能力。
+[`docs/verification.md`](./verification.md) 定义，其实现消费本文的服务生命周期能力。
 
 ## 标准流程概览
 
@@ -48,7 +48,7 @@ npm run dev -- pi
 `shared/toolchain.mjs` 的 `TOOLCHAIN` 唯一维护 OpenViking、uv、托管 Python 和 zstandard 的当前
 受管选择；`package.json` 维护 Node 最低版本、npm 依赖与 peer 最低兼容基线。peer 不设置预防性上限：
 当前 lock 记录本仓库安装解析快照，live manifest 记录各 gate 最近一次通过时的证据身份；当前兼容边界、
-运行时身份与历史证据的关系以 [`docs/v1/verification.md`](./verification.md) 为准。`npm test` 先以
+运行时身份与历史证据的关系以 [`docs/verification.md`](./verification.md) 为准。`npm test` 先以
 `tsconfig.json` 对仓库内全部 TypeScript 源执行严格的 `noEmit` 类型检查，再运行 deterministic tests；
 `skipLibCheck` 只跳过声明文件内部检查。
 
@@ -77,10 +77,10 @@ npm run verify:observability:live
 ```
 
 manifest 更新不是版本同步手续。OpenViking 等受管服务变化时，gate preflight 会用真实 `/health` 逐字核对，
-因此新基线必须按 [`docs/v1/roadmap.md`](./roadmap.md)“实施顺序”的调查闭环重新建立。宿主 Pi 则由
+因此新基线必须按 [`docs/roadmap.md`](./roadmap.md)“实施顺序”的调查闭环重新建立。宿主 Pi 则由
 `package.json` 的 peer range 定义当前兼容边界；manifest 继续保留建立历史证据时的 Pi 版本和 CLI 路径，
 summary 记录本次实际解析并启动的 Pi 身份。只有重新执行完整 live gate 并明确采纳新结果时，才改写该历史
-身份和固定 hash。完整规则见 [`docs/v1/verification.md`](./verification.md)。
+身份和固定 hash。完整规则见 [`docs/verification.md`](./verification.md)。
 
 `shared/toolchain.mjs` 中记录特定版本缺陷的注释需要人工判断该缺陷在新版本是否仍然存在，不由检查覆盖；
 缺陷修复后同步移除仅为绕开它而存在的约束与逻辑。
@@ -137,9 +137,9 @@ win32 退化为 marker/状态核对）、状态文件和 marker，并停止完�
 
 凭证解析是服务与 Pi 启动动作的一部分：`dev up` 为 OpenViking VLM 准备凭证，`dev pi` 为任务模型准备凭证；
 本地 embedding 不需要凭证。provider、完整字段矩阵、认证方式、模型枚举和变更步骤统一见
-[`docs/v1/models.md`](./models.md)，本文只维护环境边界。
+[`docs/models.md`](./models.md)，本文只维护环境边界。
 
-[`dev/model-profile.json`](../../dev/model-profile.json) 是开发模型身份的唯一机器事实源，由
+[`dev/model-profile.json`](../dev/model-profile.json) 是开发模型身份的唯一机器事实源，由
 `test/dev-bootstrap.test.mjs` 校验。`taskModel`、`vlm` 和 `embedding.dense` 只由各自消费者读取；字段值
 相等时仍保持独立职责和凭证流。`dev pi` 显式传入 `taskModel` 的 provider/model，并把可选模型集合限制为
 同一身份；命令行不得覆盖这些字段或通过 `--api-key` 绕过 profile。`dev up`、`status`、`dev pi` 和 live
@@ -151,7 +151,7 @@ preflight 同时核对状态指纹、实际 `ov.conf` 与 profile 生成配置�
   继承的全部凭证形态环境变量后，仅向对应子进程的 `apiKeyEnv` 注入值；
 - Pi `credentialKind=oauth`：OAuth 不能降级为 API key，隔离 Pi 的 `auth.json` 只建立对用户 Pi auth store
   的同文件引用；创建前验证来源属于当前用户且权限私有，不复制 token，不覆盖目标已有独立 auth 文件；
-- OpenViking `credentialKind=oauth`：可用 provider 由 [`shared/openviking-oauth.mjs`](../../shared/openviking-oauth.mjs) 注册表承载；`ov.conf` 省略 `api_key`，开发服务 store 固定在 `~/.openviking/pi-openviking-dev/`，从注册项声明的 CLI auth bootstrap，不读取或覆盖上游默认 OpenViking store；
+- OpenViking `credentialKind=oauth`：可用 provider 由 [`shared/openviking-oauth.mjs`](../shared/openviking-oauth.mjs) 注册表承载；`ov.conf` 省略 `api_key`，开发服务 store 固定在 `~/.openviking/pi-openviking-dev/`，从注册项声明的 CLI auth bootstrap，不读取或覆盖上游默认 OpenViking store；
 - readiness 不输出凭证：任务模型使用 `pi auth check`，VLM OAuth 使用锁定 OpenViking 的本地 credential
   probe；任一身份未就绪都停止，不回退到其他 provider、model、账户或 endpoint。
 
@@ -164,7 +164,7 @@ preflight 同时核对状态指纹、实际 `ov.conf` 与 profile 生成配置�
 - `taskModel` 的 provider 或 model 改变；
 - `vlm` 的 provider、model 或 API base 改变；
 - 本地 embedding 的 provider、model 或 dimension 改变；
-- 调用超出本仓库开发与 `docs/v1/roadmap.md` 阶段 gate。
+- 调用超出本仓库开发与 `docs/roadmap.md` 阶段 gate。
 
 ## Pi 扩展开发循环
 
@@ -205,7 +205,7 @@ OV_OBSERVE=test/.artifacts/manual-observation/run.jsonl npm run dev -- pi
 
 文件必须尚不存在；另一种方式由父进程预开 `0600` 空文件并只向子进程继承 `OV_OBSERVE_FD`。两种变量不得同时
 设置。`/viking` 只读显示 `disabled`、`ready` 或 `incomplete` 以及 accepted/dropped；观察失败不改变 Pi、同步或
-recall 结果。记录 schema、脱敏、完整 run 与清理条件只由 [`docs/v1/observability.md`](./observability.md) 定义。
+recall 结果。记录 schema、脱敏、完整 run 与清理条件只由 [`docs/observability.md`](./observability.md) 定义。
 
 `npm run verify:checkpoint:live` 使用真实 Content/Session/Task API 和开发 VLM，覆盖文本、嵌入图片、明确失败后的真实
 VLM 重试、request/task 恢复与双 Archive 积压；配套 deterministic checks 覆盖完整事实链、并发首写、每个 Archive
@@ -236,14 +236,14 @@ pid 与 `server.pid` 一致、进程命令行包含本 run 目录的 `ov.conf`�
 
 任何删除数据的操作（如 namespace 清理）必须满足：路径位于允许根目录、状态
 文件根路径与实际路径完全一致、远端 ownership marker 逐字节回读匹配。阶段 gate 的远端 namespace、
-逐字节回读和 cleanup 断言以 `docs/v1/verification.md` 为权威，本文不复制。
+逐字节回读和 cleanup 断言以 `docs/verification.md` 为权威，本文不复制。
 
 ## 维护规则
 
 - 开发命令变化时，同一变更更新本文；
-- 架构变化先更新 `docs/v1/spec.md`，阶段或验收变化先更新 `docs/v1/roadmap.md`，本文只调整执行方式和引用；
-- 当前代码职责变化时更新 `docs/v1/design.md`；
-- 最终用户安装、配置或排障变化时更新 `docs/v1/usage.md`；
+- 架构变化先更新 `docs/spec.md`，阶段或验收变化先更新 `docs/roadmap.md`，本文只调整执行方式和引用；
+- 当前代码职责变化时更新 `docs/design.md`；
+- 最终用户安装、配置或排障变化时更新 `docs/usage.md`；
 - 本文不保留版本历史、已完成任务流水或单次运行结果；
 - 精确版本只在 manifest、lock、源码身份和安装元数据中维护；
 - 不存在的命令必须标为“待实现”，实现后删除缺口说明，直接描述当前标准流程；

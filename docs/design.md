@@ -176,7 +176,7 @@ PiSnapshot 到 OpenViking Client 的可靠历史交付模块。
 
 - Pi entry 的语义和有效性由 Pi 决定；
 - 内容存储、索引和去重由 OpenViking 决定；
-- 本模块保持 entry payload 完整，不派生 turn、step、role、Archive、Checkpoint 或第二套事件标准；
+- 本模块保持 entry payload 完整，不派生 turn、step、role 或第二套事件标准；
 - Cue Provider 独立消费交付完成结果。
 
 ### 3. Cue Provider
