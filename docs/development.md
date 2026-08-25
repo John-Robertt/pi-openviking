@@ -1,0 +1,111 @@
+# 开发环境
+
+## 文档职责
+
+**架构定位**：本仓库开发环境的权威手册。
+
+**核心目标**：在任意一台机器上克隆仓库后，能安装依赖、获得可用的 OpenViking endpoint、进入隔离 Pi 并
+安全清理。
+
+**职责边界**：本文只定义环境本身及其运行方式。目标架构与模块职责见 [`docs/design.md`](./design.md)，
+阶段顺序与验收见 [`docs/roadmap.md`](./roadmap.md)，证据类型与 live gate 契约见 `docs/verification.md`。
+精确版本由 `package.json`、`package-lock.json` 与 `scripts/toolchain.mjs` 的 `TOOLCHAIN` 维护，本文不建立
+第二份版本清单。
+
+## 环境边界
+
+开发环境只负责三件事：
+
+1. **装得出来**：把固定版本的 uv、托管 Python 与 OpenViking 安装到仓库内 `.dev/toolchain`；
+2. **起得来**：运行与用户服务完全隔离的 OpenViking 开发服务；
+3. **调得通**：进入隔离 Pi，任务模型与服务端模型凭证可用。
+
+## 标准流程
+
+```bash
+npm ci                        # 安装 Node 依赖，含 Pi CLI
+npm run dev -- bootstrap      # 安装受管工具链，幂等，不启动服务
+npm run dev -- up             # 启动隔离 OpenViking 服务
+npm run dev -- status         # 工具链、服务与凭证状态
+npm run dev -- pi             # 进入隔离 Pi，附加参数透传给 pi
+npm run dev -- down           # 停止服务，保留数据
+```
+
+`status` 显示当前 endpoint、进程身份与凭证就绪情况，是环境问题的第一诊断入口。
+
+## 目录与数据边界
+
+```text
+dev/                      # tracked：机器事实
+└── model-profile.json    # 开发与验证的模型身份
+
+.dev/                     # gitignored：全部运行时产物
+├── toolchain/            # 固定 uv、托管 Python、venv
+├── openviking/           # workspace、ov.conf、PID、日志、状态、embedding 缓存
+└── pi/                   # 隔离 PI_CODING_AGENT_DIR
+```
+
+`.dev/` 可整体删除，由 `bootstrap` 与 `up` 重建；重建会重新下载 embedding 模型。凭证不写入上述任一目录。
+
+## 开发模型身份
+
+`dev/model-profile.json` 是模型身份的唯一事实源。三个字段各有独立消费者，字段值相等时仍保持独立职责：
+
+| 字段 | 消费者 | 用途 |
+| --- | --- | --- |
+| `taskModel` | 隔离 Pi | agent loop 的任务模型 |
+| `vlm` | OpenViking 服务端 | 生成语义摘要，即 Memory Cues 的内容来源 |
+| `embedding.dense` | OpenViking 服务端 | 向量索引与语义检索 |
+
+`vlm` 与 `embedding` 是 [`docs/design.md`](./design.md)「外部责任边界」所述部署前提的具体配置：它们写入
+`ov.conf` 由服务端使用，不经过扩展进程。
+
+`dev pi` 显式传入 `taskModel` 的 provider 与 model，并拒绝命令行覆盖——`--provider`、`--model`、
+`--models` 与 `--api-key` 都会被拒绝。
+
+## 凭证边界
+
+两类凭证保持不同路径，都不进入仓库、日志与状态文件：
+
+- **任务模型**（Pi）：OAuth 时隔离 Pi 的 `auth.json` 只建立对用户 Pi auth store 的同文件引用，不复制
+  token；建立前验证来源属于当前用户且权限私有，已存在独立文件时拒绝覆盖。
+- **服务端模型**（OpenViking）：`ov.conf` 不写凭证值；服务进程通过环境变量获得 store 路径与 bootstrap
+  源，provider 注册项见 `scripts/openviking-oauth.mjs`。就绪探测由受管 Python 执行，stdout 不输出凭证。
+
+用户为某个身份完成登录，即构成该身份用于本仓库开发与验证的授权。以下变化需要重新取得用户决定：
+`taskModel` 的 provider 或 model 改变、`vlm` 的 provider、model 或 api base 改变、`embedding` 的 provider、
+model 或 dimension 改变，以及超出本仓库开发与 `docs/roadmap.md` 阶段验证范围的调用。
+
+## 隔离与所有权
+
+开发服务绑定 loopback，使用独立 workspace、`ov.conf`、PID、日志与状态文件，不复用用户 `~/.openviking`
+的数据或进程。
+
+`up` 以随机 nonce 建立 ownership marker 与状态文件。`down` 停止前同时核对三项：marker 与状态的 nonce
+一致、PID 文件与状态一致、进程命令行指向本 run 目录的 `ov.conf`；三项都成立才停止整个进程组，任一项
+不成立时拒绝停止并报告原因。无 marker 的强制清理不属于支持行为。
+
+`down` 只停止进程，不删除数据；环境损坏时删除 `.dev/` 后重新 bootstrap。
+
+隔离 Pi 使用 `PI_CODING_AGENT_DIR=.dev/pi`，session、settings 与扩展全部由它派生，用户 `~/.pi` 的会话
+数据不受影响。
+
+## 扩展开发循环
+
+仓库根目录存在 `index.ts` 时，`dev pi` 在 `.dev/pi/extensions/` 下生成加载它的 wrapper，使 Pi 的
+`/reload` 可用；不存在时跳过生成，并在启动信息中标明扩展状态。
+
+```text
+修改扩展源码 → /reload → 观察 Pi 行为与 .dev/openviking/server.log
+```
+
+`/reload` 先触发 `session_shutdown`，再重载扩展并触发 `session_start`，因此它同时是连接释放与状态重建
+的观察点。交互调试使用持久 session，其 JSONL 位于 `.dev/pi/sessions/`。
+
+## 升级外部版本
+
+- OpenViking、uv、Python：`scripts/toolchain.mjs` 的 `TOOLCHAIN`；
+- Node 下限与 npm 依赖：`package.json` 与 `package-lock.json`。
+
+修改后重新 `bootstrap` 与 `up`，用 `status` 核对实际生效的版本。真实边界的行为变化按
+[`docs/roadmap.md`](./roadmap.md)「阶段执行闭环」重新建立证据。

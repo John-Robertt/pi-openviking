@@ -50,6 +50,9 @@ OpenViking 拥有：
 
 扩展通过 OpenViking 公开的 ingestion、search 和 read 能力完成长期历史写入与恢复。
 
+这些能力有部署前提：语义索引与摘要由 OpenViking 的服务端模型产生，其模型配置与凭证由部署方在服务端提供，
+不经过扩展进程。前提不满足时 search 仍可返回结果标识，但 Memory Cues 缺少可读内容。
+
 ## 最小目标架构
 
 ```text
@@ -195,7 +198,7 @@ Pi compaction summary 与 OpenViking 长期历史之间的最小识别记忆模�
 - 搜索范围只包含 OpenViking 已接受的历史；
 - 每个新的 branch 与 compaction 组合执行一次相关历史搜索；
 - 保持 OpenViking 原有排名；
-- 使用 OpenViking 已提供的 title、abstract 或等价字段；
+- 使用 OpenViking 服务端产生的 title、abstract 或等价字段，不在扩展内生成或改写；
 - 只呈现少量自然语言主题线索；
 - 同一 branch 与 compaction 组合复用同一 `CueSet`；
 - session 重开或扩展重载后，相同 branch 与 compaction 组合继续复用原 `CueSet`；
@@ -299,7 +302,8 @@ OpenViking 服务端继续拥有认证和权限判断；扩展负责确保请求
 - 必要的连接超时与安全上限；
 - 可选 Managed OpenViking Service 的启动配置。
 
-凭证从授权来源进入进程内存。Pi 模型与 compaction 配置由 Pi 管理，OpenViking 存储、索引和模型配置由 OpenViking 管理。
+凭证从授权来源进入进程内存。Pi 模型与 compaction 配置由 Pi 管理；OpenViking 的存储、索引与服务端模型配置
+由 OpenViking 管理，其配置值与模型凭证由部署方提供，不经过扩展进程。
 
 ### Observation
 
@@ -322,7 +326,7 @@ Managed OpenViking Service 是可选部署模块，向需要本地托管的用�
 - 声明并固定工具链；
 - setup、start、status、doctor 和 stop；
 - 用户可发现的配置与数据位置；
-- 授权环境中的凭证传递；
+- 授权环境中的凭证传递，包括 OpenViking 服务端模型所需的凭证；
 - 基于 ownership marker、state、PID 和进程身份的停止与清理证明；
 - OpenViking 官方 readiness 检查。
 
@@ -442,7 +446,7 @@ Pi 宿主、OpenViking 历史能力和 Memory Cues 语义共同定义本项目�
 
 - Pi 已接受的 SessionEntry 是唯一会话事实标准；
 - Pi 独立拥有 context、compaction、branch 和模型能力；
-- OpenViking 独立拥有存储、索引、搜索、读取和服务端权限；
+- OpenViking 独立拥有存储、索引、搜索、读取、服务端模型和权限；
 - 一个 Pi entry 对应一个不透明来源事实；
 - OpenViking 明确接受后才记录交付完成；
 - Memory Cues 只提示少量相关历史存在；

@@ -12,7 +12,8 @@
 
 ## 实施状态
 
-目标架构的实现尚未开始。仓库根目录当前不含实现代码、构建清单与验证入口。
+「运行边界与观察」进行中。开发环境已建立：受管工具链、隔离 OpenViking 服务与隔离 Pi 可重复获得，流程见
+[`docs/development.md`](./development.md)。扩展入口、fail-open 边界、观察 sink 与证据契约尚未建立。
 
 ## 阶段路径
 
@@ -134,6 +135,7 @@
 - session 重开与扩展重载后，相同 branch 与 compaction 继续得到同一 `CueSet`；新的 compaction 或 branch
   变化产生新的搜索与新的 `CueSet`；
 - 候选顺序与 OpenViking 返回顺序一致；候选数量与总字符落在固定上限内；
+- 每条线索的文本非空——服务端摘要缺失时给出可诊断的失败，而不是产出空壳 `CueSet`；
 - `CueSet` 中不含正文、URI、entry ID 与分数；
 - 无相关候选与 OpenViking 失败分别返回空结果，Pi 原生上下文与 agent loop 继续，失败在状态查询中可诊断。
 
@@ -158,7 +160,8 @@
 
 **系统保证**：需要本地托管的用户可以安全、可重建地获得 OpenViking endpoint。
 
-本阶段不进入核心链路顺序。核心链路各阶段所需的 endpoint 由开发环境提供，见 `docs/development.md`。
+本阶段不进入核心链路顺序。核心链路各阶段所需的 endpoint 由开发环境提供，见
+[`docs/development.md`](./development.md)。
 
 **交付**
 
@@ -189,13 +192,11 @@
 
 ## 下一实施入口
 
-运行边界与观察尚未开始。当前主导约束是：目标架构还没有任何可在真实 Pi 上运行并被观察的实现，因此后续
-每个阶段的实践与观察都无处落地。
+开发环境已就绪。当前主导约束是：扩展尚未在真实 Pi 中加载，因此 fail-open 边界与观察链路都还没有落点。
 
-第一个动作按以下顺序执行：
+后续动作按以下顺序执行：
 
-1. 在 `docs/development.md` 固定开发环境与开发循环，使真实 Pi 与一个可用 OpenViking endpoint 可重复获得；
-2. 建立最小 `package.json`、构建配置、扩展入口、Composition Root 与 fail-open 边界，在真实 Pi 上完成一次
-   加载、会话与 shutdown；
-3. 接入结构化 observation，使上一步产生第一份可关联的运行证据；
-4. 在 `docs/verification.md` 固定证据类型与 live gate 契约，并按其建立本阶段的验证入口。
+1. 建立扩展入口、构建配置、Composition Root 与 fail-open 边界，用 `npm run dev -- pi` 在真实 Pi 上完成
+   一次加载、会话与 shutdown；
+2. 接入结构化 observation，使上一步产生第一份可关联的运行证据；
+3. 在 `docs/verification.md` 固定证据类型与 live gate 契约，并按其建立本阶段的验证入口。

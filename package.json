@@ -1,0 +1,17 @@
+{
+  "name": "pi-openviking",
+  "version": "0.5.0",
+  "description": "Pi extension that surfaces long-term memory cues after compaction and recovers detail from OpenViking.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.2"
+  }
+}
