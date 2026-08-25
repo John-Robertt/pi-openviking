@@ -1,6 +1,6 @@
 // session-scoped 模式下 viking_* 工具的命名空间边界。
 //
-// 覆盖 AGENTS.md 的保证：所有接收或返回 viking:// URI 的工具执行都绑定用户与会话
+// 覆盖 docs/v1/spec.md 的保证：所有接收或返回 viking:// URI 的工具执行都绑定用户与会话
 // 边界校验。用真实 registerTools 与 OVClient 对本地服务器执行，断言工具的判定结果
 // 和它实际发出的请求——破坏性操作必须在越界时不发出请求。
 import assert from "node:assert/strict";

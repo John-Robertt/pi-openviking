@@ -135,7 +135,7 @@ session 结束或 shutdown 再记录最终 `snapshot`。`turn_end` 只有在当�
 点位覆盖只从当前产品责任推导，不另建路径矩阵。本文定义语义和推导规则，现行点位明细只保留一份：
 
 1. 当前产品责任来自 `docs/v1/spec.md`；`docs/v1/roadmap.md` 的实施状态排除尚未落地的目标，`docs/v1/design.md` 与生产代码确认
-   已存在的行为及其责任模块，`AGENTS.md` 只提供导航，不作为观察契约来源；
+   已存在的行为及其责任模块，`AGENTS.md` 只提供编码代理工作指引，不作为观察契约来源；
 2. `shared/observe.mjs` 的 stage registry 是现行点位的唯一机器可读清单；每个 stage 只声明一个 owner、kind、必需/允许
    字段与有限 outcome，调用点和 verifier 都引用该清单，不另写一份 schema；
 3. `verify:observability:live` 的当前 manifest 引用 registry 中全部现行 stage：稳定经过真实产品边界的 stage 由 workload

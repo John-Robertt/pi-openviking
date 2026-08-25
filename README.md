@@ -129,12 +129,14 @@ shared/pi-session-source.mjs 持久 Pi JSONL 分支恢复
 shared/sync-ack.mjs          最小 ACK frontier
 scripts/cli.mjs              安装与服务管理 CLI
 docs/design.md                 当前长期记忆扩展架构总纲
+docs/documentation.md          文档规划与格式规范
 docs/v1/                      v1 实现规范、设计、开发和使用文档
 ```
 
 ## 文档
 
 - [`docs/design.md`](./docs/design.md)：当前长期记忆扩展的模块化架构总纲；
+- [`docs/documentation.md`](./docs/documentation.md)：文档清单、职责格式、路径、引用和发布规则；
 - [`docs/v1/spec.md`](./docs/v1/spec.md)：v1 产品职责、协议和配置语义；
 - [`docs/v1/roadmap.md`](./docs/v1/roadmap.md)：v1 阶段状态和实施入口；
 - [`docs/v1/design.md`](./docs/v1/design.md)：v1 实现职责与数据流；
@@ -143,7 +145,7 @@ docs/v1/                      v1 实现规范、设计、开发和使用文档
 - [`docs/v1/models.md`](./docs/v1/models.md)：Pi/OpenViking 模型、认证和变更流程；
 - [`docs/v1/usage.md`](./docs/v1/usage.md)：安装、配置和故障排查；
 - [`docs/v1/observability.md`](./docs/v1/observability.md)：观察点契约、记录形状与脱敏边界。
-- [`AGENTS.md`](./AGENTS.md)：给编码代理的地图——需要答案时去哪里找。
+- [`AGENTS.md`](./AGENTS.md)：编码代理的仓库工作指引。
 
 ## 许可证
 
