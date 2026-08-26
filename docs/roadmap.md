@@ -196,11 +196,12 @@ Pi 可重复获得，流程见 [`docs/development.md`](./development.md)；证�
 
 ## 下一实施入口
 
-当前主导约束是：扩展尚未在真实 Pi 中加载，因此扩展入口、fail-open 边界与观察 sink 都还没有落点。
+当前主导约束是：扩展已在真实 Pi 完成加载、会话与 shutdown，fail-open 边界已有落点，但注册点链路的
+失败只有 stderr 诊断，还没有可关联的结构化运行证据。
 
 后续动作按以下顺序执行：
 
-1. 建立扩展入口、构建配置、Composition Root 与 fail-open 边界，用 `npm run dev -- pi` 在真实 Pi 上完成
-   一次加载、会话与 shutdown；
-2. 接入结构化 observation，使上一步产生第一份可关联的运行证据；
-3. 按 [`docs/verification.md`](./verification.md) 的证据类型与测试组织建立本阶段的验证入口。
+1. 接入结构化 observation，使一次真实运行产生第一份可关联证据；observation sink 的配置解析是
+   `docs/design.md`「Configuration & Credentials」责任的第一个消费者；本步同时验收「TUI 模式下扩展链路
+   失败可见」——guard 的 stderr 通道在 TUI 渲染接管下的可达性尚未由真实运行确认；
+2. 按 [`docs/verification.md`](./verification.md) 的证据类型与测试组织建立本阶段的验证入口。
