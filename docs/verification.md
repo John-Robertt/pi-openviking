@@ -63,8 +63,8 @@ test/
 
 - **身份先行**：运行前核对 Pi 版本与 CLI、OpenViking 版本与 endpoint、模型身份；任一项不符时明确拒绝
   运行，不降级到其他 provider、账户或 endpoint；
-- **manifest 固定**：workload、seed、成功标准、证伪条件与阈值写入 `<gate>/workloads.json` 并固定其 hash，
-  运行时不可临时改变；阈值由基线探针的实测结果确定；
+- **manifest 固定**：workload、seed、输入与观察点、成功标准、预期变化、证伪条件与阈值写入
+  `<gate>/workloads.json` 并固定其 hash，运行时不可临时改变；baseline 与阈值由基线探针的实测结果确定；
 - **隔离运行**：使用 `docs/development.md` 提供的隔离服务与随机测试 namespace，不触碰用户数据；凭证只从
   环境读取，不写入输入、artifact 或 summary；
 - **所有权证明**：远端写入前确认 namespace 不存在，写入含 run ID 与随机 nonce 的 ownership marker 并逐

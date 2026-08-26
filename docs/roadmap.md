@@ -13,15 +13,15 @@
 
 ## 实施状态
 
-「运行边界与观察」进行中。开发环境与证据标准已建立：受管工具链、隔离 OpenViking 服务与隔离 Pi 可重复
-获得，流程见 [`docs/development.md`](./development.md)；证据类型、测试组织与 gate 契约见
-[`docs/verification.md`](./verification.md)。扩展入口、fail-open 边界与观察 sink 尚未建立。
+「运行边界与观察」进行中，尚无阶段出口关闭。该阶段已建立的部分：受管工具链、隔离 OpenViking 服务与隔离
+Pi 可重复获得，流程见 [`docs/development.md`](./development.md)；证据类型、测试组织与 gate 契约见
+[`docs/verification.md`](./verification.md)。当前主导约束与下一步动作见「下一实施入口」。
 
 ## 阶段路径
 
 每个阶段以它建立的系统能力命名，落地 `docs/design.md` 中一个模块的完整责任或该模块的一部分责任。阶段只
 消费已通过验收的上游结果；模块的架构定位、核心目标、业务需求与职责边界由 `docs/design.md` 维护，阶段不
-重新定义。
+重新定义。各阶段的「系统保证」是 `docs/design.md`「全局系统保证」在该阶段的切片，随后者变化同步核对。
 
 顺序由依赖决定：运行边界与观察是横切能力，先于其余阶段建立并被它们共同消费；Pi Adapter 是唯一 Pi 边界，
 先建立快照；OpenViking Client 是唯一出站端口，其真实调用语义决定同步机制；同步产生已接受历史，是 cue 与
@@ -182,9 +182,10 @@
 
 每个阶段的实现依据由真实运行结果建立，并按同一循环执行：
 
-1. 建立阶段 manifest，固定成功标准、当前可重现现象、与目标的差距、证伪条件、输入与观察点；
-2. 对真实边界运行最小基线探针，用观察记录收集足以区分候选机制的证据，把 baseline、阈值与预期变化写回
-   manifest 并固定其 hash；
+1. 记录当前可重现现象与目标差距，并建立阶段 manifest；manifest 的字段与 hash 要求见
+   [`docs/verification.md`](./verification.md)「live gate 契约」；
+2. 对真实边界运行最小基线探针，用观察记录收集足以区分候选机制的证据，把实测 baseline 与预期变化写回
+   manifest；
 3. 选择当前主导约束，实现能闭合该约束的最小结构，先运行聚焦 deterministic checks；
 4. 运行阶段 live gate，把结果与 baseline 和预期变化逐项比较；结果偏离预期时回到第 1 步重新调查并重新
    识别主导约束；
@@ -195,7 +196,7 @@
 
 ## 下一实施入口
 
-开发环境已就绪。当前主导约束是：扩展尚未在真实 Pi 中加载，因此 fail-open 边界与观察链路都还没有落点。
+当前主导约束是：扩展尚未在真实 Pi 中加载，因此扩展入口、fail-open 边界与观察 sink 都还没有落点。
 
 后续动作按以下顺序执行：
 

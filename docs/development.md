@@ -108,8 +108,9 @@ model 或 dimension 改变，以及超出本仓库开发与 `docs/roadmap.md` �
 
 ## 扩展开发循环
 
-仓库根目录存在 `index.ts` 时，`dev pi` 在 `.dev/pi/extensions/` 下生成加载它的 wrapper，使 Pi 的
-`/reload` 可用；不存在时跳过生成，并在启动信息中标明扩展状态。
+扩展入口 `src/index.ts`（见 [`docs/design.md`](./design.md)「源码组织」）存在时，`dev pi` 在
+`.dev/pi/extensions/` 下生成加载它的 wrapper，使 Pi 的 `/reload` 可用；不存在时跳过生成，并在启动信息中
+标明扩展状态。
 
 ```text
 修改扩展源码 → /reload → 观察 Pi 行为与 .dev/openviking/server.log
