@@ -94,7 +94,10 @@ function setupAgentDir() {
 const SKIP_WORKLOADS = Symbol("skip-workloads");
 const assertions = [];
 const assert = (name, expected, actual, pass) => {
-  assertions.push({ name, expected, actual, pass });
+  const record = { name, expected, actual, pass };
+  // 数值比较自动补 delta（docs/verification.md「summary 可对照」）。
+  if (typeof expected === "number" && typeof actual === "number") record.delta = actual - expected;
+  assertions.push(record);
   return pass;
 };
 const evidence = {};

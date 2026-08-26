@@ -145,7 +145,9 @@ export function createObserver(spec: { file: string } | null): Observer {
     get failure() {
       return failure;
     },
-    now: () => Date.now(),
+    // 单调时钟：Date.now() 受 NTP 回拨影响会产生负 durationMs 并触发误降级；
+    // 「Compaction 记忆线索」阶段的重叠测量也要求单调时钟（docs/verification.md）。
+    now: () => performance.now(),
     record(event: ObservationEvent): void {
       if (status !== "active") return;
       try {
