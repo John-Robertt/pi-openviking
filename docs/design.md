@@ -195,9 +195,7 @@ Pi 已接受的来源 entries 到 OpenViking Client 的可靠历史交付模块�
 > Pi 开始压缩前，Cue Provider 用“上一份 `CueSet` + 后来成功保存的新 entries”生成下一份 `CueSet`。
 > Cue 生成与 Pi 压缩同时进行；模型只看到简短线索，需要细节时再读取 OpenViking。
 
-例如，上一份 `CueSet` 已经用到 entry `e4`。压缩开始时，OpenViking 已保存 `e5`、`e6`、`e7`，`e8` 仍在等待。
-本次只用 `e5` 到 `e7` 更新线索，并把 `e7` 记为“已经用到的最后一条 entry”。以后 `e8` 保存成功，下一份
-`CueSet` 就从 `e8` 继续。本次生成失败时，上一份 `CueSet` 仍停在 `e4`，下次不会漏掉 `e5`。
+例如，上一份 `CueSet` 已经用到 entry `e4`。压缩开始时，OpenViking 已保存 `e5`、`e6`、`e7`，`e8` 仍在等待。cue 任务先用 deadline 内的有界子预算等待 `e8` 保存：`e8` 及时保存则本次覆盖 `e5` 到 `e8`，并把 `e8` 记为“已经用到的最后一条 entry”；子预算用完时 `e8` 仍未保存，本次只用 `e5` 到 `e7` 更新线索，`e8` 顺延到下一份 `CueSet`。本次生成失败时，上一份 `CueSet` 仍停在 `e4`，下次不会漏掉 `e5`。
 
 **业务需求**
 
@@ -205,6 +203,7 @@ Pi 已接受的来源 entries 到 OpenViking Client 的可靠历史交付模块�
 - 第一次生成使用 session 开始后已保存的 entries；以后每次从上一份 `CueSet` 已经用到的最后一条 entry 之后继续；
 - `session_before_compact` 启动 cue 任务后立即返回，让 Pi 压缩与 cue 生成同时进行；
 - `session_compact` 只等待 cue deadline 尚未用完的时间；
+- cue 任务在生成前用 cue deadline 内的有界子预算等待待保存的 entries；子预算耗尽后仍未保存的 entries 不进本次快照，顺延到下一份 `CueSet`；
 - 每条线索只写事件时间或区间、用于识别事件的短句，以及以后找到完整事实所需的信息；
 - 新 `CueSet` 同时保存线索和本次已经用到的最后一条 Pi entry；
 - 线索数量和总字符数使用固定上限，任务模型结合当前上下文决定使用哪些线索；
@@ -216,8 +215,10 @@ Pi 已接受的来源 entries 到 OpenViking Client 的可靠历史交付模块�
 ```text
 session_before_compact
   → previous CueSet + entries saved after its last-used entry
-  → start cue generation and return
-  → Pi compaction || cue generation
+  → start cue task and return
+  → cue task: wait for pending entries within a bounded share of the deadline,
+    then generate from the entries saved by that moment
+  → Pi compaction || cue task
 session_compact
   → wait only for the time left before the cue deadline
   → confirm the saved entries, runtime and Pi path are still valid
@@ -229,7 +230,7 @@ context
 Pi session tree 保存整个 `CueSet`：简短线索供模型使用，“已经用到的最后一条 Pi entry”供下一次生成使用。Pi Adapter
 只把线索临时加入普通 provider 请求；`CueSet` custom entry 不会变成 conversation message，也不会进入下一次 compaction。
 
-数量、总字符和 deadline 使用固定保守上限；出现需要运行时调整的明确消费者后，再将对应上限纳入配置。
+数量、总字符、deadline 与同步等待子预算使用固定保守上限；出现需要运行时调整的明确消费者后，再将对应上限纳入配置。
 
 **职责边界**
 
