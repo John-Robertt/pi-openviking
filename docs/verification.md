@@ -26,6 +26,9 @@
 覆盖的逻辑不放进 live gate——真实边界运行成本高、可重复性弱，只承担它独有的部分。
 
 `docs/design.md`「验证责任」列出的运行测量作为观察结果记录，不构成确定性断言。
+要证明两件事确实同时执行，同一次运行必须用单调时钟记录各自的开始和结束时间，并检查两个时间区间是否重叠。
+要知道扩展增加了多少时间，先运行相同身份、相同 workload 的基线，再与目标运行比较；允许的差值写在对应 live
+gate manifest 中。
 
 ## 测试组织
 
@@ -59,12 +62,16 @@ test/
 
 ## live gate 契约
 
-每条系统保证交付一个 live gate，以它验证的保证命名。全部 gate 遵守同一契约：
+需要真实 Pi 或 OpenViking 语义、时序或失败模式才能证明的系统保证交付 live gate；其余保证使用 deterministic
+证据。每个 live gate 以它验证的保证命名，并遵守同一契约：
 
-- **身份先行**：运行前核对 Pi 版本与 CLI、OpenViking 版本与 endpoint、模型身份；任一项不符时明确拒绝
-  运行，不降级到其他 provider、账户或 endpoint；
+- **身份先行**：运行前列出 workload 实际接触的外部边界并逐一核对身份；Pi 边界核对版本与 CLI，OpenViking
+  边界核对版本与 endpoint，发生模型调用时核对 provider 与 model。只接触 Pi 的 gate 不要求 OpenViking 就绪；任一
+  所需身份不符时明确拒绝运行，不降级到其他 provider、账户或 endpoint；
 - **manifest 固定**：workload、seed、输入与观察点、成功标准、预期变化、证伪条件与阈值写入
   `<gate>/workloads.json` 并固定其 hash，运行时不可临时改变；baseline 与阈值由基线探针的实测结果确定；
+- **有界执行**：manifest 为每个进程、外部请求和等待点声明 timeout 与取消方式；超时形成明确失败并进入同一清理
+  路径，gate 不依赖 Pi 为 extension factory、callback 或工具提供超时；
 - **隔离运行**：使用 `docs/development.md` 提供的隔离服务与随机测试 namespace，不触碰用户数据；凭证只从
   环境读取，不写入输入、artifact 或 summary；
 - **所有权证明**：远端写入前确认 namespace 不存在，写入含 run ID 与随机 nonce 的 ownership marker 并逐

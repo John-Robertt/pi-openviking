@@ -13,9 +13,10 @@
 
 ## 实施状态
 
-「运行边界与观察」出口已关闭：扩展在真实 Pi 完成加载、会话与 shutdown；fail-open 边界、结构化
-observation 与 config 首个消费者（观察请求）已落地；deterministic 测试与 run-boundary live gate 全部
-通过。当前阶段为「Pi 原生记忆接入」，主导约束与下一步动作见「下一实施入口」。
+当前阶段为「运行边界与观察」。现有实现已经具备真实 Pi 加载、session lifecycle、结构化 observation 与配置入口；
+阶段出口还要求 Composition Root 原子启用运行实例、Pi callback 保留宿主原生错误路径并只做有界本地工作、observer
+sink 不延长产品 callback。Pi 原生记忆接入所需的 tree、context 与 compaction 边界事实已经由真实探针确认，在本阶段
+出口关闭后进入实现。
 
 ## 阶段路径
 
@@ -30,41 +31,39 @@ observation 与 config 首个消费者（观察请求）已落地；deterministi
 
 | 阶段 | 建立的系统保证 | 落地的模块责任 |
 | --- | --- | --- |
-| 运行边界与观察 | 扩展失败不影响 Pi 主任务，每次运行留下可关联证据 | Observation、Configuration & Credentials、Composition Root |
+| 运行边界与观察 | 扩展运行实例原子启用，Pi callback 与诊断 sink 不阻塞主任务，每次运行留下可关联证据 | Observation、Configuration & Credentials、Composition Root |
 | Pi 原生记忆接入 | 来源事实与 Memory Cues 复用 Pi 原生 session tree 和 context 语义 | Pi Adapter（entries、compaction、context） |
 | OpenViking 出站端口 | ingest/search/read 通过窄接口完成，每次调用绑定不可变范围 | OpenViking Client、`OperationScope` |
 | 会话事实同步 | 每个 Pi 已接受事实最终被 OpenViking 接受且可重放 | Fact Synchronizer |
-| Compaction 记忆线索 | compaction 后模型上下文出现少量稳定的相关历史线索 | Cue Provider、Pi Adapter（custom entry 与 context） |
+| Compaction 记忆线索 | compaction 期间用上一份线索和新保存的事实生成下一份线索 | Cue Provider、Pi Adapter（compaction 时序、custom entry 与 context） |
 | 历史细节恢复 | 模型可取回精确历史细节，且参数无法越权 | Pi Adapter（模型工具） |
 | 本地服务托管 | 本地 OpenViking endpoint 可安全、可重建地提供 | Managed OpenViking Service |
 
 ### 运行边界与观察
 
-**系统保证**：扩展在真实 Pi 中加载与卸载；任一扩展链路失败时 Pi 主任务继续运行；每次运行留下可关联、
-已脱敏的结构化证据。
+**系统保证**：扩展 factory 以 active 或 inert 的完整状态返回；Pi callback 保留宿主原生错误隔离并在有界本地工作后
+返回；observer sink 不延长产品 callback；每次运行留下可关联、已脱敏的结构化证据。
 
 **交付**
 
-- 完成 `docs/design.md`「Observation」与「Configuration & Credentials」的责任、「状态所有权」定义的
-  Composition Root 装配，以及「1. Pi Adapter」的 fail-open 保证；
+- 完成 `docs/design.md`「Observation」「Configuration & Credentials」与「运行边界」的责任，包括 Composition Root
+  的 activation 和 Pi Adapter callback 边界；
 - 最小 `package.json` 与构建配置：只声明当前扩展入口、运行时要求与实际使用的依赖；
 - [`docs/verification.md`](./verification.md)：证据类型、测试组织与 live gate 契约；
 - `docs/development.md`：开发环境、开发循环与清理，含其余阶段所需 OpenViking endpoint 的获得方式。
 
 **验收**
 
-- 真实 Pi 加载扩展、完成一次会话并正常 shutdown；
-- 在扩展各注册点分别注入失败后，Pi 的 agent loop、context 与 compaction 行为与未加载扩展时一致；
-- 同一次运行的观察记录可按 operation 关联出完整调用序列；未请求观察时初始化后不产生时钟、序列化与
-  文件系统调用；
-- sink 或 schema 失败只使观察状态降级，产品返回值与调用顺序不变；
+- 真实 Pi 中，装配成功的运行实例完整进入 active；注入装配失败时 Pi 正常启动，已注册 callback 全部保持 inert；
+- 在 lifecycle callback 中注入异常后，Pi 发出原生扩展错误，会话继续到正常 shutdown；
+- 同一次运行的观察记录可按 operation 关联出完整调用序列；未请求 observation 时不访问 sink，也不产生记录；
+- observer 输出符合 schema 的记录；sink 延迟或失败不延长产品 callback，失败后本次 observer 保持 degraded；
 - 观察记录中不出现用户正文、图片 base64、凭证与未脱敏 URI；
-- 仓库中不存在第二套运行过程观察。
 
 ### Pi 原生记忆接入
 
-**系统保证**：Pi 已接受的来源 entries 直接进入事实交付边界；每次 compaction 产生的 `CueSet` 由 Pi session tree
-保存，并在普通 provider context 中呈现，同时保持在后续 compaction 输入之外。
+**系统保证**：Pi 已接受的来源 entries 直接进入事实交付边界；Pi Adapter 将 compaction 后收到的 `CueSet` 交给 Pi
+session tree 保存并在普通 provider context 中呈现，同时保持在后续 compaction 输入之外。
 
 **交付**
 
@@ -76,12 +75,13 @@ observation 与 config 首个消费者（观察请求）已落地；deterministi
 
 - 持久 session 与 in-memory session 中，Pi Adapter 取得的来源 entries 保持 Pi 已接受的原始值与顺序，扩展自身的
   `CueSet` custom entry 保持在来源事实集合之外；
-- 真实 Pi compaction 完成后，`CueSet` 作为 custom entry 保存在当前 tree 路径，普通 provider payload 可见其文本；
+- 真实 Pi compaction 完成后，测试驱动提供的固定 `CueSet` 作为 custom entry 保存在当前 tree 路径，普通 provider
+  payload 可见其文本；
 - 后续 compaction 的 preparation 中没有既有 `CueSet` 文本，新 compaction 后的普通 provider payload 只呈现 Pi
   当前 context entries 中有效的 `CueSet`；
-- `/tree` 导航、session 重开与扩展重载后，Pi Adapter 直接使用 Pi 当前构造的 context entries，tree 导航本身不
-  生成或改写 `CueSet`；
-- 以上读取、保存或投影失败时 Pi agent loop、原生 context 与 compaction 继续运行。
+- `/tree` 导航、session 重开与扩展重载后，provider context 中的 `CueSet` 与 Pi 当前 context entries 所属路径一致；
+- 以上读取、保存或投影 callback 只做有界本地工作；失败沿 Pi 原生扩展错误路径报告，Pi agent loop、原生 context
+  与 compaction 继续运行。
 
 ### OpenViking 出站端口
 
@@ -90,8 +90,8 @@ observation 与 config 首个消费者（观察请求）已落地；deterministi
 
 **交付**
 
-- **边界调查先行**：在真实 OpenViking 实例上确定 ingestion、search 与 read 各自使用的公开能力、接受语义与
-  幂等条件，把结论固定为本阶段的实现依据；
+- **边界调查先行**：在真实 OpenViking 实例上确定 ingestion、search 和 read 使用的公开能力，确认 ingestion 结果
+  如何表示“已经保存”以及以后如何找到同一事实，并确定各调用的幂等条件；
 - 完成 `docs/design.md`「4. OpenViking Client」与「OperationScope」的责任；有界重试只用于调查已证明幂等的
   调用。
 
@@ -100,6 +100,8 @@ observation 与 config 首个消费者（观察请求）已落地；deterministi
 - ingestion、search 与 read 的接受语义与幂等条件由真实实例上的运行记录固定，不由代码推断；被证伪的候选
   机制一并记录；
 - 同一来源事实按调查确定的机制重复 ingest 得到明确接受结果，不产生第二个逻辑对象；
+- ingestion 成功时返回以后找到同一事实所需的信息；Fact Synchronizer 公开该信息，OpenViking 继续按请求 scope
+  限制访问；
 - search 返回结果保留服务端排名与服务端提供的 title/abstract 等价字段；read 按 canonical URI 与分页边界
   返回，越界请求被拒绝；
 - 服务不可用、超时与取消各自返回有界失败结果并保留可区分的 cause，调用方不阻塞；
@@ -117,34 +119,39 @@ observation 与 config 首个消费者（观察请求）已落地；deterministi
 **验收**（对应 `docs/design.md`「验证责任」的 ingestion 契约）
 
 - 一次真实会话结束后，Pi Adapter 提供的每个来源 entry 都有明确的接受或待重放结果；
-- 从 OpenViking 读回的对象可逐字节还原为原始 Pi entry；
+- 从 OpenViking 读回的对象保留原始 Pi entry 的全部字段、parent 关系与未知 payload，结构上与来源值等价；
 - 交付进度只在 OpenViking 明确接受后推进；接受结果丢失时该事实保持待重放；
-- 进程重启、交付状态删除与重复提交后重放，OpenViking 侧不产生重复或半可见对象；
+- 进程重启或可重建交付进度缺失后，Fact Synchronizer 从 Pi 来源 entries 重新确定 pending，并使用相同来源身份提交；
 - OpenViking 不可用期间 Pi 主任务、compaction 与 shutdown 时长不受影响，服务恢复后未交付事实完成交付。
 
 ### Compaction 记忆线索
 
-**系统保证**：每次 Pi compaction 对应一份提交后保持不变的 `CueSet`；Pi session tree 保存它，普通 provider
-context 呈现它，后续 compaction 输入排除它。
+**系统保证**：每次 Pi compaction 最多保存一份新 `CueSet`。生成开始前，Pi Adapter 取得当前路径的上一份
+`CueSet`，再收集它之后已经保存到 OpenViking 的新 entries。Pi session tree 保存生成结果；普通 provider context
+只看到其中的简短线索，后续 compaction 不读取这些线索。
 
 **交付**
 
 - 完成 `docs/design.md`「3. Cue Provider」的责任；
-- 完成「1. Pi Adapter」的 CueSet custom entry 提交与普通 provider context 投影。
+- 完成「1. Pi Adapter」的 compaction 前后时序、CueSet custom entry 提交与普通 provider context 投影。
 
 **验收**（对应 `docs/design.md`「验证责任」的 Cue 契约）
 
-- 真实 Pi compaction 完成后只执行一次成功的 OpenViking search，产生一个 `CueSet` custom entry，provider 实际
-  收到的 payload 中出现其文本；
-- 同一 compaction 下重复触发 context 不再搜索，两次得到逐字节相同的 `CueSet`；
-- Pi tree 导航、session 重开与扩展重载复用当前路径中的既有 `CueSet`，这些动作不触发搜索；只有新的
-  `CompactionEntry` 产生新的搜索与 `CueSet`；
-- 后续 compaction 的 preparation 不含既有 `CueSet` 文本，完成后普通 provider payload 只呈现当前有效的
+- 使用固定延迟的 cue workload 时，真实 Pi 的 `session_before_compact` 在 cue 仍在生成时返回；观察记录显示 cue 生成
+  与 Pi compaction 的执行时间发生重叠，`session_compact` 只等待 deadline 尚未用完的时间；
+- 与相同身份、相同 workload 的 Pi 原生 compaction baseline 相比，加入 cue 后的实际总耗时满足 manifest 根据基线
+  确定的增量阈值；
+- 第一份 `CueSet` 使用 session 开始后已保存的 entries；以后每份 `CueSet` 只使用上一份已经用到的最后一条 entry
+  之后新保存的 entries，并记住本次用到的最后一条 entry；
+- manifest 列出的重要事件都有对应线索；模型使用该线索调用 search/read 时可以找到目标事实；
+- 每条线索只包含事件时间或区间、用于识别事件的短句，以及找到完整事实所需的信息；
+- `CueSet` 的线索数量、provider 可见字符数与生成时间落在固定上限内；
+- 每个新的 `CompactionEntry` 最多保存一份新 `CueSet`；Pi tree 导航、session 重开与扩展重载后，provider context
+  使用当前路径中已保存的 `CueSet`；
+- 后续 compaction 的 preparation 排除既有 `CueSet` 文本，完成后的普通 provider payload 呈现当前有效的
   `CueSet`；
-- 候选顺序与 OpenViking 返回顺序一致；候选数量与总字符落在固定上限内；
-- 每条线索的文本非空，服务端摘要缺失时返回可诊断失败；
-- `CueSet` 中不含正文、URI、entry ID 与分数；
-- 无相关候选提交空 `CueSet`；OpenViking 失败返回可诊断空结果，Pi 原生上下文与 agent loop 继续。
+- 生成失败、超时、取消或路径变化时保留上一份 `CueSet`；下次生成继续处理它之后已经保存但还没有生成线索的
+  entries，Pi 原生 context、compaction 与 agent loop 继续。
 
 ### 历史细节恢复
 
@@ -201,13 +208,15 @@ context 呈现它，后续 compaction 输入排除它。
 
 ## 下一实施入口
 
-当前主导约束是：Pi Adapter 目前只建立了 session lifecycle 与 fail-open 边界；来源 entry 读取、compaction 后
-CueSet custom entry 保存和普通 provider context 投影尚未进入当前实现与阶段 gate。真实 Pi 探针已经确认 custom
-entry 由 session tree 保存、普通 context 临时投影可见且后续 compaction preparation 排除该内容。
+当前主导约束是建立完整运行边界：Composition Root 只在全部装配成功后启用 callback；Pi Adapter callback 保留 Pi
+原生扩展错误路径；observer sink 的延迟与失败保持在产品 callback 之外。三者共同保证扩展以 active 或 inert 的完整
+状态运行，并使 Pi callback 有界完成。
 
 后续动作按以下顺序执行：
 
-1. 建立本阶段 manifest，以真实 Pi 覆盖持久与 in-memory session、manual/threshold/overflow compaction、tree 导航、
-   session 重开和扩展重载；
-2. 实现 Pi Adapter 的来源 entry 读取与过滤、`session_compact` 消费、CueSet custom entry 保存和 context 临时投影；
-3. 建立聚焦 deterministic checks 并运行本阶段 live gate，按「Pi 原生记忆接入」验收项逐项取证。
+1. 更新 run-boundary manifest，使该 gate 只绑定真实 Pi 边界，并覆盖 active/inert 原子启用、lifecycle callback 的
+   Pi 原生错误路径、callback 完成时序与 observer sink 降级；
+2. 由 Composition Root 建立 activation，Pi Adapter callback 保留 Pi 原生异常隔离，Observer 将 sink 延迟与失败保持在
+   产品 callback 之外；
+3. 建立聚焦 deterministic checks 并运行 run-boundary live gate；出口关闭后，以已经确认的 tree、context 与 compaction
+   真实边界建立「Pi 原生记忆接入」manifest。

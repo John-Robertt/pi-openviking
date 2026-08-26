@@ -71,7 +71,7 @@ gate 设施放在 `test/live/helpers/`，见 [`docs/verification.md`](./verifica
 | 字段 | 消费者 | 用途 |
 | --- | --- | --- |
 | `taskModel` | 隔离 Pi | agent loop 的任务模型 |
-| `vlm` | OpenViking 服务端 | 生成语义摘要，即 Memory Cues 的内容来源 |
+| `vlm` | OpenViking 服务端 | 生成服务端内容理解、记忆提取与语义摘要，供 OpenViking 索引、搜索和读取使用 |
 | `embedding.dense` | OpenViking 服务端 | 向量索引与语义检索 |
 
 `vlm` 与 `embedding` 是 [`docs/design.md`](./design.md)「外部责任边界」所述部署前提的具体配置：它们写入
