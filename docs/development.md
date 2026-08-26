@@ -42,7 +42,7 @@ dev/                      # tracked：机器事实
 
 .dev/                     # gitignored：全部运行时产物
 ├── toolchain/            # 固定 uv、托管 Python、venv
-├── openviking/           # workspace、ov.conf、PID、日志、状态、embedding 缓存
+├── openviking/           # workspace、ov.conf、ownership marker、PID、日志、状态、embedding 缓存
 └── pi/                   # 隔离 PI_CODING_AGENT_DIR
 ```
 
@@ -86,7 +86,9 @@ gate 设施放在 `test/live/helpers/`，见 [`docs/verification.md`](./verifica
 - **任务模型**（Pi）：OAuth 时隔离 Pi 的 `auth.json` 只建立对用户 Pi auth store 的同文件引用，不复制
   token；建立前验证来源属于当前用户且权限私有，已存在独立文件时拒绝覆盖。
 - **服务端模型**（OpenViking）：`ov.conf` 不写凭证值；服务进程通过环境变量获得 store 路径与 bootstrap
-  源，provider 注册项见 `scripts/openviking-oauth.mjs`。就绪探测由受管 Python 执行，stdout 不输出凭证。
+  源，provider 注册项见 `scripts/openviking-oauth.mjs`。OAuth store 位于
+  `~/.openviking/pi-openviking-dev`（0700），是唯一有意位于仓库外的运行时状态（凭证不进入仓库），由
+  OpenViking 服务按 bootstrap 源填充。就绪探测由受管 Python 执行，stdout 不输出凭证。
 
 用户为某个身份完成登录，即构成该身份用于本仓库开发与验证的授权。以下变化需要重新取得用户决定：
 `taskModel` 的 provider 或 model 改变、`vlm` 的 provider、model 或 api base 改变、`embedding` 的 provider、

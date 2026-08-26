@@ -2,7 +2,8 @@
 /**
  * 仓库开发环境：安装受管工具链、运行隔离的 OpenViking 服务、进入隔离 Pi。
  *
- * 全部运行时产物收敛在 .dev/；不复用用户的 ~/.pi 会话数据，也不接管非本工具启动的进程。
+ * 运行时产物收敛在 .dev/，唯一例外是服务端 OAuth store（~/.openviking/pi-openviking-dev，
+ * 凭证不进入仓库）；不复用用户的 ~/.pi 会话数据，也不接管非本工具启动的进程。
  * 命令：bootstrap | up | down | status | pi
  */
 import { spawn } from "node:child_process";
