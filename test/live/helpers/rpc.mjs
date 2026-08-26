@@ -61,9 +61,15 @@ export function runRpc({ args = [], env = {}, commands, timeoutMs = 120_000 }) {
     })()
       .then(() => {
         child.stdin.end();
-        child.on("close", (code) =>
-          resolve({ code, events, stderr: Buffer.concat(stderrChunks).toString("utf8") }),
-        );
+        // 收尾同样有界：命令完成后进程未在 timeoutMs 内退出即失败并终止。
+        const closeTimer = setTimeout(() => {
+          child.kill("SIGTERM");
+          reject(new Error("进程退出超时"));
+        }, timeoutMs);
+        child.on("close", (code) => {
+          clearTimeout(closeTimer);
+          resolve({ code, events, stderr: Buffer.concat(stderrChunks).toString("utf8") });
+        });
       })
       .catch((err) => {
         child.kill("SIGTERM");

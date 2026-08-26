@@ -197,7 +197,8 @@ function responseOf(workload, id) {
 
 function readSessionEntries(sessionsDir) {
   if (!existsSync(sessionsDir)) return null;
-  const file = readdirSync(sessionsDir).find((name) => name.endsWith(".jsonl"));
+  // 排序使多文件时选择确定（当前 workload 实测均为单文件）。
+  const file = readdirSync(sessionsDir).filter((name) => name.endsWith(".jsonl")).sort()[0];
   if (!file) return null;
   return readFileSync(join(sessionsDir, file), "utf8")
     .trim()
@@ -233,7 +234,7 @@ function assertRunOk(name, workload, compactIds = []) {
 }
 
 /** 观察记录：必要操作按序出现，callback 在声明上限内返回。 */
-function assertObservations(name, workload, { expectError } = {}) {
+function assertObservations(name, workload, { expectError, operations } = {}) {
   if (!workload) return;
   const obsFile = join(workload.evidenceDir, "obs.jsonl");
   const obsExists = existsSync(obsFile);
@@ -241,11 +242,13 @@ function assertObservations(name, workload, { expectError } = {}) {
   if (!obsExists) return;
   evidence[`${name}/obs.jsonl`] = sha256File(obsFile);
   const records = readJsonl(obsFile);
+  // reload 等无 compaction 的 workload 按需裁剪必要操作。
+  const required = operations ?? manifest.requiredObservationOperations;
   assert(
     `${name} 观察记录包含必要操作`,
-    manifest.requiredObservationOperations,
+    required,
     records.map((record) => record.operation),
-    containsInOrder(records.map((record) => record.operation), manifest.requiredObservationOperations),
+    containsInOrder(records.map((record) => record.operation), required),
   );
   const errorRecords = records.filter((record) => record.outcome === "error");
   if (expectError) {
@@ -363,8 +366,11 @@ function assertScans(name, workload, expectations, { compaction = true } = {}) {
       );
     }
   }
+  // 无法归因到当前 prompt 的请求（重试、后台调用）不允许携带 CueSet。注意：Pi 0.84.3 的
+  // compaction summary 请求不经过 before_provider_request，"CueSet 不进后续 compaction"由
+  // 上方的 preparation 扫描直接证明，本断言不覆盖 summary 请求。
   const stray = requests.filter((scan) => scan.prompt === -1 && scan.marker);
-  assert(`${name} 非 prompt 请求（如 compaction summary）不携带 CueSet`, "不出现标记", stray, stray.length === 0);
+  assert(`${name} 未归因请求不携带 CueSet`, "不出现标记", stray, stray.length === 0);
 }
 
 let cleanupPass = false;
@@ -526,6 +532,7 @@ try {
         responseOf(reload, "r1")?.success === true,
         responseOf(reload, "r1")?.success === true,
       );
+      assertObservations("reload", reload, { operations: ["session_start", "context", "session_shutdown"] });
       const reloadErrors = reload.result.events.filter((event) => event.type === "extension_error");
       assert("reload 无 extension_error", 0, reloadErrors.length, reloadErrors.length === 0);
       assertScans("reload", reload, [{ prompt: 5, projected: true, seq: 1 }], { compaction: false });

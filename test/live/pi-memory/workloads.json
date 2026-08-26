@@ -53,7 +53,7 @@
     "compactionKeepRecentTokens 不是正整数，或 prompts/cueTemplate/requiredEventMilestones/requiredObservationOperations 不是非空数组",
     "任一 workload 运行失败、exit code 非 0、缺少 requiredEventMilestones，或任一 compact 命令的响应不是真实成功（baseline/loaded/persistent/tree/in-memory 还不允许出现 extension_error）",
     "baseline：session 文件中没有恰好两份 CompactionEntry（workload 形状无法驱动真实 compaction，其余断言无效）",
-    "任一 workload 的观察记录缺失、缺少 requiredObservationOperations 中的操作、出现非预期 error outcome，或任一记录 durationMs 超过 callbackDurationMaxMs",
+    "任一 workload 的观察记录缺失、缺少其必要操作（reload 无 compaction，必要操作裁剪为 session_start/context/session_shutdown）、出现非预期 error outcome，或任一记录 durationMs 超过 callbackDurationMaxMs",
     "persistent/in-memory：探针任一收集快照不是最终来源 entries 序列的前缀，或最后一次收集不等于最终序列（原值与原顺序不符），或收集为空",
     "persistent：session 文件中 compaction 次数不等于 2，或任一 compaction 后没有恰好一份 CueSet custom entry，或 CueSet 的 parentId 不是对应 CompactionEntry、lastUsedEntryId 不是压缩前最后一条 entry、cues 与固定线索不符",
     "loaded（真实 Composition Root，无 cue 源）：session 文件出现 CueSet custom entry",
@@ -67,5 +67,5 @@
     "obs/collected/scans 证据文件命中任一 redactionForbiddenPatterns",
     "运行目录清理失败"
   ],
-  "hash": "sha256:52f93eaeedaa973f2858c65c25f700a90ca0596708f7d63748b1d235c9f41b8f"
+  "hash": "sha256:d539bdfae03aa3e3d2026c658933dbb1690f516f16539133d2ee87f43bb6604a"
 }

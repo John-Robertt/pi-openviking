@@ -20,7 +20,8 @@ export interface PiAdapterDeps {
   observer: Observer;
   /** Composition Root 持有的激活状态；false 时 callback 直接返回，不执行扩展工作。 */
   active: () => boolean;
-  /** Fact Synchronizer 的接入点：接收 Pi 已接受的来源 entries 全量快照（原值、原顺序）。 */
+  /** Fact Synchronizer 的接入点：接收 Pi 已接受的来源 entries 全量快照（原值、原顺序）。
+   *  每次触发都是 O(会话规模) 的全量收集；「会话事实同步」接入真实接收方时按实测重审。 */
   onSourceEntries?: (entries: SessionEntry[]) => void;
   /**
    * Cue Provider 结果的接入点：session_compact 时返回已经生成的 CueSet，无结果返回 undefined。

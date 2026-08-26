@@ -60,6 +60,8 @@ export default function (pi) {
         prompt = i;
       }
     });
+    // 已知失败模式：模型若在历史应答中转述过旧 cue 文本（如引用 [seq:1]），该文本随 entries
+    // 进入 payload，seq 断言会以误报方向失败——宁可误报也不错过后退，失败时先查模型应答。
     const seqs = [...text.matchAll(/\[seq:(\d+)\]/g)].map((match) => Number(match[1]));
     append("scans.jsonl", { hook: "provider_request", marker: text.includes(input.marker), prompt, seqs });
   });
