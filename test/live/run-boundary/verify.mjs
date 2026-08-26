@@ -23,7 +23,7 @@ import { get as httpGet } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runRpc } from "../helpers/rpc.mjs";
-import { loadManifest } from "../helpers/manifest.mjs";
+import { loadManifest } from "../../helpers/manifest.mjs";
 
 const GATE_DIR = fileURLToPath(new URL(".", import.meta.url));
 const REPO = fileURLToPath(new URL("../../..", import.meta.url));
@@ -83,6 +83,8 @@ if (readFileSync(join(runDir, "ownership.marker"), "utf8") !== `${marker}\n`) {
 
 const agentDir = join(runDir, "agentDir");
 mkdirSync(agentDir, { recursive: true });
+// 凭证桥沿用 docs/development.md「凭证边界」的同文件引用：Pi 对 token 的刷新写入落在用户已授权的
+// auth store（与 dev 环境同一机制）；gate 不复制凭证，run dir 清理只移除引用。
 const authSource = join(DEV_PI, "auth.json");
 try {
   symlinkSync(readlinkSync(authSource), join(agentDir, "auth.json"));
@@ -144,40 +146,78 @@ async function runWorkload(name, { wrapper, probe, observe }) {
 }
 
 let cleanupPass = false;
+
+/** workload 驱动失败（超时、spawn 失败）转为断言失败，保证清理与 summary 照常产出。 */
+async function tryRun(name, opts) {
+  try {
+    return await runWorkload(name, opts);
+  } catch (err) {
+    assert(`${name} 运行完成`, "成功", String(err instanceof Error ? err.message : err), false);
+    return null;
+  }
+}
+
+function sequenceOf(workload) {
+  return workload ? filteredSequence(workload.result.events, manifest.filteredOut) : null;
+}
+
+function assertSequence(name, workload, reference) {
+  const sequence = sequenceOf(workload);
+  assert(
+    `${name} 事件序列与 baseline 一致`,
+    reference ?? "baseline 运行失败",
+    sequence ?? "运行失败",
+    sequence !== null && reference !== null && JSON.stringify(sequence) === JSON.stringify(reference),
+  );
+}
+
 try {
   // --- baseline：未加载扩展 ---
-  const baseline = await runWorkload("baseline", { wrapper: false, probe: null, observe: false });
-  assert("baseline exit code", manifest.exitCode, baseline.result.code, baseline.result.code === manifest.exitCode);
-  const baselineSequence = filteredSequence(baseline.result.events, manifest.filteredOut);
+  const baseline = await tryRun("baseline", { wrapper: false, probe: null, observe: false });
+  if (baseline) {
+    assert(
+      "baseline exit code",
+      manifest.exitCode,
+      baseline.result.code,
+      baseline.result.code === manifest.exitCode,
+    );
+  }
+  const baselineSequence = sequenceOf(baseline);
   assert(
     "baseline 事件序列",
     manifest.expectedSequence,
-    baselineSequence,
-    JSON.stringify(baselineSequence) === JSON.stringify(manifest.expectedSequence),
+    baselineSequence ?? "运行失败",
+    baselineSequence !== null && JSON.stringify(baselineSequence) === JSON.stringify(manifest.expectedSequence),
   );
 
   // --- loaded：扩展加载 + 观察开启 ---
-  const loaded = await runWorkload("loaded", { wrapper: true, probe: null, observe: true });
-  assert("loaded exit code", manifest.exitCode, loaded.result.code, loaded.result.code === manifest.exitCode);
-  const loadedSequence = filteredSequence(loaded.result.events, manifest.filteredOut);
-  assert(
-    "loaded 事件序列与 baseline 一致",
-    baselineSequence,
-    loadedSequence,
-    JSON.stringify(loadedSequence) === JSON.stringify(baselineSequence),
-  );
+  const loaded = await tryRun("loaded", { wrapper: true, probe: null, observe: true });
+  if (loaded) {
+    assert("loaded exit code", manifest.exitCode, loaded.result.code, loaded.result.code === manifest.exitCode);
+    const hasExtensionError = loaded.result.events.some((event) => event.type === "extension_error");
+    assert("loaded 无 extension_error", false, hasExtensionError, !hasExtensionError);
+  }
+  assertSequence("loaded", loaded, baselineSequence);
 
-  // 观察证据：可关联、字段齐全
-  const obsExists = existsSync(loaded.obsFile);
+  // 观察证据：可关联、字段齐全、链路结果全部 ok
+  const obsFile = loaded?.obsFile;
+  const obsExists = obsFile !== undefined && existsSync(obsFile);
   assert("loaded 观察文件存在", true, obsExists, obsExists);
   if (obsExists) {
-    evidence[loaded.obsFile.split("/").pop()] = sha256File(loaded.obsFile);
-    const records = readFileSync(loaded.obsFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    evidence[obsFile.split("/").pop()] = sha256File(obsFile);
+    const records = readFileSync(obsFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert(
       "观察操作序列",
       manifest.observationOperations,
       records.map((record) => record.operation),
       JSON.stringify(records.map((record) => record.operation)) === JSON.stringify(manifest.observationOperations),
+    );
+    const outcomes = records.map((record) => record.outcome);
+    assert(
+      "观察记录 outcome 全部 ok",
+      "ok",
+      outcomes,
+      outcomes.every((outcome) => outcome === "ok"),
     );
     const runIds = new Set(records.map((record) => record.runId));
     assert("观察记录单一 runId", 1, runIds.size, runIds.size === 1);
@@ -196,18 +236,19 @@ try {
   // --- 注入失败：各注册点失败后 Pi 行为与 baseline 一致 ---
   for (const probe of ["fail-session-start.ts", "fail-session-shutdown.ts"]) {
     const name = probe.replace(".ts", "");
-    const injected = await runWorkload(name, { wrapper: true, probe, observe: true });
-    assert(`${name} exit code`, manifest.exitCode, injected.result.code, injected.result.code === manifest.exitCode);
-    const sequence = filteredSequence(injected.result.events, manifest.filteredOut);
-    assert(
-      `${name} 事件序列与 baseline 一致`,
-      baselineSequence,
-      sequence,
-      JSON.stringify(sequence) === JSON.stringify(baselineSequence),
-    );
-    const hasExtensionError = injected.result.events.some((event) => event.type === "extension_error");
-    assert(`${name} extension_error 事件`, true, hasExtensionError, hasExtensionError);
-    if (existsSync(injected.obsFile)) evidence[injected.obsFile.split("/").pop()] = sha256File(injected.obsFile);
+    const injected = await tryRun(name, { wrapper: true, probe, observe: true });
+    if (injected) {
+      assert(
+        `${name} exit code`,
+        manifest.exitCode,
+        injected.result.code,
+        injected.result.code === manifest.exitCode,
+      );
+      const hasExtensionError = injected.result.events.some((event) => event.type === "extension_error");
+      assert(`${name} extension_error 事件`, true, hasExtensionError, hasExtensionError);
+      if (existsSync(injected.obsFile)) evidence[injected.obsFile.split("/").pop()] = sha256File(injected.obsFile);
+    }
+    assertSequence(name, injected, baselineSequence);
   }
 
   // --- 脱敏扫描 ---

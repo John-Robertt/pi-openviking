@@ -5,25 +5,21 @@
  * 部分注册同样不阻断 Pi 主任务。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { resolveConfig } from "./config/index.js";
-import { createObserver } from "./observation/index.js";
-import { registerPiAdapter } from "./pi-adapter/index.js";
+import { resolveConfig } from "./config/index.ts";
+import { createObserver } from "./observation/index.ts";
+import { registerPiAdapter } from "./pi-adapter/index.ts";
 
 export default function (pi: ExtensionAPI): void {
-  const observer = createObserver(resolveConfig(process.env).observation);
-  const start = observer.now();
+  // disabled 兜底：即使 observer 构造失败，catch 路径的 record 也是安全的 no-op。
+  let observer = createObserver(null);
   try {
+    observer = createObserver(resolveConfig(process.env).observation);
+    const start = observer.now();
     registerPiAdapter(pi, { observer });
     observer.record({ operation: "assembly", stage: "compose", outcome: "ok", durationMs: observer.now() - start });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
-    observer.record({
-      operation: "assembly",
-      stage: "compose",
-      outcome: "error",
-      durationMs: observer.now() - start,
-      error: message,
-    });
+    observer.record({ operation: "assembly", stage: "compose", outcome: "error", durationMs: 0, error: message });
     process.stderr.write(`pi-openviking: extension disabled, assembly failed: ${message}\n`);
   }
 }

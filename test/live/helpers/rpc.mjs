@@ -14,6 +14,7 @@ export function runRpc({ args = [], env = {}, commands, timeoutMs = 120_000 }) {
     let buffer = "";
     const waiters = [];
 
+    child.on("error", (err) => reject(new Error(`spawn pi 失败: ${err.message}`)));
     child.stdout.on("data", (chunk) => {
       buffer += chunk;
       let index;

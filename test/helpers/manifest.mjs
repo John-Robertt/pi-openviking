@@ -1,4 +1,4 @@
-/** live 专用：gate manifest 的规范化与 hash 固定。verifier 与 test/repo 共用同一实现。 */
+/** gate manifest 的规范化与 hash 固定：纯确定性函数，live verifier 与 repo 测试共用。 */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

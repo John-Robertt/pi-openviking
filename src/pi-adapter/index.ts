@@ -7,7 +7,7 @@ import type {
   ExtensionContext,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import type { Observer } from "../observation/index.js";
+import type { Observer } from "../observation/index.ts";
 
 export interface PiAdapterDeps {
   observer: Observer;

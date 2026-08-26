@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { manifestHash } from "../live/helpers/manifest.mjs";
+import { manifestHash } from "../helpers/manifest.mjs";
 
 const LIVE = fileURLToPath(new URL("../live/", import.meta.url));
 
