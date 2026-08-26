@@ -17,7 +17,6 @@ function readEvents(file) {
 test("disabled：record 无副作用、不触发时钟与文件系统", (t) => {
   const dir = makeTmp(t);
   const observer = createObserver(null);
-  assert.equal(observer.active, false);
   assert.equal(observer.status, "disabled");
   assert.equal(observer.now(), 0);
   observer.record(EVENT);
@@ -28,7 +27,6 @@ test("active：record 追加合法 JSONL，关联字段齐全", (t) => {
   const dir = makeTmp(t);
   const file = join(dir, "obs.jsonl");
   const observer = createObserver({ file });
-  assert.equal(observer.active, true);
   assert.equal(observer.status, "active");
   observer.record(EVENT);
   observer.record({ ...EVENT, outcome: "error", session: "s-1", error: "boom" });

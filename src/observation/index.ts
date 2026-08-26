@@ -22,7 +22,6 @@ export interface ObservationEvent {
 export type ObserverStatus = "disabled" | "active" | "degraded";
 
 export interface Observer {
-  readonly active: boolean;
   readonly status: ObserverStatus;
   /** 降级原因（首个失败），供状态查询组合；未降级时为 undefined。 */
   readonly failure: string | undefined;
@@ -32,7 +31,6 @@ export interface Observer {
 }
 
 const DISABLED: Observer = Object.freeze({
-  active: false,
   status: "disabled",
   failure: undefined,
   now: () => 0,
@@ -75,7 +73,6 @@ export function createObserver(spec: { file: string } | null): Observer {
   let status: ObserverStatus = "active";
   let failure: string | undefined;
   return {
-    active: true,
     get status() {
       return status;
     },

@@ -1,6 +1,5 @@
 {
   "gate": "run-boundary",
-  "version": 1,
   "identity": {
     "piVersion": "0.84.3",
     "endpoint": "http://127.0.0.1:19331",
@@ -50,5 +49,5 @@
     "注入失败 workload 未出现 extension_error 事件或 exit code 非 0",
     "运行目录清理失败"
   ],
-  "hash": "sha256:b31daafa8e3e6f4a50f6197c952cb46e56f9740d4317074eb370e59a723cd3d4"
+  "hash": "sha256:4fb2ee8d0b673368c402410f61b4999b9f2fc636e57dab24fa82eed2628d4efb"
 }
