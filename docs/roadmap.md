@@ -24,10 +24,16 @@ sink 不延长产品 callback。Pi 原生记忆接入所需的 tree、context �
 消费已通过验收的上游结果；模块的架构定位、核心目标、业务需求与职责边界由 `docs/design.md` 维护，阶段不
 重新定义。各阶段的「系统保证」是 `docs/design.md`「全局系统保证」在该阶段的切片，随后者变化同步核对。
 
-顺序由依赖决定：运行边界与观察是横切能力，先于其余阶段建立并被它们共同消费；Pi Adapter 先接入 Pi 已接受的
-来源 entries、compaction 与当前 context，使后续模块直接复用 Pi 的 session tree；OpenViking Client 是唯一出站
-端口，其真实调用语义决定同步机制；同步产生已接受历史，是 cue 与工具的共同前提；cue 是本项目身份所在，先于
-工具建立，使工具的参数面由真实消费者驱动。降级由运行边界与观察建立，并作为其后每个阶段的验收项。
+阶段按依赖顺序推进：
+
+1. 「运行边界与观察」先保证扩展失败不会拖住 Pi，并为后续阶段留下诊断证据；
+2. 「Pi 原生记忆接入」读取 Pi 已接受的 entries，并复用 Pi 的 session tree、compaction 和 context；
+3. 「OpenViking 出站端口」用真实调用确定 ingestion、search 和 read 的接口行为；
+4. 「会话事实同步」把 Pi entries 可靠地交给 OpenViking；
+5. 「Compaction 记忆线索」只使用已经保存的事实生成 `CueSet`；
+6. 「历史细节恢复」在已有线索之后提供模型真正需要的 search/read 工具。
+
+每个阶段都复用「运行边界与观察」建立的降级规则。
 
 | 阶段 | 建立的系统保证 | 落地的模块责任 |
 | --- | --- | --- |
@@ -97,8 +103,7 @@ session tree 保存并在普通 provider context 中呈现，同时保持在后�
 
 **验收**
 
-- ingestion、search 与 read 的接受语义与幂等条件由真实实例上的运行记录固定，不由代码推断；被证伪的候选
-  机制一并记录；
+- ingestion、search 与 read 的接受语义和幂等条件由真实实例的运行记录确定；
 - 同一来源事实按调查确定的机制重复 ingest 得到明确接受结果，不产生第二个逻辑对象；
 - ingestion 成功时返回以后找到同一事实所需的信息；Fact Synchronizer 公开该信息，OpenViking 继续按请求 scope
   限制访问；
@@ -138,10 +143,11 @@ session tree 保存并在普通 provider context 中呈现，同时保持在后�
 **验收**（对应 `docs/design.md`「验证责任」的 Cue 契约）
 
 - 使用固定延迟的 cue workload 时，真实 Pi 的 `session_before_compact` 在 cue 仍在生成时返回；观察记录显示 cue 生成
-  与 Pi compaction 的执行时间发生重叠，`session_compact` 不等待未完成的 cue 任务；
+  与 Pi compaction 的执行时间发生重叠，`session_compact` 不等待并取消仍未完成的 cue 任务；
 - 与相同身份、相同 workload 的 Pi 原生 compaction baseline 相比，加入 cue 后的实际总耗时满足 manifest 根据基线
   确定的增量阈值；
-- 每次成功压缩要么保存一份新 `CueSet`，要么观察记录给出未保存的明确 cause（生成未完成、取消、失败或路径变化）；
+- 每次成功压缩要么保存一份新 `CueSet`，要么在观察记录中写明未保存的原因：生成未完成、取消、失败或路径变化；
+- 固定 workload 中，在 Pi compaction 结束前生成并保存新 `CueSet` 的比例达到 manifest 根据基线确定的阈值；
 - 第一份 `CueSet` 使用 session 开始后已保存的 entries；以后每份 `CueSet` 只使用上一份已经用到的最后一条 entry
   之后新保存的 entries，并记住本次用到的最后一条 entry；
 - manifest 列出的重要事件都有对应线索；模型使用该线索调用 search/read 时可以找到目标事实；
