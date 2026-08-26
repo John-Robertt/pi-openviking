@@ -6,7 +6,8 @@
     "taskModel": {
       "provider": "openai-codex",
       "model": "gpt-5.6-luna"
-    }
+    },
+    "openvikingVersion": "0.4.15"
   },
   "prompt": "Reply with exactly OK.",
   "filteredOut": [
@@ -49,5 +50,5 @@
     "注入失败 workload 未出现 extension_error 事件或 exit code 非 0",
     "运行目录清理失败"
   ],
-  "hash": "sha256:4fb2ee8d0b673368c402410f61b4999b9f2fc636e57dab24fa82eed2628d4efb"
+  "hash": "sha256:e156ef7143d3ad65067c14d9515d4e53ad3ba2295208ac36282020f55be1630b"
 }

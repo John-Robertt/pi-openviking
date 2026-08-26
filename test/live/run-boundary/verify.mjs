@@ -35,13 +35,21 @@ const fail = (reason) => {
   process.exit(1);
 };
 
-function httpOk(url) {
+function httpGetJson(url) {
   return new Promise((resolve) => {
     const req = httpGet(url, (res) => {
-      res.resume();
-      resolve(res.statusCode === 200);
+      let body = "";
+      res.on("data", (chunk) => (body += chunk));
+      res.on("end", () => {
+        if (res.statusCode !== 200) return resolve(null);
+        try {
+          resolve(JSON.parse(body));
+        } catch {
+          resolve(null);
+        }
+      });
     });
-    req.on("error", () => resolve(false));
+    req.on("error", () => resolve(null));
     req.setTimeout(5000, () => req.destroy());
   });
 }
@@ -61,8 +69,12 @@ const version = spawnSync(join(REPO, "node_modules", ".bin", "pi"), ["--version"
 if (version !== manifest.identity.piVersion) {
   fail(`Pi 版本不符：期望 ${manifest.identity.piVersion}，实际 ${version || "不可用"}`);
 }
-if (!(await httpOk(`${manifest.identity.endpoint}/health`))) {
+const health = await httpGetJson(`${manifest.identity.endpoint}/health`);
+if (health === null) {
   fail(`OpenViking endpoint 不可用：${manifest.identity.endpoint}`);
+}
+if (health.version !== manifest.identity.openvikingVersion) {
+  fail(`OpenViking 版本不符：期望 ${manifest.identity.openvikingVersion}，实际 ${health.version ?? "未知"}`);
 }
 const profile = JSON.parse(readFileSync(join(REPO, "dev", "model-profile.json"), "utf8"));
 const { provider, model } = manifest.identity.taskModel;
@@ -82,17 +94,6 @@ if (readFileSync(join(runDir, "ownership.marker"), "utf8") !== `${marker}\n`) {
 }
 
 const agentDir = join(runDir, "agentDir");
-mkdirSync(agentDir, { recursive: true });
-// 凭证桥沿用 docs/development.md「凭证边界」的同文件引用：Pi 对 token 的刷新写入落在用户已授权的
-// auth store（与 dev 环境同一机制）；gate 不复制凭证，run dir 清理只移除引用。
-const authSource = join(DEV_PI, "auth.json");
-try {
-  symlinkSync(readlinkSync(authSource), join(agentDir, "auth.json"));
-} catch {
-  linkSync(authSource, join(agentDir, "auth.json"));
-}
-cpSync(join(DEV_PI, "models-store.json"), join(agentDir, "models-store.json"));
-cpSync(join(DEV_PI, "settings.json"), join(agentDir, "settings.json"));
 
 const wrapperDir = join(agentDir, "extensions", "pi-openviking-dev");
 const writeWrapper = () => {
@@ -100,6 +101,21 @@ const writeWrapper = () => {
   writeFileSync(wrapperDir + "/index.ts", `export { default } from "${join(REPO, "src", "index.ts")}";\n`);
 };
 
+// 凭证桥沿用 docs/development.md「凭证边界」的同文件引用：Pi 对 token 的刷新写入落在用户已授权的
+// auth store（与 dev 环境同一机制）；gate 不复制凭证，run dir 清理只移除引用。
+function setupAgentDir() {
+  mkdirSync(agentDir, { recursive: true });
+  const authSource = join(DEV_PI, "auth.json");
+  try {
+    symlinkSync(readlinkSync(authSource), join(agentDir, "auth.json"));
+  } catch {
+    linkSync(authSource, join(agentDir, "auth.json"));
+  }
+  cpSync(join(DEV_PI, "models-store.json"), join(agentDir, "models-store.json"));
+  cpSync(join(DEV_PI, "settings.json"), join(agentDir, "settings.json"));
+}
+
+const SKIP_WORKLOADS = Symbol("skip-workloads");
 const assertions = [];
 const assert = (name, expected, actual, pass) => {
   assertions.push({ name, expected, actual, pass });
@@ -172,6 +188,13 @@ function assertSequence(name, workload, reference) {
 }
 
 try {
+  // agentDir 建立失败转为断言失败并跳过 workloads，清理与 summary 照常产出。
+  try {
+    setupAgentDir();
+  } catch (err) {
+    assert("gate agentDir 建立", "成功", String(err instanceof Error ? err.message : err), false);
+    throw SKIP_WORKLOADS;
+  }
   // --- baseline：未加载扩展 ---
   const baseline = await tryRun("baseline", { wrapper: false, probe: null, observe: false });
   if (baseline) {
@@ -258,6 +281,8 @@ try {
     const hits = forbidden.filter((pattern) => pattern.test(content)).map(String);
     assert(`${file} 脱敏`, "无命中", hits, hits.length === 0);
   }
+} catch (err) {
+  if (err !== SKIP_WORKLOADS) throw err;
 } finally {
   // --- 清理即断言 ---
   try {
