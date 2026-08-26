@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { registerPiAdapter, collectSourceEntries } from "../../src/pi-adapter/index.ts";
+import { registerPiAdapter } from "../../src/pi-adapter/index.ts";
 import { CUES_CUSTOM_TYPE } from "../../src/contracts/cue-set.ts";
 import { createObserver } from "../../src/observation/index.ts";
 import { makeTmp } from "../helpers/tmp.mjs";
@@ -111,20 +111,15 @@ test("失败链路：handler 异常沿调用方（Pi 原生错误路径）传播
   assert.equal(pi.appended.length, 0);
 });
 
-test("collectSourceEntries：排除扩展自身的 CueSet custom entry，其余保持原值原顺序", () => {
-  const source = [
-    entry("e1", { type: "message" }),
-    cueEntry("cue1", validCueSet),
-    entry("e2", { type: "message" }),
-    entry("other", { type: "custom", customType: "other-extension.state", data: {} }),
-  ];
-  assert.deepEqual(collectSourceEntries(source), [source[0], source[2], source[3]]);
-});
-
 test("来源 entries 交付：turn_end 与 session_compact 都交付过滤后的全量快照", async () => {
   const pi = fakePi();
   const deliveries = [];
-  const entries = [entry("e1", { type: "message" }), cueEntry("cue1", validCueSet)];
+  // 排除自身 CueSet custom entry；其他扩展的 custom entry 是 Pi 已接受事实，原样保留并保持顺序。
+  const entries = [
+    entry("e1", { type: "message" }),
+    cueEntry("cue1", validCueSet),
+    entry("e2", { type: "custom", customType: "other-extension.state", data: {} }),
+  ];
   registerPiAdapter(pi, {
     observer: createObserver(null),
     active: ACTIVE,
@@ -137,7 +132,7 @@ test("来源 entries 交付：turn_end 与 session_compact 都交付过滤后的
     ctx,
   );
   assert.equal(deliveries.length, 2);
-  for (const snapshot of deliveries) assert.deepEqual(snapshot, [entries[0]]);
+  for (const snapshot of deliveries) assert.deepEqual(snapshot, [entries[0], entries[2]]);
 });
 
 test("来源 entries 交付：接收方缺省时不执行收集", async () => {

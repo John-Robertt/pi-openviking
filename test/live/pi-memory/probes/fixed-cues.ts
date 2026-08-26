@@ -26,6 +26,8 @@ const hash = (value) =>
 const append = (name, value) => appendFileSync(`${evidenceDir}/${name}`, `${JSON.stringify(value)}\n`);
 
 export default function (pi) {
+  // 每份 CueSet 带递增序号标记：verifier 据此区分投影呈现的是哪一份（当前有效 vs 过期）。
+  let seq = 0;
   registerPiAdapter(pi, {
     observer: createObserver(resolveConfig(process.env).observation),
     active: () => true,
@@ -36,7 +38,7 @@ export default function (pi) {
         entries.map((entry) => ({ id: entry.id, type: entry.type, h: hash(entry) })),
       ),
     resolveCueSet: (event) => ({
-      cues: input.cues,
+      cues: input.cues.map((cue) => `${cue} [seq:${(seq += 1)}]`),
       lastUsedEntryId: event.compactionEntry.parentId,
     }),
   });
@@ -58,6 +60,7 @@ export default function (pi) {
         prompt = i;
       }
     });
-    append("scans.jsonl", { hook: "provider_request", marker: text.includes(input.marker), prompt });
+    const seqs = [...text.matchAll(/\[seq:(\d+)\]/g)].map((match) => Number(match[1]));
+    append("scans.jsonl", { hook: "provider_request", marker: text.includes(input.marker), prompt, seqs });
   });
 }

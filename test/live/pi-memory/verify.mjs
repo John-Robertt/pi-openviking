@@ -312,43 +312,56 @@ function assertCueEntries(name, entries, compactionCount) {
       cueEntries[i].parentId === compactions[i].id &&
         cueEntries[i].data?.lastUsedEntryId === compactions[i].parentId,
     );
+    // 探针给第 i 份 CueSet 追加 [seq:i+1] 后缀，内容与顺序都必须一致。
+    const expectedCues = cues.map((cue) => `${cue} [seq:${i + 1}]`);
     assert(
       `${name} CueSet[${i}] 内容为固定线索`,
-      cues,
+      expectedCues,
       cueEntries[i].data?.cues,
-      JSON.stringify(cueEntries[i].data?.cues) === JSON.stringify(cues),
+      JSON.stringify(cueEntries[i].data?.cues) === JSON.stringify(expectedCues),
     );
   }
 }
 
 /**
  * payload/preparation 扫描：compaction preparation 从不携带 cue 标记；携带 prompt 的普通请求
- * 在 projected=true 的 prompt 上必须出现标记，其余请求一律不出现。projected 为 undefined 的下标跳过。
+ * 按 expectations 逐个断言：projected 为是否应出现 cue 标记；seq 给出时应呈现且只呈现该序号的
+ * CueSet（区分"当前有效"与"过期"线索——两份固定 CueSet 文本不同，选错投影对象会失败）。
  */
-function assertScans(name, workload, projectedPrompts) {
+function assertScans(name, workload, expectations, { compaction = true } = {}) {
   if (!workload) return;
   const scansFile = join(workload.evidenceDir, "scans.jsonl");
   const scans = readJsonl(scansFile);
   assert(`${name} 捕获扫描记录存在`, "非空", scans.length, scans.length > 0);
   if (scans.length === 0) return;
   evidence[`${name}/scans.jsonl`] = sha256File(scansFile);
-  const preparations = scans.filter((scan) => scan.hook === "before_compact");
-  assert(
-    `${name} 后续 compaction 的 preparation 不含既有 CueSet 文本`,
-    "全部不含标记",
-    preparations,
-    preparations.length > 0 && preparations.every((scan) => !scan.marker),
-  );
-  const requests = scans.filter((scan) => scan.hook === "provider_request");
-  for (const [index, projected] of projectedPrompts.entries()) {
-    if (projected === undefined) continue;
-    const hits = requests.filter((scan) => scan.prompt === index);
+  if (compaction) {
+    const preparations = scans.filter((scan) => scan.hook === "before_compact");
     assert(
-      `${name} prompt[${index}] 普通请求的 CueSet 投影`,
-      projected ? "出现标记" : "不出现标记",
-      hits,
-      hits.length > 0 && hits.every((scan) => scan.marker === projected),
+      `${name} 后续 compaction 的 preparation 不含既有 CueSet 文本`,
+      "全部不含标记",
+      preparations,
+      preparations.length > 0 && preparations.every((scan) => !scan.marker),
     );
+  }
+  const requests = scans.filter((scan) => scan.hook === "provider_request");
+  for (const expectation of expectations) {
+    const hits = requests.filter((scan) => scan.prompt === expectation.prompt);
+    assert(
+      `${name} prompt[${expectation.prompt}] 普通请求的 CueSet 投影`,
+      expectation.projected ? "出现标记" : "不出现标记",
+      hits,
+      hits.length > 0 && hits.every((scan) => scan.marker === expectation.projected),
+    );
+    if (expectation.seq !== undefined) {
+      assert(
+        `${name} prompt[${expectation.prompt}] 呈现当前有效 CueSet（seq ${expectation.seq}）`,
+        [expectation.seq],
+        hits.map((scan) => scan.seqs),
+        hits.length > 0 &&
+          hits.every((scan) => JSON.stringify(scan.seqs) === JSON.stringify([expectation.seq])),
+      );
+    }
   }
   const stray = requests.filter((scan) => scan.prompt === -1 && scan.marker);
   assert(`${name} 非 prompt 请求（如 compaction summary）不携带 CueSet`, "不出现标记", stray, stray.length === 0);
@@ -419,7 +432,14 @@ try {
     assert("persistent session 文件存在", true, entries !== null, entries !== null);
     assertSourceEntries("persistent", persistent, entries);
     assertCueEntries("persistent", entries, 2);
-    assertScans("persistent", persistent, [false, false, false, true, true, true]);
+    assertScans("persistent", persistent, [
+      { prompt: 0, projected: false },
+      { prompt: 1, projected: false },
+      { prompt: 2, projected: false },
+      { prompt: 3, projected: true, seq: 1 },
+      { prompt: 4, projected: true, seq: 1 },
+      { prompt: 5, projected: true, seq: 2 },
+    ]);
   }
 
   // --- tree：fork 到 compaction 前（路径无 CueSet）→ 投影消失；switch_session 重开 → 投影恢复 ---
@@ -467,8 +487,49 @@ try {
       responseOf(tree, "t9")?.success === true,
       responseOf(tree, "t9")?.success === true,
     );
-    // 下标：0-2 投影前；6 在 fork 路径（无 CueSet）；7 在重开的原路径（有 CueSet）
-    assertScans("tree", tree, [false, false, false, undefined, undefined, undefined, false, true]);
+    // 下标：0-2 投影前；6 在 fork 路径（无 CueSet）；7 在重开的原路径（有 seq 1 的 CueSet）
+    assertScans("tree", tree, [
+      { prompt: 0, projected: false },
+      { prompt: 1, projected: false },
+      { prompt: 2, projected: false },
+      { prompt: 6, projected: false },
+      { prompt: 7, projected: true, seq: 1 },
+    ]);
+  }
+
+  // --- reload：新进程经 switch_session 打开 tree 的原 session——扩展重载等价于全新装配加
+  // 已有 session 文件，投影必须仅从 Pi 当前 entries 重建（RPC 模式没有扩展重载命令面） ---
+  const treeSessionFile = responseOf(tree, "t5")?.data?.sessionFile;
+  assert(
+    "reload 前置：tree workload 留下 session 文件",
+    "已取得路径",
+    treeSessionFile,
+    typeof treeSessionFile === "string",
+  );
+  let reload = null;
+  if (typeof treeSessionFile === "string") {
+    reload = await tryRun("reload", {
+      probe: "fixed-cues.ts",
+      commands: [
+        {
+          command: { id: "r1", type: "switch_session", sessionPath: treeSessionFile },
+          until: (event) => event.type === "response" && event.id === "r1",
+          description: "switch_session 响应(r1)",
+        },
+        promptStep("r2", 5),
+      ],
+    });
+    if (reload) {
+      assert(
+        "reload switch_session 打开已有 session 成功",
+        true,
+        responseOf(reload, "r1")?.success === true,
+        responseOf(reload, "r1")?.success === true,
+      );
+      const reloadErrors = reload.result.events.filter((event) => event.type === "extension_error");
+      assert("reload 无 extension_error", 0, reloadErrors.length, reloadErrors.length === 0);
+      assertScans("reload", reload, [{ prompt: 5, projected: true, seq: 1 }], { compaction: false });
+    }
   }
 
   // --- failure：resolveCueSet 注入失败，沿 Pi 原生错误路径报告，compaction 与主流程继续 ---
@@ -514,7 +575,12 @@ try {
     const rpcEntries = responseOf(memory, "m6")?.data?.entries;
     assert("in-memory get_entries 取得 entries", "非空数组", rpcEntries?.length, Array.isArray(rpcEntries));
     if (Array.isArray(rpcEntries)) assertSourceEntries("in-memory", memory, rpcEntries);
-    assertScans("in-memory", memory, [false, false, false, true]);
+    assertScans("in-memory", memory, [
+      { prompt: 0, projected: false },
+      { prompt: 1, projected: false },
+      { prompt: 2, projected: false },
+      { prompt: 3, projected: true, seq: 1 },
+    ]);
     const sessionsRoot = join(agentDir, "sessions");
     const straySessions = existsSync(sessionsRoot)
       ? readdirSync(sessionsRoot).filter((f) => f.endsWith(".jsonl"))
@@ -524,7 +590,7 @@ try {
 
   // --- 脱敏扫描：观察与收集证据不出现用户正文、凭证与 cue 标记原文 ---
   const forbidden = manifest.redactionForbiddenPatterns.map((pattern) => new RegExp(pattern));
-  for (const workload of [loaded, persistent, tree, failure, memory]) {
+  for (const workload of [loaded, persistent, tree, reload, failure, memory]) {
     if (!workload) continue;
     for (const name of ["obs.jsonl", "collected.jsonl", "scans.jsonl"]) {
       const file = join(workload.evidenceDir, name);

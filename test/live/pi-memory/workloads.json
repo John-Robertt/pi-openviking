@@ -59,11 +59,13 @@
     "loaded（真实 Composition Root，无 cue 源）：session 文件出现 CueSet custom entry",
     "任一 workload 的 compaction preparation 扫描出现 cue 标记（既有 CueSet 文本进入后续 compaction）",
     "投影断言不符：compaction 之前的 prompt 请求出现 cue 标记，compaction 之后（投影生效路径）的 prompt 请求缺少 cue 标记，或非 prompt 请求（如 compaction summary）出现 cue 标记",
+    "投影呈现的 CueSet 序号与当前有效份不符（seq 断言）：第二次 compaction 后仍呈现第一份 CueSet 也算失败",
     "tree：fork 或 switch_session 响应失败；fork 到 compaction 前之后 prompt 请求仍出现 cue 标记；switch_session 重开原 session 后 prompt 请求缺少 cue 标记",
+    "reload：新进程 switch_session 打开已有 session 失败、出现 extension_error，或投影未从 Pi 当前 entries 重建出既有 CueSet（扩展重载等价路径）",
     "failure：缺少 extension_error 事件、compact 未真实成功、观察记录中没有 session_compact 的 error outcome，或 session 文件出现 CueSet custom entry",
     "in-memory：get_entries 未取得 entries，或 agentDir/sessions 下出现 session 文件",
     "obs/collected/scans 证据文件命中任一 redactionForbiddenPatterns",
     "运行目录清理失败"
   ],
-  "hash": "sha256:749f9b87cac129285fb51dbe6c0e94a551621d89de4152d58eba5ac7250b4508"
+  "hash": "sha256:52f93eaeedaa973f2858c65c25f700a90ca0596708f7d63748b1d235c9f41b8f"
 }

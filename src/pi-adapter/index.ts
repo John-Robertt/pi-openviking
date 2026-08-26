@@ -34,7 +34,7 @@ function messageOf(cause: unknown): string {
 }
 
 /** 来源事实 = Pi 已接受的全部 entries，排除扩展自身的 CueSet custom entry。 */
-export function collectSourceEntries(entries: SessionEntry[]): SessionEntry[] {
+function collectSourceEntries(entries: SessionEntry[]): SessionEntry[] {
   return entries.filter((entry) => !(entry.type === "custom" && entry.customType === CUES_CUSTOM_TYPE));
 }
 
@@ -122,8 +122,9 @@ export function registerPiAdapter(pi: ExtensionAPI, deps: PiAdapterDeps): void {
       deliverSourceEntries(ctx);
       const cueSet = deps.resolveCueSet?.(event, ctx);
       if (!cueSet) return;
-      // 只提交仍有效的结果：runtime active 由 guard 保证；结果引用的最后一条 entry 必须仍在
-      // 当前路径，否则说明 tree 已经导航，保存会让新路径拿到一份不属于它的线索。
+      // 只提交仍有效的结果（design.md 运行步骤）：runtime active 由 guard 保证；结果引用的
+      // 最后一条 entry 必须仍在当前路径。本阶段来源是同步调用，tree 导航不可能插入其中，
+      // false 分支要到「Compaction 记忆线索」阶段的任务式异步来源才真实可达。
       const onPath = ctx.sessionManager.getBranch().some((entry) => entry.id === cueSet.lastUsedEntryId);
       if (!onPath) return;
       pi.appendEntry(CUES_CUSTOM_TYPE, cueSet);
