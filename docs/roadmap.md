@@ -138,14 +138,15 @@ session tree 保存并在普通 provider context 中呈现，同时保持在后�
 **验收**（对应 `docs/design.md`「验证责任」的 Cue 契约）
 
 - 使用固定延迟的 cue workload 时，真实 Pi 的 `session_before_compact` 在 cue 仍在生成时返回；观察记录显示 cue 生成
-  与 Pi compaction 的执行时间发生重叠，`session_compact` 只等待 deadline 尚未用完的时间；
+  与 Pi compaction 的执行时间发生重叠，`session_compact` 不等待未完成的 cue 任务；
 - 与相同身份、相同 workload 的 Pi 原生 compaction baseline 相比，加入 cue 后的实际总耗时满足 manifest 根据基线
   确定的增量阈值；
+- 每次成功压缩要么保存一份新 `CueSet`，要么观察记录给出未保存的明确 cause（生成未完成、取消、失败或路径变化）；
 - 第一份 `CueSet` 使用 session 开始后已保存的 entries；以后每份 `CueSet` 只使用上一份已经用到的最后一条 entry
   之后新保存的 entries，并记住本次用到的最后一条 entry；
 - manifest 列出的重要事件都有对应线索；模型使用该线索调用 search/read 时可以找到目标事实；
 - 每条线索只包含事件时间或区间、用于识别事件的短句，以及找到完整事实所需的信息；
-- `CueSet` 的线索数量、provider 可见字符数与生成时间落在固定上限内；
+- `CueSet` 的线索数量与 provider 可见字符数落在固定上限内；
 - 每个新的 `CompactionEntry` 最多保存一份新 `CueSet`；Pi tree 导航、session 重开与扩展重载后，provider context
   使用当前路径中已保存的 `CueSet`；
 - 后续 compaction 的 preparation 排除既有 `CueSet` 文本，完成后的普通 provider payload 呈现当前有效的

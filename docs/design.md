@@ -121,7 +121,7 @@ Pi 扩展入口与唯一 Pi 边界适配模块。它连接 Pi 生命周期、来
 - 将 OpenViking 文本和图片结果映射为 Pi 支持的 tool result content；
 - session 重开、tree 导航和扩展重载均直接消费 Pi 当前给出的 session 与 context；
 - Pi lifecycle 与 context callback 只执行有界本地工作；`session_before_compact` 启动 cue 任务后立即返回，
-  `session_compact` 只在该任务既有 deadline 的剩余时间内等待并提交结果；
+  `session_compact` 不等待未完成的 cue 任务，只提交已就绪的结果；
 - callback 异常沿 Pi 原生扩展错误路径报告，未产生有效结果时保持 Pi 原始输入不变；
 - extension runtime 结束后取消本实例创建的后台操作，过期操作不再提交状态。
 
@@ -130,9 +130,9 @@ Pi 扩展入口与唯一 Pi 边界适配模块。它连接 Pi 生命周期、来
 - 注册 Pi 生命周期、compaction、context hook、命令和工具；
 - 将 Pi 已接受的来源 entries 交给 Fact Synchronizer，并排除扩展自身的 `CueSet` custom entry；
 - 在 `session_before_compact` 中找到当前路径的上一份 `CueSet`，收集它之后已经保存到 OpenViking 的新 entries，
-  启动受 runtime cancellation 和 deadline 约束的 cue 任务后立即返回；
-- 在 `session_compact` 中取得 Pi 当前路径最后一个 `CompactionEntry`，只在 cue deadline 的剩余时间内接收结果；结果
-  成功且来源事件、compaction 与 runtime 仍有效时，将 `CueSet` 追加为 custom entry；
+  启动受 runtime cancellation 约束的 cue 任务后立即返回；
+- 在 `session_compact` 中取得 Pi 当前路径最后一个 `CompactionEntry`，只在 cue 任务已就绪时接收结果；结果
+  成功且来源事件、compaction 与 runtime 仍有效时，将 `CueSet` 追加为 custom entry；未就绪则不保存；
 - 从 Pi 当前 context entries 取得有效 `CueSet`，临时加入本次 provider context；
 - 将 search/read 工具参数与 Pi session identity、授权 principal 组合为 `OperationScope`；
 - 将 OpenViking Client 结果映射为 Pi 工具结果；
@@ -195,15 +195,15 @@ Pi 已接受的来源 entries 到 OpenViking Client 的可靠历史交付模块�
 > Pi 开始压缩前，Cue Provider 用“上一份 `CueSet` + 后来成功保存的新 entries”生成下一份 `CueSet`。
 > Cue 生成与 Pi 压缩同时进行；模型只看到简短线索，需要细节时再读取 OpenViking。
 
-例如，上一份 `CueSet` 已经用到 entry `e4`。压缩开始时，OpenViking 已保存 `e5`、`e6`、`e7`，`e8` 仍在等待。cue 任务先用 deadline 内的有界子预算等待 `e8` 保存：`e8` 及时保存则本次覆盖 `e5` 到 `e8`，并把 `e8` 记为“已经用到的最后一条 entry”；子预算用完时 `e8` 仍未保存，本次只用 `e5` 到 `e7` 更新线索，`e8` 顺延到下一份 `CueSet`。本次生成失败时，上一份 `CueSet` 仍停在 `e4`，下次不会漏掉 `e5`。
+例如，上一份 `CueSet` 已经用到 entry `e4`。压缩开始时，OpenViking 已保存 `e5`、`e6`、`e7`，`e8` 仍在等待。cue 任务在压缩窗口内等待 `e8` 并生成线索：`session_compact` 到达时若生成已完成，则保存新快照——`e8` 已保存则覆盖到 `e8`，否则覆盖到 `e7`——并把最后覆盖的 entry 记为“已经用到的最后一条 entry”；生成未完成则不保存。未覆盖的 entries 顺延到下一份 `CueSet`，上一份停在 `e4` 时下次不会漏掉 `e5`。
 
 **业务需求**
 
 - 每个 `CompactionEntry` 最多保存一份新 `CueSet`，并把它留在 Pi 当前 tree 路径上；
 - 第一次生成使用 session 开始后已保存的 entries；以后每次从上一份 `CueSet` 已经用到的最后一条 entry 之后继续；
 - `session_before_compact` 启动 cue 任务后立即返回，让 Pi 压缩与 cue 生成同时进行；
-- `session_compact` 只等待 cue deadline 尚未用完的时间；
-- cue 任务在生成前用 cue deadline 内的有界子预算等待待保存的 entries；子预算耗尽后仍未保存的 entries 不进本次快照，顺延到下一份 `CueSet`；
+- `session_compact` 到达即判定：cue 已生成就保存，未就绪不等待、不保存；
+- cue 任务在压缩窗口内等待待保存的 entries；`session_compact` 到达时仍未保存的 entries 不进本次快照，顺延到下一份 `CueSet`；
 - 每条线索只写事件时间或区间、用于识别事件的短句，以及以后找到完整事实所需的信息；
 - 新 `CueSet` 同时保存线索和本次已经用到的最后一条 Pi entry；
 - 线索数量和总字符数使用固定上限，任务模型结合当前上下文决定使用哪些线索；
@@ -216,13 +216,12 @@ Pi 已接受的来源 entries 到 OpenViking Client 的可靠历史交付模块�
 session_before_compact
   → previous CueSet + entries saved after its last-used entry
   → start cue task and return
-  → cue task: wait for pending entries within a bounded share of the deadline,
-    then generate from the entries saved by that moment
+  → cue task: wait for pending entries and generate within the compaction window
   → Pi compaction || cue task
 session_compact
-  → wait only for the time left before the cue deadline
-  → confirm the saved entries, runtime and Pi path are still valid
-  → save the new CueSet as a Pi custom entry
+  → if the new CueSet is ready and the runtime and Pi path are still valid:
+    save it as a Pi custom entry
+  → otherwise: keep the previous CueSet; uncovered entries defer to the next generation
 context
   → add only the short clues to the provider request
 ```
@@ -230,7 +229,7 @@ context
 Pi session tree 保存整个 `CueSet`：简短线索供模型使用，“已经用到的最后一条 Pi entry”供下一次生成使用。Pi Adapter
 只把线索临时加入普通 provider 请求；`CueSet` custom entry 不会变成 conversation message，也不会进入下一次 compaction。
 
-数量、总字符、deadline 与同步等待子预算使用固定保守上限；出现需要运行时调整的明确消费者后，再将对应上限纳入配置。
+线索数量与总字符数使用固定保守上限；出现需要运行时调整的明确消费者后，再将对应上限纳入配置。
 
 **职责边界**
 
@@ -326,8 +325,8 @@ degraded，后续接收直接返回。
 - factory 只执行同步纯构造；注册的 callback 在装配期间保持 inert，全部依赖与注册成功后由一次状态转换进入 active；
   装配失败的运行实例保持 inert，Pi 可以继续启动；
 - Pi 调度的 callback 保留 Pi 原生异常报告与隔离语义，并各自拥有明确完成边界；lifecycle、context 与
-  `session_before_compact` 只做有界本地工作，`session_compact` 只在已启动 cue 任务的既有 deadline 内接收结果；
-- 工具与后台外部操作各自携带 deadline 和 runtime cancellation signal；后台任务脱离 Pi 调度后由创建它的模块接收
+  `session_before_compact` 只做有界本地工作，`session_compact` 只接收已启动 cue 任务的已就绪结果，不等待其完成；
+- 工具与后台外部操作各自携带调用超时和 runtime cancellation signal；后台任务脱离 Pi 调度后由创建它的模块接收
   最终结果，shutdown 与 reload 发出取消但不等待完成；
 - 操作先在局部值完成计算，不原地修改 Pi event；随后验证当前 runtime 与 Pi 路径并提交一个不可变结果。失败、超时、
   取消和过期结果不推进交付进度，不追加 `CueSet`，也不改变 Pi context；
@@ -458,7 +457,7 @@ src/
 | --- | --- |
 | Pi 生命周期、hook 或 content 接口变化 | Pi Adapter |
 | ingestion 批次、重放或交付进度变化 | Fact Synchronizer |
-| cue 增量规则、格式、固定预算或 deadline 变化 | Cue Provider |
+| cue 增量规则、格式或固定上限变化 | Cue Provider |
 | OpenViking API、MCP 或响应变化 | OpenViking Client |
 | session、workspace 或 principal 字段变化 | `OperationScope` 构造边界 |
 | observation sink 变化 | Observer |
@@ -501,13 +500,13 @@ Pi 宿主、OpenViking 历史能力和 Memory Cues 语义共同定义本项目�
 - Memory Cues 使用固定预算提示“历史上发生过什么、如何找到完整事实”；任务模型结合当前上下文决定使用哪些线索；
 - 每次 compaction 最多保存一份新 `CueSet`；新结果使用上一份 `CueSet` 和它之后已保存的新 entries，并记住本次
   已经用到的最后一条 Pi entry；
-- `session_before_compact` 启动 cue 生成，`session_compact` 只等待 cue deadline 尚未用完的时间；
+- `session_before_compact` 启动 cue 生成，`session_compact` 到达即判定，不等待未完成的 cue 任务；
 - Pi session tree 保存 `CueSet` custom entry，并决定 tree 导航后当前有效的 cues；
 - Memory Cues 只在普通 provider context 中临时呈现，不进入后续 compaction；
 - 模型工具只提供当前目标所需的 search 和 read；
 - 文本、图片和未知 Pi payload 保持 Pi 已接受语义；
 - 每次 OpenViking 操作使用由 Pi 与授权 principal 形成的不可变 scope；
-- Pi callback 各自有明确完成边界，外部操作具有 deadline 与取消边界；失败不改变 Pi 原生 context、compaction
+- Pi callback 各自有明确完成边界，外部操作具有调用超时与取消边界；失败不改变 Pi 原生 context、compaction
   与主任务；
 - 凭证保持在授权进程内存和请求环境中；
 - observation 是扩展运行证据入口，并保持业务正文与凭证在记录之外。
@@ -520,8 +519,8 @@ Pi 宿主、OpenViking 历史能力和 Memory Cues 语义共同定义本项目�
   并验证 factory、callback 异常和 callback 完成时序的真实宿主边界；
 - ingestion 契约验证不透明交付、明确接受、幂等重放、取消以及失败时保持 pending；
 - Cue 契约验证每次生成只使用上一份 `CueSet` 和它之后已保存的新 entries，新 `CueSet` 记住本次用到的最后一条
-  Pi entry；同时验证 cue 生成与 Pi compaction 的重叠时间、单次提交、失败时保留上一份结果、tree 复用和后续
-  compaction 排除；
+  Pi entry；同时验证 cue 生成与 Pi compaction 的重叠、每次成功压缩的快照产出或明确 cause、单次提交、失败时
+  保留上一份结果、tree 复用和后续 compaction 排除；
 - 工具契约验证 search/read 参数、scope、分页以及文本和图片结果；
 - 安全契约验证模型参数无法覆盖 Pi session identity 与授权范围，凭证与用户正文保持在记录之外；
 - Managed Service 契约验证工具链、ownership、readiness 和安全生命周期；
