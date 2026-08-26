@@ -1,13 +1,12 @@
 /**
  * Pi Adapter：Pi 生命周期、会话快照、system-context 与模型工具的唯一边界。
- * 当前切片：生命周期注册点与 fail-open 边界；快照构造与 context/工具接入由
- * docs/roadmap.md 后续阶段填充，注册方式不变。
+ * 生命周期注册点与 fail-open 边界先于链路逻辑建立；各链路按 docs/roadmap.md 阶段接入。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /**
- * 任一注册点经 guard 获得 fail-open 语义：链路失败被转化为有界结果，不向 Pi 传播。
- * 诊断在 observation 建立前走 stderr——结构化 sink 接入后替换此通道。
+ * 任一注册点经 guard 获得 fail-open 语义：链路失败被转化为有界结果，不向 Pi 传播；
+ * 诊断输出为 stderr 单行。
  */
 function guard(name: string, fn: () => Promise<void>): () => Promise<void> {
   return async () => {
