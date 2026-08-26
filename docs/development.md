@@ -179,8 +179,9 @@ session、operation、stage、outcome、durationMs、error）；未设置时扩�
 并使本次扩展装配失败（callback 全部保持 inert），因为相对路径会解析到 Pi 进程的 cwd，落点不可控。
 
 验证入口：`npm test` 运行 typecheck，以及不接触真实服务的 unit 和 repo checks；需要真实 Pi 或 OpenViking 的
-检查通过 `npm run verify:<gate>:live` 运行，当前 gate 为 `run-boundary`，规则见
-[`docs/verification.md`](./verification.md)。
+检查通过 `npm run verify:<gate>:live` 运行，当前 gate 为 `run-boundary`（运行边界）与 `pi-memory`（Pi 原生记忆接入），
+规则见 [`docs/verification.md`](./verification.md)。`pi-memory` 通过 settings 注入较小的 `keepRecentTokens`
+使短会话触发真实 compaction，值固定在该 gate 的 manifest 中。
 
 ## 升级外部版本
 

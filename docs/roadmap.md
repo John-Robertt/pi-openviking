@@ -13,15 +13,15 @@
 
 ## 实施状态
 
-当前处于「Pi 原生记忆接入」阶段。「运行边界与观察」已关闭：unit、repo checks 与 run-boundary live gate
-全部通过，真实 Pi 中确认了 active/inert 原子启用、lifecycle callback 沿 Pi 原生错误路径报告、callback 在
-manifest 声明的时间上限内返回，以及 observer sink 失败后降级并停止后续写入；各项判定与实测数值固定在
-`test/live/run-boundary/workloads.json`。
+当前处于「OpenViking 出站端口」阶段。「Pi 原生记忆接入」已关闭：unit、repo checks 与 pi-memory live gate
+全部通过。真实 Pi 中确认了：持久与 in-memory session 的来源 entries 读取保持原值与顺序（自身 `CueSet` custom
+entry 除外）；compaction 后固定 `CueSet` 保存为当前路径的 custom entry（挂在对应 CompactionEntry 下）；普通
+provider payload 临时呈现当前有效 `CueSet`（含覆盖时间与采样说明）；compaction preparation 不含既有 `CueSet`
+文本；fork 导航与 session 重开后投影与当前路径一致；callback 失败沿 Pi 原生错误路径报告且不阻断 compaction。
+各项判定固定在 `test/live/pi-memory/workloads.json`。
 
-本阶段要落地 Pi Adapter 的四项工作（读取来源 entries、处理 `session_compact`、保存 `CueSet` custom entry、
-临时加入 context），所需的 tree、context 和 compaction 行为已由真实探针确认。第一步是按「阶段执行闭环」
-建立本阶段 manifest，以固定 `CueSet` 驱动真实 Pi 边界。
-## 阶段路径
+本阶段按交付约定先完成边界调查：在真实 OpenViking 实例上确定 ingestion、search 和 read 的公开能力、接受语义
+与幂等条件，再实现 OpenViking Client 与 `OperationScope`。调查完成后 `v1/` 整体移除。
 
 每个阶段以它交付的结果命名，并完成 `docs/design.md` 中一个模块的全部或部分职责。依赖的阶段通过验收后，下一阶段
 才开始。模块目标、业务需求和职责边界只在 `docs/design.md` 中修改；下表的「系统保证」只列出本阶段必须交付的
@@ -221,6 +221,7 @@ manifest 声明的时间上限内返回，以及 observer sink 失败后降级�
 
 ## 下一实施入口
 
-「Pi 原生记忆接入」阶段的入口是建立本阶段 manifest：以固定 `CueSet` 驱动真实 Pi，验证来源 entries 的
-读取、compaction 前后时序、`CueSet` custom entry 的保存与 provider context 投影。manifest 的字段与 hash 要求
-见 [`docs/verification.md`](./verification.md)「live gate 契约」，验收判定见上文「Pi 原生记忆接入」一节。
+「OpenViking 出站端口」阶段的入口是边界调查：在真实 OpenViking 实例（`docs/development.md` 的隔离服务）上运行
+最小探针，确定 ingestion 的接受语义（如何表示“已经保存”、以后如何找到同一事实）、幂等条件，以及 search/read
+的参数与响应形状；调查记录按它影响的内容归位（实现断言、manifest 阈值或 design.md）。随后按「阶段执行闭环」
+建立本阶段 manifest 并实现 OpenViking Client 与 `OperationScope`，验收判定见上文「OpenViking 出站端口」一节。

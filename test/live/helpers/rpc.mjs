@@ -39,9 +39,10 @@ export function runRpc({ args = [], env = {}, commands, timeoutMs = 120_000 }) {
     });
     child.stderr.on("data", (chunk) => stderrChunks.push(chunk));
 
-    const waitFor = (predicate, description) =>
+    // fromIndex：只匹配命令发出之后到达的事件，避免命中上一条命令的同名历史事件。
+    const waitFor = (predicate, description, fromIndex) =>
       new Promise((res, rej) => {
-        const found = events.find(predicate);
+        const found = events.slice(fromIndex).find(predicate);
         if (found) return res(found);
         waiters.push({ predicate, resolve: res });
         setTimeout(() => rej(new Error(`等待超时: ${description}`)), timeoutMs);
@@ -51,8 +52,11 @@ export function runRpc({ args = [], env = {}, commands, timeoutMs = 120_000 }) {
 
     (async () => {
       for (const step of commands) {
-        send(step.command);
-        if (step.until) await waitFor(step.until, step.description ?? JSON.stringify(step.command));
+        // command 可以是已收事件的函数：fork/switch_session 等需要先拿到运行期值（entryId、sessionFile）。
+        const command = typeof step.command === "function" ? step.command(events) : step.command;
+        const fromIndex = events.length;
+        send(command);
+        if (step.until) await waitFor(step.until, step.description ?? JSON.stringify(command), fromIndex);
       }
     })()
       .then(() => {

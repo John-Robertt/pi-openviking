@@ -12,10 +12,13 @@
     "dev": "node scripts/dev.mjs",
     "test": "npm run typecheck && node --test 'test/unit/*.test.mjs' 'test/repo/*.test.mjs'",
     "typecheck": "tsc -p tsconfig.json",
-    "verify:run-boundary:live": "node test/live/run-boundary/verify.mjs"
+    "verify:run-boundary:live": "node test/live/run-boundary/verify.mjs",
+    "verify:pi-memory:live": "node test/live/pi-memory/verify.mjs"
   },
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.2",

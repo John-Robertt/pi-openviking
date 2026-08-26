@@ -10,7 +10,8 @@ const SRC = join(REPO, "src");
 /** design.md「依赖规则」在 src/ 的静态表达：各模块目录允许引用的其他模块目录。 */
 const ALLOWED_IMPORTS = {
   "index.ts": ["config", "observation", "pi-adapter"],
-  "pi-adapter": ["observation"],
+  "pi-adapter": ["observation", "contracts"],
+  contracts: [],
   observation: [],
   config: [],
 };
