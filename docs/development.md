@@ -4,14 +4,14 @@
 
 **架构定位**：本仓库开发环境的权威手册。
 
-**核心目标**：在任意一台机器上克隆仓库后，能安装依赖、获得可用的 OpenViking endpoint、进入隔离 Pi 并
-安全清理。
+**核心目标**：在任意一台机器上克隆仓库后，能安装依赖、获得可用的 OpenViking endpoint、进入隔离 Pi、
+切换模型身份并安全清理。
 
 **职责边界**：本文只定义环境本身及其运行方式。目标架构与模块职责见 [`docs/design.md`](./design.md)，
 阶段顺序与验收见 [`docs/roadmap.md`](./roadmap.md)，证据类型与 live gate 契约见
 [`docs/verification.md`](./verification.md)。
 精确版本由 `package.json`、`package-lock.json` 与 `scripts/toolchain.mjs` 的 `TOOLCHAIN` 维护，本文不建立
-第二份版本清单。
+第二份版本清单；供应商目录与可用 model ID 由本机 CLI 与供应商账户按需取得，本文不维护静态清单。
 
 ## 环境边界
 
@@ -90,7 +90,53 @@ gate 设施放在 `test/live/helpers/`，见 [`docs/verification.md`](./verifica
 
 用户为某个身份完成登录，即构成该身份用于本仓库开发与验证的授权。以下变化需要重新取得用户决定：
 `taskModel` 的 provider 或 model 改变、`vlm` 的 provider、model 或 api base 改变、`embedding` 的 provider、
-model 或 dimension 改变，以及超出本仓库开发与 `docs/roadmap.md` 阶段验证范围的调用。
+model 或 dimension 改变、`taskModel` 或 `vlm` 的 `credentialKind` 或 `apiKeyEnv` 改变，以及超出本仓库开发与
+`docs/roadmap.md` 阶段验证范围的调用。
+
+## 模型切换
+
+变更前先按「凭证边界」确认该变更是否需要重新取得用户决定。
+
+**1. 枚举可用 model ID**
+
+```bash
+PI_OFFLINE=1 PI_CODING_AGENT_DIR=.dev/pi npm exec -- pi --list-models [provider]
+```
+
+输出列依次为 `provider model context max-out thinking images`。需要刷新动态目录时先执行
+`npm exec -- pi update --models`，它联网并写入 `$PI_CODING_AGENT_DIR/models-store.json`。
+
+**2. 核对可用性**
+
+```bash
+PI_CODING_AGENT_DIR=.dev/pi npm exec -- pi auth check --provider <id> --model <id> --json --no-refresh
+```
+
+`status` 非 `ready` 时停止，并提示用户自行 `/login <provider>`；仓库流程不代为登录，也不回退到其他
+provider 或账户。`--no-refresh` 保持只读；`--credentials` 会输出凭证值，不使用。
+
+**3. 修改 `dev/model-profile.json`**
+
+`credentialKind` 为 `api_key` 时必须给出 `apiKeyEnv`。`vlm` 使用 `oauth` 时，provider 必须在
+`scripts/openviking-oauth.mjs` 的注册表中——OpenViking 的订阅凭证 store 按 provider 各自定义，注册表之外的
+provider 没有可用的 store 路径，`dev` 的任一命令都会在加载 profile 时拒绝。
+
+**4. 按生效路径决定重启范围**
+
+| 变更字段 | 生效路径 | 重启范围 |
+| --- | --- | --- |
+| `taskModel` | `dev pi` 的启动参数 | 退出后重新 `npm run dev -- pi` |
+| `vlm`、`embedding` | `up` 生成的 `.dev/openviking/ov.conf` | `npm run dev -- down` 后 `npm run dev -- up` |
+
+变更 `embedding` 的 provider、model 或 dimension 时，一并决定 `.dev/openviking/data` 中的既有向量是否重建。
+
+**5. 验证**
+
+`npm run dev -- status` 报告的模型身份与凭证状态应与 profile 一致，再用一次真实请求确认任务模型可用：
+
+```bash
+npm run dev -- pi --no-session --no-tools -p 'Reply with exactly OK.'
+```
 
 ## 隔离与所有权
 
