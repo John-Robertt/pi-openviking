@@ -5,21 +5,19 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-type Handler = (...args: never[]) => Promise<void>;
-
 /**
  * 任一注册点经 guard 获得 fail-open 语义：链路失败被转化为有界结果，不向 Pi 传播。
  * 诊断在 observation 建立前走 stderr——结构化 sink 接入后替换此通道。
  */
-function guard<H extends Handler>(name: string, fn: H): H {
-  return (async (...args: Parameters<H>) => {
+function guard(name: string, fn: () => Promise<void>): () => Promise<void> {
+  return async () => {
     try {
-      await fn(...args);
+      await fn();
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       process.stderr.write(`pi-openviking: ${name} failed: ${message}\n`);
     }
-  }) as H;
+  };
 }
 
 export function registerPiAdapter(pi: ExtensionAPI): void {
