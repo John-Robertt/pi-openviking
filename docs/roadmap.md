@@ -15,7 +15,7 @@
 
 「运行边界与观察」出口已关闭：扩展在真实 Pi 完成加载、会话与 shutdown；fail-open 边界、结构化
 observation 与 config 首个消费者（观察请求）已落地；deterministic 测试与 run-boundary live gate 全部
-通过。当前阶段为「Pi 权威快照」，主导约束与下一步动作见「下一实施入口」。
+通过。当前阶段为「Pi 原生记忆接入」，主导约束与下一步动作见「下一实施入口」。
 
 ## 阶段路径
 
@@ -23,18 +23,18 @@ observation 与 config 首个消费者（观察请求）已落地；deterministi
 消费已通过验收的上游结果；模块的架构定位、核心目标、业务需求与职责边界由 `docs/design.md` 维护，阶段不
 重新定义。各阶段的「系统保证」是 `docs/design.md`「全局系统保证」在该阶段的切片，随后者变化同步核对。
 
-顺序由依赖决定：运行边界与观察是横切能力，先于其余阶段建立并被它们共同消费；Pi Adapter 是唯一 Pi 边界，
-先建立快照；OpenViking Client 是唯一出站端口，其真实调用语义决定同步机制；同步产生已接受历史，是 cue 与
-工具的共同前提；cue 是本项目身份所在，先于工具建立，使工具的参数面由真实消费者驱动。降级由运行边界与
-观察建立，并作为其后每个阶段的验收项。
+顺序由依赖决定：运行边界与观察是横切能力，先于其余阶段建立并被它们共同消费；Pi Adapter 先接入 Pi 已接受的
+来源 entries、compaction 与当前 context，使后续模块直接复用 Pi 的 session tree；OpenViking Client 是唯一出站
+端口，其真实调用语义决定同步机制；同步产生已接受历史，是 cue 与工具的共同前提；cue 是本项目身份所在，先于
+工具建立，使工具的参数面由真实消费者驱动。降级由运行边界与观察建立，并作为其后每个阶段的验收项。
 
 | 阶段 | 建立的系统保证 | 落地的模块责任 |
 | --- | --- | --- |
 | 运行边界与观察 | 扩展失败不影响 Pi 主任务，每次运行留下可关联证据 | Observation、Configuration & Credentials、Composition Root |
-| Pi 权威快照 | 任意 Pi 已接受事实形成触发时刻一致的只读快照 | Pi Adapter（`PiSnapshot`） |
+| Pi 原生记忆接入 | 来源事实与 Memory Cues 复用 Pi 原生 session tree 和 context 语义 | Pi Adapter（entries、compaction、context） |
 | OpenViking 出站端口 | ingest/search/read 通过窄接口完成，每次调用绑定不可变范围 | OpenViking Client、`OperationScope` |
 | 会话事实同步 | 每个 Pi 已接受事实最终被 OpenViking 接受且可重放 | Fact Synchronizer |
-| Compaction 记忆线索 | compaction 后模型上下文出现少量稳定的相关历史线索 | Cue Provider、Pi Adapter（system-context） |
+| Compaction 记忆线索 | compaction 后模型上下文出现少量稳定的相关历史线索 | Cue Provider、Pi Adapter（custom entry 与 context） |
 | 历史细节恢复 | 模型可取回精确历史细节，且参数无法越权 | Pi Adapter（模型工具） |
 | 本地服务托管 | 本地 OpenViking endpoint 可安全、可重建地提供 | Managed OpenViking Service |
 
@@ -61,23 +61,27 @@ observation 与 config 首个消费者（观察请求）已落地；deterministi
 - 观察记录中不出现用户正文、图片 base64、凭证与未脱敏 URI；
 - 仓库中不存在第二套运行过程观察。
 
-### Pi 权威快照
+### Pi 原生记忆接入
 
-**系统保证**：任意 Pi 已接受的 entry、branch、compaction 与多模态 payload 都能形成触发时刻一致的只读
-`PiSnapshot`。
+**系统保证**：Pi 已接受的来源 entries 直接进入事实交付边界；每次 compaction 产生的 `CueSet` 由 Pi session tree
+保存，并在普通 provider context 中呈现，同时保持在后续 compaction 输入之外。
 
 **交付**
 
-- 完成 `docs/design.md`「1. Pi Adapter」的 `PiSnapshot` 构造，覆盖持久 session 与 in-memory session 两类来源。
+- 完成 `docs/design.md`「1. Pi Adapter」的来源 entry 读取、`session_compact` 消费、CueSet custom entry 保存与
+  context 临时投影责任；
+- 建立本阶段 Pi live gate，以固定 `CueSet` 驱动真实 Pi tree、context 与 compaction 边界。
 
 **验收**（对应 `docs/design.md`「验证责任」的 Pi 契约）
 
-- 真实 Pi `SessionManager` 持久化的 user、assistant、tool call/result、custom、model change 与 compaction
-  entry 全部出现在快照中，且逐字节等于 Pi 侧原值；
-- 图片与未知 part 在快照中保持 Pi 已接受语义，未被解释、转换或截断；
-- 同一快照内 tree、当前 branch 与 leaf 相互一致；快照构造完成后 Pi 侧新增 entry 不改变该快照；
-- branch 切换与 session 重开后取得的快照反映当前 branch 与 leaf；
-- in-memory session 在同一触发时刻得到与持久 session 同形状的快照。
+- 持久 session 与 in-memory session 中，Pi Adapter 取得的来源 entries 保持 Pi 已接受的原始值与顺序，扩展自身的
+  `CueSet` custom entry 保持在来源事实集合之外；
+- 真实 Pi compaction 完成后，`CueSet` 作为 custom entry 保存在当前 tree 路径，普通 provider payload 可见其文本；
+- 后续 compaction 的 preparation 中没有既有 `CueSet` 文本，新 compaction 后的普通 provider payload 只呈现 Pi
+  当前 context entries 中有效的 `CueSet`；
+- `/tree` 导航、session 重开与扩展重载后，Pi Adapter 直接使用 Pi 当前构造的 context entries，tree 导航本身不
+  生成或改写 `CueSet`；
+- 以上读取、保存或投影失败时 Pi agent loop、原生 context 与 compaction 继续运行。
 
 ### OpenViking 出站端口
 
@@ -112,34 +116,35 @@ observation 与 config 首个消费者（观察请求）已落地；deterministi
 
 **验收**（对应 `docs/design.md`「验证责任」的 ingestion 契约）
 
-- 一次真实会话结束后，快照中的每个 entry——含当前 branch、祖先与 sibling branch——都有明确的接受或
-  待重放结果；
+- 一次真实会话结束后，Pi Adapter 提供的每个来源 entry 都有明确的接受或待重放结果；
 - 从 OpenViking 读回的对象可逐字节还原为原始 Pi entry；
 - 交付进度只在 OpenViking 明确接受后推进；接受结果丢失时该事实保持待重放；
-- 进程重启、交付状态删除、branch 切换与重复提交后重放，OpenViking 侧不产生重复或半可见对象；
+- 进程重启、交付状态删除与重复提交后重放，OpenViking 侧不产生重复或半可见对象；
 - OpenViking 不可用期间 Pi 主任务、compaction 与 shutdown 时长不受影响，服务恢复后未交付事实完成交付。
 
 ### Compaction 记忆线索
 
-**系统保证**：每次 Pi compaction 后，模型可见上下文中出现少量稳定的相关历史线索，且不产生 SessionEntry。
+**系统保证**：每次 Pi compaction 对应一份提交后保持不变的 `CueSet`；Pi session tree 保存它，普通 provider
+context 呈现它，后续 compaction 输入排除它。
 
 **交付**
 
 - 完成 `docs/design.md`「3. Cue Provider」的责任；
-- 完成「1. Pi Adapter」的 `CueSet` system-context 接入。
+- 完成「1. Pi Adapter」的 CueSet custom entry 提交与普通 provider context 投影。
 
 **验收**（对应 `docs/design.md`「验证责任」的 Cue 契约）
 
-- 真实 Pi compaction 完成后，provider 实际收到的 payload 中出现 `CueSet` 文本，而同一 session 的 Pi entries
-  中没有对应记录；
-- 同一 branch 与 compaction 下重复触发 context，观察记录中只出现一次 OpenViking search，两次得到同一
+- 真实 Pi compaction 完成后只执行一次成功的 OpenViking search，产生一个 `CueSet` custom entry，provider 实际
+  收到的 payload 中出现其文本；
+- 同一 compaction 下重复触发 context 不再搜索，两次得到逐字节相同的 `CueSet`；
+- Pi tree 导航、session 重开与扩展重载复用当前路径中的既有 `CueSet`，这些动作不触发搜索；只有新的
+  `CompactionEntry` 产生新的搜索与 `CueSet`；
+- 后续 compaction 的 preparation 不含既有 `CueSet` 文本，完成后普通 provider payload 只呈现当前有效的
   `CueSet`；
-- session 重开与扩展重载后，相同 branch 与 compaction 继续得到同一 `CueSet`；新的 compaction 或 branch
-  变化产生新的搜索与新的 `CueSet`；
 - 候选顺序与 OpenViking 返回顺序一致；候选数量与总字符落在固定上限内；
-- 每条线索的文本非空——服务端摘要缺失时给出可诊断的失败，而不是产出空壳 `CueSet`；
+- 每条线索的文本非空，服务端摘要缺失时返回可诊断失败；
 - `CueSet` 中不含正文、URI、entry ID 与分数；
-- 无相关候选与 OpenViking 失败分别返回空结果，Pi 原生上下文与 agent loop 继续，失败在状态查询中可诊断。
+- 无相关候选提交空 `CueSet`；OpenViking 失败返回可诊断空结果，Pi 原生上下文与 agent loop 继续。
 
 ### 历史细节恢复
 
@@ -154,7 +159,7 @@ observation 与 config 首个消费者（观察请求）已落地；deterministi
 - 真实 Pi 中模型调用 search 与 read 得到可用结果；文本与图片分别映射为 Pi 的 TextContent 与 ImageContent
   并进入 Pi 原生上下文；
 - read 的分页与读取范围受上限约束，越界请求被拒绝；
-- 工具参数中携带的 session 或 branch 身份不改变实际调用范围，以真实越界尝试证明；
+- 工具参数中携带的 session identity 或授权范围字段不改变实际调用范围，以真实越界尝试证明；
 - 工具调用失败返回可诊断的工具结果，agent loop 继续；
 - 注册的工具集合只有 search 与 read。
 
@@ -196,12 +201,13 @@ observation 与 config 首个消费者（观察请求）已落地；deterministi
 
 ## 下一实施入口
 
-当前主导约束是：`PiSnapshot` 构造不存在，其输入——SessionManager 公开读取接口在持久与 in-memory
-session 上的真实形状——尚未由真实运行确定。
+当前主导约束是：Pi Adapter 目前只建立了 session lifecycle 与 fail-open 边界；来源 entry 读取、compaction 后
+CueSet custom entry 保存和普通 provider context 投影尚未进入当前实现与阶段 gate。真实 Pi 探针已经确认 custom
+entry 由 session tree 保存、普通 context 临时投影可见且后续 compaction preparation 排除该内容。
 
 后续动作按以下顺序执行：
 
-1. 在真实 Pi 上对 SessionManager 读取接口做最小探针，确定 user、assistant、tool call/result、custom、
-   model change 与 compaction entry 及 tree、branch、leaf 的实际形状与一致性条件；
-2. 实现 `docs/design.md`「1. Pi Adapter」的 `PiSnapshot` 构造，覆盖持久与 in-memory 两类来源；
-3. 建立本阶段 live gate，按「Pi 权威快照」验收项逐项取证。
+1. 建立本阶段 manifest，以真实 Pi 覆盖持久与 in-memory session、manual/threshold/overflow compaction、tree 导航、
+   session 重开和扩展重载；
+2. 实现 Pi Adapter 的来源 entry 读取与过滤、`session_compact` 消费、CueSet custom entry 保存和 context 临时投影；
+3. 建立聚焦 deterministic checks 并运行本阶段 live gate，按「Pi 原生记忆接入」验收项逐项取证。
