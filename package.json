@@ -10,7 +10,9 @@
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "typecheck": "tsc -p tsconfig.json"
+    "test": "npm run typecheck && node --test 'test/unit/*.test.mjs' 'test/repo/*.test.mjs'",
+    "typecheck": "tsc -p tsconfig.json",
+    "verify:run-boundary:live": "node test/live/run-boundary/verify.mjs"
   },
   "pi": {
     "extensions": ["./src/index.ts"]

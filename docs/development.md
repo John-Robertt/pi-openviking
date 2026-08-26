@@ -43,7 +43,8 @@ dev/                      # tracked：机器事实
 .dev/                     # gitignored：全部运行时产物
 ├── toolchain/            # 固定 uv、托管 Python、venv
 ├── openviking/           # workspace、ov.conf、ownership marker、PID、日志、状态、embedding 缓存
-└── pi/                   # 隔离 PI_CODING_AGENT_DIR
+├── pi/                   # 隔离 PI_CODING_AGENT_DIR
+└── gates/                # live gate 运行目录（gate 结束时断言清理）
 ```
 
 `.dev/` 可整体删除，由 `bootstrap` 与 `up` 重建；重建会重新下载 embedding 模型。凭证不写入上述任一目录。
@@ -166,6 +167,13 @@ npm run dev -- pi --no-session --no-tools -p 'Reply with exactly OK.'
 
 `/reload` 先触发 `session_shutdown`，再重载扩展并触发 `session_start`，因此它同时是连接释放与状态重建
 的观察点。交互调试使用持久 session，其 JSONL 位于 `.dev/pi/sessions/`。
+
+扩展的结构化运行证据按需开启：`PI_OPENVIKING_OBSERVE=<file>` 时每次运行追加 JSONL 记录（runId、ts、
+session、operation、stage、outcome、durationMs、error）；未设置时扩展不产生观察副作用。
+
+验证入口：`npm test` 运行 typecheck 与 deterministic 测试（unit 与 repo）；live gate 以
+`npm run verify:<gate>:live` 运行，当前 gate 为 `run-boundary`，契约见
+[`docs/verification.md`](./verification.md)。
 
 ## 升级外部版本
 

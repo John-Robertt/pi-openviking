@@ -13,9 +13,9 @@
 
 ## 实施状态
 
-「运行边界与观察」进行中，尚无阶段出口关闭。该阶段已建立的部分：受管工具链、隔离 OpenViking 服务与隔离
-Pi 可重复获得，流程见 [`docs/development.md`](./development.md)；证据类型、测试组织与 gate 契约见
-[`docs/verification.md`](./verification.md)。当前主导约束与下一步动作见「下一实施入口」。
+「运行边界与观察」出口已关闭：扩展在真实 Pi 完成加载、会话与 shutdown；fail-open 边界、结构化
+observation 与 config 首个消费者（观察请求）已落地；deterministic 测试与 run-boundary live gate 全部
+通过。当前阶段为「Pi 权威快照」，主导约束与下一步动作见「下一实施入口」。
 
 ## 阶段路径
 
@@ -196,12 +196,12 @@ Pi 可重复获得，流程见 [`docs/development.md`](./development.md)；证�
 
 ## 下一实施入口
 
-当前主导约束是：扩展已在真实 Pi 完成加载、会话与 shutdown，fail-open 边界已有落点，但注册点链路的
-失败只有 stderr 诊断，还没有可关联的结构化运行证据。
+当前主导约束是：`PiSnapshot` 构造不存在，其输入——SessionManager 公开读取接口在持久与 in-memory
+session 上的真实形状——尚未由真实运行确定。
 
 后续动作按以下顺序执行：
 
-1. 接入结构化 observation，使一次真实运行产生第一份可关联证据；observation sink 的配置解析是
-   `docs/design.md`「Configuration & Credentials」责任的第一个消费者；本步同时验收「TUI 模式下扩展链路
-   失败可见」——guard 的 stderr 通道在 TUI 渲染接管下的可达性尚未由真实运行确认；
-2. 按 [`docs/verification.md`](./verification.md) 的证据类型与测试组织建立本阶段的验证入口。
+1. 在真实 Pi 上对 SessionManager 读取接口做最小探针，确定 user、assistant、tool call/result、custom、
+   model change 与 compaction entry 及 tree、branch、leaf 的实际形状与一致性条件；
+2. 实现 `docs/design.md`「1. Pi Adapter」的 `PiSnapshot` 构造，覆盖持久与 in-memory 两类来源；
+3. 建立本阶段 live gate，按「Pi 权威快照」验收项逐项取证。

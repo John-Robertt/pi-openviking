@@ -1,0 +1,54 @@
+{
+  "gate": "run-boundary",
+  "version": 1,
+  "identity": {
+    "piVersion": "0.84.3",
+    "endpoint": "http://127.0.0.1:19331",
+    "taskModel": {
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    }
+  },
+  "prompt": "Reply with exactly OK.",
+  "filteredOut": [
+    "message_update",
+    "extension_error"
+  ],
+  "expectedSequence": [
+    "response",
+    "agent_start",
+    "turn_start",
+    "message_start",
+    "message_end",
+    "message_start",
+    "message_end",
+    "turn_end",
+    "agent_end",
+    "agent_settled",
+    "compaction_start",
+    "compaction_end",
+    "response"
+  ],
+  "observationOperations": [
+    "assembly",
+    "session_start",
+    "session_shutdown"
+  ],
+  "exitCode": 0,
+  "runTimeoutMs": 120000,
+  "redactionForbiddenPatterns": [
+    "Reply with exactly OK",
+    "/home/",
+    "Bearer",
+    "auth.json",
+    "[A-Za-z0-9+/]{160,}"
+  ],
+  "falsification": [
+    "任一 workload 的事件序列与 expectedSequence 不一致",
+    "loaded workload 的观察记录缺失、无法按 runId/session 关联或操作序列不符",
+    "观察记录命中任一 redactionForbiddenPatterns",
+    "注入失败 workload 未出现 extension_error 事件或 exit code 非 0",
+    "运行目录清理失败"
+  ],
+  "hash": "sha256:b31daafa8e3e6f4a50f6197c952cb46e56f9740d4317074eb370e59a723cd3d4"
+}
