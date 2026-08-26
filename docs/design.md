@@ -212,6 +212,9 @@ Pi 已接受的来源 entries 到 OpenViking Client 的可靠历史交付模块�
 - cue 任务可以在 Pi 压缩期间等待当前事实交付结束，但只使用 OpenViking 已确认保存的 entries；
 - `session_compact` 到达时只接收已经生成的结果，并取消仍未完成的 cue 任务；未生成线索的 entries 留给下一次；
 - 每条线索只写事件时间或区间、用于识别事件的短句，以及以后找到完整事实所需的信息；
+- 线索交给模型时一并说明覆盖到哪个时间为止，以及这是重要事件的采样、不是完整清单，需要具体内容时用 search
+  取回。覆盖时间来自本次已经用到的最后一条 entry 的 timestamp，不需要新字段。没有这两句说明时，一份清单会被
+  读成“历史上只发生过这些”，而线索受固定预算约束，本来就装不下全部事件；
 - 新 `CueSet` 同时保存线索和本次已经用到的最后一条 Pi entry；
 - 线索数量和总字符数使用固定保守上限；实际运行需要调整某个上限时，再把该上限加入配置；
 - session 重开、tree 导航和扩展重载后，Pi 当前路径上的 `CueSet` 继续生效；
@@ -230,7 +233,7 @@ session_compact
   → not ready: cancel the cue task
   → no saved result: keep the previous CueSet; unused entries go to the next generation
 context
-  → add only the short clues to the provider request
+  → add the short clues, their coverage time and the sampling notice to the provider request
 ```
 
 Pi session tree 保存整个 `CueSet`：简短线索供模型使用，“已经用到的最后一条 Pi entry”供下一次生成使用。Pi Adapter
@@ -500,7 +503,8 @@ compaction，或在扩展内建立检索系统，都会改变产品目标；开�
 - OpenViking 独立拥有存储、索引、搜索、读取、服务端模型和权限；
 - 一个 Pi 来源 entry 对应一个不透明来源事实；
 - OpenViking 明确接受后才记录交付完成；
-- Memory Cues 使用固定预算提示“历史上发生过什么、如何找到完整事实”；任务模型结合当前上下文决定使用哪些线索；
+- Memory Cues 使用固定预算提示“历史上发生过什么、如何找到完整事实”，并说明覆盖到哪个时间为止、自身是采样而
+  不是完整清单；任务模型结合当前上下文决定使用哪些线索；
 - 每次 compaction 最多保存一份新 `CueSet`；新结果使用上一份 `CueSet` 和它之后已保存的新 entries，并记住本次
   已经用到的最后一条 Pi entry；
 - `session_before_compact` 启动 cue 任务；`session_compact` 只保存已经生成的结果，并取消仍未完成的任务；
@@ -522,8 +526,9 @@ compaction，或在扩展内建立检索系统，都会改变产品目标；开�
   并验证 factory、callback 异常和 callback 完成时序的真实宿主边界；
 - ingestion 契约验证不透明交付、明确接受、幂等重放、取消以及失败时保持 pending；
 - Cue 契约验证每次生成只使用上一份 `CueSet` 和它之后已保存的新 entries，并在新 `CueSet` 中记录最后用到的
-  Pi entry；同时验证 cue 生成与 Pi compaction 重叠，每个 `CompactionEntry` 最多保存一次，未保存时记录明确原因并
-  取消未完成任务，以及 tree 复用和后续 compaction 排除；
+  Pi entry；验证呈现给模型的线索带有覆盖时间与采样说明，且覆盖时间与最后用到的 entry 一致；同时验证 cue 生成
+  与 Pi compaction 重叠，每个 `CompactionEntry` 最多保存一次，未保存时记录明确原因并取消未完成任务，以及 tree
+  复用和后续 compaction 排除；
 - 工具契约验证 search/read 参数、scope、分页以及文本和图片结果；
 - 安全契约验证模型参数无法覆盖 Pi session identity 与授权范围，凭证与用户正文保持在记录之外；
 - Managed Service 契约验证工具链、ownership、readiness 和安全生命周期；

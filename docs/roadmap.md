@@ -157,6 +157,7 @@
   之后新保存的 entries，并记住本次用到的最后一条 entry；
 - manifest 列出的重要事件都有对应线索；模型使用该线索调用 search/read 时可以找到目标事实；
 - 每条线索只包含事件时间或区间、用于识别事件的短句，以及找到完整事实所需的信息；
+- provider 可见的线索带有覆盖时间与采样说明，覆盖时间与本次已经用到的最后一条 entry 一致；
 - `CueSet` 的线索数量与 provider 可见字符数落在固定上限内；
 - 每个新的 `CompactionEntry` 最多保存一份新 `CueSet`；Pi tree 导航、session 重开与扩展重载后，provider context
   使用当前路径中已保存的 `CueSet`；
