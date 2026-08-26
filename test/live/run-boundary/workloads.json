@@ -2,12 +2,10 @@
   "gate": "run-boundary",
   "identity": {
     "piVersion": "0.84.3",
-    "endpoint": "http://127.0.0.1:19331",
     "taskModel": {
       "provider": "openai-codex",
       "model": "gpt-5.6-luna"
-    },
-    "openvikingVersion": "0.4.15"
+    }
   },
   "prompt": "Reply with exactly OK.",
   "requiredEventMilestones": [
@@ -26,6 +24,9 @@
   ],
   "exitCode": 0,
   "runTimeoutMs": 120000,
+  "callbackDurationMaxMs": 100,
+  "assemblyFailureObserve": "run-boundary-relative-obs.jsonl",
+  "degradedStderrPattern": "observation degraded",
   "redactionForbiddenPatterns": [
     "Reply with exactly OK",
     "/home/",
@@ -36,9 +37,12 @@
   "falsification": [
     "requiredEventMilestones 不是非空数组，或任一 workload 缺少这些事件、顺序不符",
     "requiredObservationOperations 不是非空数组，或 loaded workload 的记录缺失、无法按 runId/session 关联、缺少必要操作",
+    "loaded workload 任一记录的 durationMs 超过 callbackDurationMaxMs",
+    "inert workload：装配失败注入后 exit code 非 0、缺少里程碑，或 stderr 未恰好出现一次 extension disabled 诊断",
+    "sink-failure workload：exit code 非 0、缺少里程碑、观察文件被创建，或 observation degraded 诊断不恰好一次",
     "观察记录命中任一 redactionForbiddenPatterns",
     "注入失败 workload 未出现 extension_error 事件或 exit code 非 0",
     "运行目录清理失败"
   ],
-  "hash": "sha256:50cf558c3d0170cb73e09394b463a81df066a961e16b277b2fa8a427dfbebee7"
+  "hash": "sha256:d1297addbe5b0ac45e446a25cbd3f487c2ffb9e85d8a8c8d5516c8e9d723e1be"
 }

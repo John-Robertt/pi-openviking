@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /**
  * run-boundary live gate：验证「运行边界与观察」阶段系统保证——
- * 扩展在真实 Pi 中加载与卸载；任一扩展链路失败时 Pi 主任务继续运行；
- * 每次运行留下可关联、已脱敏的结构化证据。
+ * 运行实例原子启用（装配失败时全部 callback 保持 inert）；lifecycle callback 异常沿 Pi 原生
+ * 扩展错误路径报告；callback 在声明的时间上限内返回；Observer sink 失败后停止后续写入且不
+ * 阻断 Pi；每次运行留下可关联、已脱敏的结构化证据。
+ * 本 gate 只接触真实 Pi，不接触 OpenViking（docs/verification.md「身份先行」）。
  * 契约见 docs/verification.md「live gate 契约」；baseline 与阈值固定在 workloads.json。
  */
 import { spawnSync } from "node:child_process";
@@ -19,7 +21,6 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { get as httpGet } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runRpc } from "../helpers/rpc.mjs";
@@ -35,26 +36,6 @@ const fail = (reason) => {
   process.exit(1);
 };
 
-function httpGetJson(url) {
-  return new Promise((resolve) => {
-    const req = httpGet(url, (res) => {
-      let body = "";
-      res.on("data", (chunk) => (body += chunk));
-      res.on("end", () => {
-        if (res.statusCode !== 200) return resolve(null);
-        try {
-          resolve(JSON.parse(body));
-        } catch {
-          resolve(null);
-        }
-      });
-    });
-    req.on("error", () => resolve(null));
-    req.setTimeout(5000, () => req.destroy());
-  });
-}
-
-
 function sha256File(file) {
   return `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
 }
@@ -68,13 +49,6 @@ const version = spawnSync(join(REPO, "node_modules", ".bin", "pi"), ["--version"
   .stdout.trim();
 if (version !== manifest.identity.piVersion) {
   fail(`Pi 版本不符：期望 ${manifest.identity.piVersion}，实际 ${version || "不可用"}`);
-}
-const health = await httpGetJson(`${manifest.identity.endpoint}/health`);
-if (health === null) {
-  fail(`OpenViking endpoint 不可用：${manifest.identity.endpoint}`);
-}
-if (health.version !== manifest.identity.openvikingVersion) {
-  fail(`OpenViking 版本不符：期望 ${manifest.identity.openvikingVersion}，实际 ${health.version ?? "未知"}`);
 }
 const profile = JSON.parse(readFileSync(join(REPO, "dev", "model-profile.json"), "utf8"));
 const { provider, model } = manifest.identity.taskModel;
@@ -112,7 +86,9 @@ function setupAgentDir() {
     linkSync(authSource, join(agentDir, "auth.json"));
   }
   cpSync(join(DEV_PI, "models-store.json"), join(agentDir, "models-store.json"));
-  cpSync(join(DEV_PI, "settings.json"), join(agentDir, "settings.json"));
+  // settings.json 由 Pi 按需生成，不存在时无需复制。
+  const settings = join(DEV_PI, "settings.json");
+  if (existsSync(settings)) cpSync(settings, join(agentDir, "settings.json"));
 }
 
 const SKIP_WORKLOADS = Symbol("skip-workloads");
@@ -137,10 +113,13 @@ const commands = [
   },
 ];
 
-async function runWorkload(name, { wrapper, probe, observe }) {
+/**
+ * obsEnv：PI_OPENVIKING_OBSERVE 的值；undefined 表示不设置。
+ * 返回的 obsFile 仅在 obsEnv 指向 runDir 内文件时有值（供证据 hash 与内容断言）。
+ */
+async function runWorkload(name, { wrapper, probe, obsEnv }) {
   if (wrapper) writeWrapper();
   const sessionsDir = join(runDir, `sessions-${name}`);
-  const obsFile = observe ? join(runDir, `obs-${name}.jsonl`) : undefined;
   const result = await runRpc({
     args: [
       "--provider",
@@ -153,11 +132,12 @@ async function runWorkload(name, { wrapper, probe, observe }) {
     ],
     env: {
       PI_CODING_AGENT_DIR: agentDir,
-      ...(obsFile ? { PI_OPENVIKING_OBSERVE: obsFile } : {}),
+      ...(obsEnv !== undefined ? { PI_OPENVIKING_OBSERVE: obsEnv } : {}),
     },
     commands,
     timeoutMs: manifest.runTimeoutMs,
   });
+  const obsFile = obsEnv !== undefined && obsEnv.startsWith(runDir) ? obsEnv : undefined;
   return { result, sessionsDir, obsFile };
 }
 
@@ -195,6 +175,15 @@ function assertEventMilestones(name, workload) {
   );
 }
 
+function assertExitCode(name, workload) {
+  if (!workload) return;
+  assert(`${name} exit code`, manifest.exitCode, workload.result.code, workload.result.code === manifest.exitCode);
+}
+
+function stderrLines(workload, pattern) {
+  return workload.result.stderr.split("\n").filter((line) => line.includes(pattern));
+}
+
 try {
   // agentDir 建立失败转为断言失败并跳过 workloads，清理与 summary 照常产出。
   try {
@@ -204,27 +193,20 @@ try {
     throw SKIP_WORKLOADS;
   }
   // --- baseline：未加载扩展 ---
-  const baseline = await tryRun("baseline", { wrapper: false, probe: null, observe: false });
-  if (baseline) {
-    assert(
-      "baseline exit code",
-      manifest.exitCode,
-      baseline.result.code,
-      baseline.result.code === manifest.exitCode,
-    );
-  }
+  const baseline = await tryRun("baseline", { wrapper: false, probe: null });
+  assertExitCode("baseline", baseline);
   assertEventMilestones("baseline", baseline);
 
-  // --- loaded：扩展加载 + 观察开启 ---
-  const loaded = await tryRun("loaded", { wrapper: true, probe: null, observe: true });
+  // --- loaded：扩展加载 + 观察开启，验证 active 启用、callback 时界与可关联证据 ---
+  const loaded = await tryRun("loaded", { wrapper: true, probe: null, obsEnv: join(runDir, "obs-loaded.jsonl") });
+  assertExitCode("loaded", loaded);
   if (loaded) {
-    assert("loaded exit code", manifest.exitCode, loaded.result.code, loaded.result.code === manifest.exitCode);
     const hasExtensionError = loaded.result.events.some((event) => event.type === "extension_error");
     assert("loaded 无 extension_error", false, hasExtensionError, !hasExtensionError);
   }
   assertEventMilestones("loaded", loaded);
 
-  // 观察证据：可关联、字段齐全、链路结果全部 ok
+  // 观察证据：可关联、字段齐全、链路结果全部 ok、callback 在时间上限内返回
   const obsFile = loaded?.obsFile;
   const obsExists = obsFile !== undefined && existsSync(obsFile);
   assert("loaded 观察文件存在", true, obsExists, obsExists);
@@ -257,22 +239,61 @@ try {
       [...sessionIds][0],
       sessionUuid !== undefined && sessionIds.has(sessionUuid),
     );
+    const durations = records.map((record) => record.durationMs);
+    const maxDuration = Math.max(...durations);
+    assert(
+      "callback 在时间上限内返回",
+      `durationMs <= ${manifest.callbackDurationMaxMs}`,
+      { durations, max: maxDuration, delta: maxDuration - manifest.callbackDurationMaxMs },
+      maxDuration <= manifest.callbackDurationMaxMs,
+    );
   }
 
-  // --- 注入失败：各注册点失败后 Pi 仍完成必要运行里程碑 ---
+  // --- inert：注入装配失败，Pi 正常启动，已注册 callback 全部保持 inert ---
+  const inert = await tryRun("inert", { wrapper: true, probe: null, obsEnv: manifest.assemblyFailureObserve });
+  assertExitCode("inert", inert);
+  assertEventMilestones("inert", inert);
+  if (inert) {
+    const disabled = stderrLines(inert, "extension disabled, assembly failed");
+    assert("inert 装配失败诊断", "恰好 1 条 extension disabled", disabled, disabled.length === 1);
+  }
+
+  // --- sink-failure：sink 写入失败不阻断 Pi，observer 降级后停止后续写入 ---
+  writeFileSync(join(runDir, "blocked"), "not a directory");
+  const sinkFailure = await tryRun("sink-failure", {
+    wrapper: true,
+    probe: null,
+    obsEnv: join(runDir, "blocked", "obs.jsonl"),
+  });
+  assertExitCode("sink-failure", sinkFailure);
+  assertEventMilestones("sink-failure", sinkFailure);
+  if (sinkFailure) {
+    assert(
+      "sink-failure 未产生观察文件",
+      false,
+      existsSync(join(runDir, "blocked", "obs.jsonl")),
+      !existsSync(join(runDir, "blocked", "obs.jsonl")),
+    );
+    const degraded = stderrLines(sinkFailure, manifest.degradedStderrPattern);
+    assert(
+      "sink 失败后 observer 停止后续写入",
+      `恰好 1 条 ${manifest.degradedStderrPattern}`,
+      degraded,
+      degraded.length === 1,
+    );
+  }
+
+  // --- 注入失败：callback 异常沿 Pi 原生错误路径报告，Pi 仍完成必要运行里程碑 ---
   for (const probe of ["fail-session-start.ts", "fail-session-shutdown.ts"]) {
     const name = probe.replace(".ts", "");
-    const injected = await tryRun(name, { wrapper: true, probe, observe: true });
+    const injected = await tryRun(name, { wrapper: true, probe, obsEnv: join(runDir, `obs-${name}.jsonl`) });
+    assertExitCode(name, injected);
     if (injected) {
-      assert(
-        `${name} exit code`,
-        manifest.exitCode,
-        injected.result.code,
-        injected.result.code === manifest.exitCode,
-      );
       const hasExtensionError = injected.result.events.some((event) => event.type === "extension_error");
       assert(`${name} extension_error 事件`, true, hasExtensionError, hasExtensionError);
-      if (existsSync(injected.obsFile)) evidence[injected.obsFile.split("/").pop()] = sha256File(injected.obsFile);
+      if (injected.obsFile && existsSync(injected.obsFile)) {
+        evidence[injected.obsFile.split("/").pop()] = sha256File(injected.obsFile);
+      }
     }
     assertEventMilestones(name, injected);
   }
@@ -303,7 +324,7 @@ console.log(
   JSON.stringify(
     {
       gate: manifest.gate,
-      identity: { piVersion: version, endpoint: manifest.identity.endpoint, taskModel: `${provider}/${model}` },
+      identity: { piVersion: version, taskModel: `${provider}/${model}` },
       runId,
       assertions,
       evidence,

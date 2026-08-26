@@ -13,15 +13,14 @@
 
 ## 实施状态
 
-当前处于「运行边界与观察」阶段。仓库已经支持真实 Pi 加载、session lifecycle、结构化 observation 和配置入口。
-关闭本阶段前，还必须完成三件事：
+当前处于「Pi 原生记忆接入」阶段。「运行边界与观察」已关闭：unit、repo checks 与 run-boundary live gate
+全部通过，真实 Pi 中确认了 active/inert 原子启用、lifecycle callback 沿 Pi 原生错误路径报告、callback 在
+manifest 声明的时间上限内返回，以及 observer sink 失败后降级并停止后续写入；各项判定与实测数值固定在
+`test/live/run-boundary/workloads.json`。
 
-1. `Composition Root`（创建依赖并注册 callback 的装配入口）只在全部装配成功后启用运行实例；
-2. Pi callback 使用 Pi 原生错误路径，并且只执行有时间上限的本地工作；
-3. Observer 写入 sink（记录输出目标）不延长产品 callback。
-
-真实探针已经确认下一阶段所需的 tree、context 和 compaction 行为。本阶段验收通过后，开始实现「Pi 原生记忆接入」。
-
+本阶段要落地 Pi Adapter 的四项工作（读取来源 entries、处理 `session_compact`、保存 `CueSet` custom entry、
+临时加入 context），所需的 tree、context 和 compaction 行为已由真实探针确认。第一步是按「阶段执行闭环」
+建立本阶段 manifest，以固定 `CueSet` 驱动真实 Pi 边界。
 ## 阶段路径
 
 每个阶段以它交付的结果命名，并完成 `docs/design.md` 中一个模块的全部或部分职责。依赖的阶段通过验收后，下一阶段
@@ -222,15 +221,6 @@
 
 ## 下一实施入口
 
-当前阶段还缺三项结果：Composition Root 只在全部装配成功后启用 callback；Pi Adapter 把 callback 异常交回 Pi
-报告；observer sink 的延迟与失败不占用产品 callback 的完成时间。三项完成后，扩展要么完整 active（所有 callback
-都执行扩展工作），要么完整 inert（所有 callback 都直接返回），并且每个 Pi callback 都能在自己的时间边界内返回。
-
-后续动作按以下顺序执行：
-
-1. 更新 run-boundary manifest，只验证真实 Pi 中的四件事：active/inert 原子启用、lifecycle callback 使用 Pi 原生
-   错误路径、callback 按时返回，以及 Observer 在 sink 失败后停止后续写入；
-2. 实现 Composition Root 的 active/inert 切换，让 Pi Adapter 把 callback 异常交回 Pi，并让 Observer 在产品
-   callback 返回之后完成 sink 写入；
-3. 添加直接检查上述三项实现的 unit 与 repo checks，并运行 run-boundary live gate；出口关闭后，再根据已经确认的
-   tree、context 和 compaction 行为建立「Pi 原生记忆接入」manifest。
+「Pi 原生记忆接入」阶段的入口是建立本阶段 manifest：以固定 `CueSet` 驱动真实 Pi，验证来源 entries 的
+读取、compaction 前后时序、`CueSet` custom entry 的保存与 provider context 投影。manifest 的字段与 hash 要求
+见 [`docs/verification.md`](./verification.md)「live gate 契约」，验收判定见上文「Pi 原生记忆接入」一节。

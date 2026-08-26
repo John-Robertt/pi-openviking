@@ -174,8 +174,9 @@ npm run dev -- pi --no-session --no-tools -p 'Reply with exactly OK.'
 `/reload` 先触发 `session_shutdown`，再重载扩展并触发 `session_start`，因此它同时是连接释放与状态重建
 的观察点。交互调试使用持久 session，其 JSONL 位于 `.dev/pi/sessions/`。
 
-扩展的结构化运行证据按需开启：`PI_OPENVIKING_OBSERVE=<file>` 时每次运行追加 JSONL 记录（runId、ts、
-session、operation、stage、outcome、durationMs、error）；未设置时扩展不产生观察副作用。
+扩展的结构化运行证据按需开启：`PI_OPENVIKING_OBSERVE=<绝对路径>` 时每次运行追加 JSONL 记录（runId、ts、
+session、operation、stage、outcome、durationMs、error）；未设置时扩展不产生观察副作用。相对路径会被拒绝
+并使本次扩展装配失败（callback 全部保持 inert），因为相对路径会解析到 Pi 进程的 cwd，落点不可控。
 
 验证入口：`npm test` 运行 typecheck，以及不接触真实服务的 unit 和 repo checks；需要真实 Pi 或 OpenViking 的
 检查通过 `npm run verify:<gate>:live` 运行，当前 gate 为 `run-boundary`，规则见
