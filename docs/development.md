@@ -62,13 +62,14 @@ dev/                      # tracked：机器事实
 面向最终用户的产品命令随其所属模块放置，见 [`docs/design.md`](./design.md)「源码组织」；测试探针与
 gate 设施放在 `test/live/helpers/`，见 [`docs/verification.md`](./verification.md)。
 
-出现两类明显不同的工具后再建子目录；当前三个文件同属开发环境，保持扁平。
+这三个文件都用于安装、启动或配置开发环境，因此直接放在 `scripts/` 下。某组脚本需要单独入口并独立修改时，再按
+这组脚本负责的工作建立子目录。
 
 ## 开发模型身份
 
-`dev/model-profile.json` 是模型身份的唯一事实源。三个字段各有独立消费者，字段值相等时仍保持独立职责：
+`dev/model-profile.json` 是模型身份的唯一事实源。三个字段分别交给不同程序，即使当前值相同，也可能分别修改：
 
-| 字段 | 消费者 | 用途 |
+| 字段 | 使用它的程序 | 用途 |
 | --- | --- | --- |
 | `taskModel` | 隔离 Pi | agent loop 的任务模型 |
 | `vlm` | OpenViking 服务端 | 生成服务端内容理解、记忆提取与语义摘要，供 OpenViking 索引、搜索和读取使用 |
@@ -84,8 +85,9 @@ gate 设施放在 `test/live/helpers/`，见 [`docs/verification.md`](./verifica
 
 两类凭证保持不同路径，都不进入仓库、日志与状态文件：
 
-- **任务模型**（Pi）：OAuth 时隔离 Pi 的 `auth.json` 只建立对用户 Pi auth store 的同文件引用，不复制
-  token；建立前验证来源属于当前用户且权限私有，已存在独立文件时拒绝覆盖。
+- **任务模型**（Pi）：使用 OAuth 时，隔离 Pi 的 `auth.json` 与用户 Pi auth store 引用同一个凭证文件，因此不复制
+  token。创建引用前，先确认源文件属于当前用户且只有当前用户可以访问；如果隔离 Pi 已有独立的 `auth.json`，
+  则拒绝覆盖。
 - **服务端模型**（OpenViking）：`ov.conf` 不写凭证值；服务进程通过环境变量获得 store 路径与 bootstrap
   源，provider 注册项见 `scripts/openviking-oauth.mjs`。OAuth store 位于
   `~/.openviking/pi-openviking-dev`（0700），是唯一有意位于仓库外的运行时状态（凭证不进入仓库），由
@@ -146,9 +148,13 @@ npm run dev -- pi --no-session --no-tools -p 'Reply with exactly OK.'
 开发服务绑定 loopback，使用独立 workspace、`ov.conf`、PID、日志与状态文件，不复用用户 `~/.openviking`
 的数据或进程。
 
-`up` 以随机 nonce 建立 ownership marker 与状态文件。`down` 停止前同时核对三项：marker 与状态的 nonce
-一致、PID 文件与状态一致、进程命令行指向本 run 目录的 `ov.conf`；三项都成立才停止整个进程组，任一项
-不成立时拒绝停止并报告原因。无 marker 的强制清理不属于支持行为。
+`up` 使用随机 nonce 创建 ownership marker 和状态文件。`down` 停止进程前必须依次确认：
+
+1. marker 与状态文件中的 nonce 一致；
+2. PID 文件与状态文件中的 PID 一致；
+3. 该进程的命令行指向本次 run 目录中的 `ov.conf`。
+
+三项全部通过后，`down` 才停止整个进程组；任一项失败时，拒绝停止并报告原因。不支持在缺少 marker 时强制清理。
 
 `down` 只停止进程，不删除数据；环境损坏时删除 `.dev/` 后重新 bootstrap。
 
@@ -171,8 +177,8 @@ npm run dev -- pi --no-session --no-tools -p 'Reply with exactly OK.'
 扩展的结构化运行证据按需开启：`PI_OPENVIKING_OBSERVE=<file>` 时每次运行追加 JSONL 记录（runId、ts、
 session、operation、stage、outcome、durationMs、error）；未设置时扩展不产生观察副作用。
 
-验证入口：`npm test` 运行 typecheck 与 deterministic 测试（unit 与 repo）；live gate 以
-`npm run verify:<gate>:live` 运行，当前 gate 为 `run-boundary`，契约见
+验证入口：`npm test` 运行 typecheck，以及不接触真实服务的 unit 和 repo checks；需要真实 Pi 或 OpenViking 的
+检查通过 `npm run verify:<gate>:live` 运行，当前 gate 为 `run-boundary`，规则见
 [`docs/verification.md`](./verification.md)。
 
 ## 升级外部版本

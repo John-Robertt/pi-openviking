@@ -13,16 +13,20 @@
 
 ## 实施状态
 
-当前阶段为「运行边界与观察」。现有实现已经具备真实 Pi 加载、session lifecycle、结构化 observation 与配置入口；
-阶段出口还要求 Composition Root 原子启用运行实例、Pi callback 保留宿主原生错误路径并只做有界本地工作、observer
-sink 不延长产品 callback。Pi 原生记忆接入所需的 tree、context 与 compaction 边界事实已经由真实探针确认，在本阶段
-出口关闭后进入实现。
+当前处于「运行边界与观察」阶段。仓库已经支持真实 Pi 加载、session lifecycle、结构化 observation 和配置入口。
+关闭本阶段前，还必须完成三件事：
+
+1. `Composition Root`（创建依赖并注册 callback 的装配入口）只在全部装配成功后启用运行实例；
+2. Pi callback 使用 Pi 原生错误路径，并且只执行有时间上限的本地工作；
+3. Observer 写入 sink（记录输出目标）不延长产品 callback。
+
+真实探针已经确认下一阶段所需的 tree、context 和 compaction 行为。本阶段验收通过后，开始实现「Pi 原生记忆接入」。
 
 ## 阶段路径
 
-每个阶段以它建立的系统能力命名，落地 `docs/design.md` 中一个模块的完整责任或该模块的一部分责任。阶段只
-消费已通过验收的上游结果；模块的架构定位、核心目标、业务需求与职责边界由 `docs/design.md` 维护，阶段不
-重新定义。各阶段的「系统保证」是 `docs/design.md`「全局系统保证」在该阶段的切片，随后者变化同步核对。
+每个阶段以它交付的结果命名，并完成 `docs/design.md` 中一个模块的全部或部分职责。依赖的阶段通过验收后，下一阶段
+才开始。模块目标、业务需求和职责边界只在 `docs/design.md` 中修改；下表的「系统保证」只列出本阶段必须交付的
+那部分结果，`docs/design.md` 的全局保证变化时同步检查对应行。
 
 阶段按依赖顺序推进：
 
@@ -38,8 +42,8 @@ sink 不延长产品 callback。Pi 原生记忆接入所需的 tree、context �
 | 阶段 | 建立的系统保证 | 落地的模块责任 |
 | --- | --- | --- |
 | 运行边界与观察 | 扩展运行实例原子启用，Pi callback 与诊断 sink 不阻塞主任务，每次运行留下可关联证据 | Observation、Configuration & Credentials、Composition Root |
-| Pi 原生记忆接入 | 来源事实与 Memory Cues 复用 Pi 原生 session tree 和 context 语义 | Pi Adapter（entries、compaction、context） |
-| OpenViking 出站端口 | ingest/search/read 通过窄接口完成，每次调用绑定不可变范围 | OpenViking Client、`OperationScope` |
+| Pi 原生记忆接入 | 来源 entries 和 Memory Cues 都随 Pi 当前 session tree 保存和切换 | Pi Adapter（entries、compaction、context） |
+| OpenViking 出站端口 | ingest、search 和 read 都经过 OpenViking Client，每次调用携带不可变 `OperationScope` | OpenViking Client、`OperationScope` |
 | 会话事实同步 | 每个 Pi 已接受事实最终被 OpenViking 接受且可重放 | Fact Synchronizer |
 | Compaction 记忆线索 | compaction 期间用上一份线索和新保存的事实生成下一份线索 | Cue Provider、Pi Adapter（compaction 时序、custom entry 与 context） |
 | 历史细节恢复 | 模型可取回精确历史细节，且参数无法越权 | Pi Adapter（模型工具） |
@@ -47,8 +51,9 @@ sink 不延长产品 callback。Pi 原生记忆接入所需的 tree、context �
 
 ### 运行边界与观察
 
-**系统保证**：扩展 factory 以 active 或 inert 的完整状态返回；Pi callback 保留宿主原生错误隔离并在有界本地工作后
-返回；observer sink 不延长产品 callback；每次运行留下可关联、已脱敏的结构化证据。
+**系统保证**：扩展 factory 返回时，所有 callback 要么都 active 并执行扩展工作，要么都 inert 并直接返回。Pi
+按原生方式报告 callback 异常；每个 callback 在自己的时间上限内返回；Observer 写入 sink 不延长产品 callback；
+每次运行留下可以按 runId、session 和 operation 关联的脱敏记录。
 
 **交付**
 
@@ -68,13 +73,13 @@ sink 不延长产品 callback。Pi 原生记忆接入所需的 tree、context �
 
 ### Pi 原生记忆接入
 
-**系统保证**：Pi 已接受的来源 entries 直接进入事实交付边界；Pi Adapter 将 compaction 后收到的 `CueSet` 交给 Pi
-session tree 保存并在普通 provider context 中呈现，同时保持在后续 compaction 输入之外。
+**系统保证**：Pi Adapter 把 Pi 已接受的来源 entries 原样交给 Fact Synchronizer。compaction 完成后，它把收到的
+`CueSet` 保存到 Pi 当前 tree 路径，并只在普通 provider 请求中加入简短线索；后续 compaction 不读取这些线索。
 
 **交付**
 
-- 完成 `docs/design.md`「1. Pi Adapter」的来源 entry 读取、`session_compact` 消费、CueSet custom entry 保存与
-  context 临时投影责任；
+- 完成 `docs/design.md`「1. Pi Adapter」中的四项工作：读取来源 entries、处理 `session_compact`、保存 `CueSet`
+  custom entry，以及把线索临时加入 context；
 - 建立本阶段 Pi live gate，以固定 `CueSet` 驱动真实 Pi tree、context 与 compaction 边界。
 
 **验收**（对应 `docs/design.md`「验证责任」的 Pi 契约）
@@ -91,8 +96,8 @@ session tree 保存并在普通 provider context 中呈现，同时保持在后�
 
 ### OpenViking 出站端口
 
-**系统保证**：ingest、search 与 read 通过一个稳定、可诊断、可取消的窄接口完成，每次调用绑定不可变
-`OperationScope`。
+**系统保证**：ingest、search 和 read 都通过 OpenViking Client 调用。每次调用都可取消并返回可诊断结果；调用
+开始后，本次 `OperationScope` 中的 principal、workspace 和 session 不再改变。
 
 **交付**
 
@@ -205,25 +210,26 @@ session tree 保存并在普通 provider context 中呈现，同时保持在后�
    [`docs/verification.md`](./verification.md)「live gate 契约」；
 2. 对真实边界运行最小基线探针，用观察记录收集足以区分候选机制的证据，把实测 baseline 与预期变化写回
    manifest；
-3. 选择当前主导约束，实现能闭合该约束的最小结构，先运行聚焦 deterministic checks；
-4. 运行阶段 live gate，把结果与 baseline 和预期变化逐项比较；结果偏离预期时回到第 1 步重新调查并重新
-   识别主导约束；
-5. deterministic checks、live gate 与文档自检共同通过后关闭阶段出口，并更新本文的实施状态。
+3. 找出当前最妨碍阶段验收的问题，实现能够完整解决它的最小改动，再运行直接覆盖该改动的 unit、contract 或
+   repo checks；
+4. 运行本阶段 live gate，把结果逐项与 baseline 和预期变化比较；结果不符时回到第 1 步，重新收集证据并找出当前
+   最大差距；
+5. unit、contract、repo checks、live gate 与文档自检全部通过后，关闭阶段出口并更新本文的实施状态。
 
-证据类型与 live gate 契约见 [`docs/verification.md`](./verification.md)。阶段出口关闭后，下一阶段才可
-消费其结果。
+证据类型与 live gate 契约见 [`docs/verification.md`](./verification.md)。只有阶段出口关闭后，下一阶段才能使用
+本阶段交付的结果。
 
 ## 下一实施入口
 
-当前主导约束是建立完整运行边界：Composition Root 只在全部装配成功后启用 callback；Pi Adapter callback 保留 Pi
-原生扩展错误路径；observer sink 的延迟与失败保持在产品 callback 之外。三者共同保证扩展以 active 或 inert 的完整
-状态运行，并使 Pi callback 有界完成。
+当前阶段还缺三项结果：Composition Root 只在全部装配成功后启用 callback；Pi Adapter 把 callback 异常交回 Pi
+报告；observer sink 的延迟与失败不占用产品 callback 的完成时间。三项完成后，扩展要么完整 active（所有 callback
+都执行扩展工作），要么完整 inert（所有 callback 都直接返回），并且每个 Pi callback 都能在自己的时间边界内返回。
 
 后续动作按以下顺序执行：
 
-1. 更新 run-boundary manifest，使该 gate 只绑定真实 Pi 边界，并覆盖 active/inert 原子启用、lifecycle callback 的
-   Pi 原生错误路径、callback 完成时序与 observer sink 降级；
-2. 由 Composition Root 建立 activation，Pi Adapter callback 保留 Pi 原生异常隔离，Observer 将 sink 延迟与失败保持在
-   产品 callback 之外；
-3. 建立聚焦 deterministic checks 并运行 run-boundary live gate；出口关闭后，以已经确认的 tree、context 与 compaction
-   真实边界建立「Pi 原生记忆接入」manifest。
+1. 更新 run-boundary manifest，只验证真实 Pi 中的四件事：active/inert 原子启用、lifecycle callback 使用 Pi 原生
+   错误路径、callback 按时返回，以及 Observer 在 sink 失败后停止后续写入；
+2. 实现 Composition Root 的 active/inert 切换，让 Pi Adapter 把 callback 异常交回 Pi，并让 Observer 在产品
+   callback 返回之后完成 sink 写入；
+3. 添加直接检查上述三项实现的 unit 与 repo checks，并运行 run-boundary live gate；出口关闭后，再根据已经确认的
+   tree、context 和 compaction 行为建立「Pi 原生记忆接入」manifest。

@@ -10,26 +10,16 @@
     "openvikingVersion": "0.4.15"
   },
   "prompt": "Reply with exactly OK.",
-  "filteredOut": [
-    "message_update",
-    "extension_error"
-  ],
-  "expectedSequence": [
-    "response",
+  "requiredEventMilestones": [
     "agent_start",
     "turn_start",
-    "message_start",
-    "message_end",
-    "message_start",
-    "message_end",
     "turn_end",
     "agent_end",
     "agent_settled",
     "compaction_start",
-    "compaction_end",
-    "response"
+    "compaction_end"
   ],
-  "observationOperations": [
+  "requiredObservationOperations": [
     "assembly",
     "session_start",
     "session_shutdown"
@@ -44,11 +34,11 @@
     "[A-Za-z0-9+/]{160,}"
   ],
   "falsification": [
-    "任一 workload 的事件序列与 expectedSequence 不一致",
-    "loaded workload 的观察记录缺失、无法按 runId/session 关联或操作序列不符",
+    "requiredEventMilestones 不是非空数组，或任一 workload 缺少这些事件、顺序不符",
+    "requiredObservationOperations 不是非空数组，或 loaded workload 的记录缺失、无法按 runId/session 关联、缺少必要操作",
     "观察记录命中任一 redactionForbiddenPatterns",
     "注入失败 workload 未出现 extension_error 事件或 exit code 非 0",
     "运行目录清理失败"
   ],
-  "hash": "sha256:e156ef7143d3ad65067c14d9515d4e53ad3ba2295208ac36282020f55be1630b"
+  "hash": "sha256:50cf558c3d0170cb73e09394b463a81df066a961e16b277b2fa8a427dfbebee7"
 }

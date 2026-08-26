@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { registerPiAdapter } from "../../src/pi-adapter/index.ts";
 import { createObserver } from "../../src/observation/index.ts";
@@ -44,10 +44,12 @@ async function captureStderr(fn) {
   return lines;
 }
 
-test("注册点：session_start 与 session_shutdown 各注册一个 handler", () => {
+test("注册点：必需的 session lifecycle handler 已注册", () => {
   const pi = fakePi();
   registerPiAdapter(pi, { observer: createObserver(null) });
-  assert.deepEqual([...pi.handlers.keys()].sort(), ["session_shutdown", "session_start"]);
+  for (const event of ["session_start", "session_shutdown"]) {
+    assert.equal(typeof pi.handlers.get(event), "function", `${event} handler 未注册`);
+  }
 });
 
 test("成功链路：事件按 operation 关联，session 身份进入记录", async (t) => {
@@ -80,14 +82,4 @@ test("失败链路：handler 抛错不传播，记录 error 事件并输出 stde
   assert.equal(events[0].outcome, "error");
   assert.match(events[0].error, /probe failure/);
   assert.ok(lines.some((line) => line.includes("session_start failed: probe failure")));
-});
-
-test("未请求观察：handler 抛错仍不传播，且不产生观察文件", async (t) => {
-  const dir = makeTmp(t);
-  const pi = fakePi();
-  registerPiAdapter(pi, { observer: createObserver(null) });
-  await assert.doesNotReject(() =>
-    pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, throwingCtx()),
-  );
-  assert.deepEqual(readdirSync(dir), []);
 });

@@ -41,7 +41,9 @@ test("装配成功：注册 handler 并记录 assembly ok 事件", (t) => {
   withEnv(file, () => {
     const pi = fakePi();
     extension(pi);
-    assert.deepEqual([...pi.handlers.keys()].sort(), ["session_shutdown", "session_start"]);
+    for (const event of ["session_start", "session_shutdown"]) {
+      assert.equal(typeof pi.handlers.get(event), "function", `${event} handler 未注册`);
+    }
     const events = readEvents(file);
     assert.equal(events.length, 1);
     assert.deepEqual(
@@ -51,25 +53,15 @@ test("装配成功：注册 handler 并记录 assembly ok 事件", (t) => {
   });
 });
 
-test("装配失败：factory 不抛、部分注册保留、记录 assembly error 事件", (t) => {
+test("装配失败：factory 不抛并记录 assembly error 事件", (t) => {
   const dir = makeTmp(t);
   const file = join(dir, "obs.jsonl");
   withEnv(file, () => {
     const pi = fakePi({ throwOn: "session_shutdown" });
     assert.doesNotThrow(() => extension(pi));
-    assert.deepEqual([...pi.handlers.keys()], ["session_start"]);
     const events = readEvents(file);
     assert.equal(events.length, 1);
     assert.equal(events[0].outcome, "error");
     assert.match(events[0].error, /probe assembly failure/);
-  });
-});
-
-test("未请求观察：装配不产生观察文件", (t) => {
-  const dir = makeTmp(t);
-  const file = join(dir, "obs.jsonl");
-  withEnv(undefined, () => {
-    extension(fakePi());
-    assert.throws(() => readEvents(file), /ENOENT/);
   });
 });

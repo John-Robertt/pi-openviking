@@ -4,7 +4,8 @@
 
 **架构定位**：项目目标架构与稳定边界的总纲。
 
-**核心目标**：维护者能够确认系统的唯一目标、外部责任边界、模块职责与依赖方向，并判断每类变化的归属位置。
+**核心目标**：维护者能够确认系统的唯一目标、外部责任边界、模块职责与依赖方向，并知道每类变化应该修改哪个
+模块或文档。
 
 **职责边界**：本文维护架构层面的全部内容——战略目标、外部责任边界、目标架构、模块职责与数据契约、支撑
 能力、状态所有权、核心业务链路、依赖方向、源码组织、全局系统保证、演进规则，以及需要被证明的验证契约
@@ -41,12 +42,13 @@ Pi 拥有：
 - compaction 触发、边界、summary 和 `CompactionEntry`；
 - tool result 持久化及文本、图片的 provider 映射。
 
-扩展读取 Pi 已接受的原始 entries，消费 compaction 前后边界，并通过 Pi 的 custom entry、context hook 和工具接口
-参与运行。
+扩展只使用 Pi 公开接口：读取 Pi 已接受的原始 entries，在 compaction 前后接收 callback，通过 custom entry 保存
+扩展生成的线索，并通过 context hook 和工具接口把线索与历史读取能力提供给模型。
 
-Pi 会捕获并报告 lifecycle、context 与工具 callback 的异常，Pi Adapter 沿用这条错误路径。factory 在这些 callback
-开始运行前完成装配：Composition Root 同步创建全部依赖并注册 callback；全部成功后一次性切换为 active，任一步骤
-失败则保持 inert。
+Pi 捕获 lifecycle、context 和工具 callback 的异常，并通过原生扩展错误路径报告；Pi Adapter 不替换这条路径。
+`Composition Root` 是创建全部依赖并注册 callback 的装配入口。装配期间 callback 保持 inert，即收到事件后直接返回，
+不执行扩展工作；全部依赖创建成功且 callback 注册完成后，Composition Root 才一次性切换到 active，让 callback
+开始执行扩展工作。任一步骤失败时，运行实例保持 inert。
 
 ### OpenViking
 
@@ -80,22 +82,23 @@ Pi compaction 前后事件 ─────────────────�
 3. Cue Provider；
 4. OpenViking Client。
 
-逐操作 `OperationScope`、配置装配和结构化 observation 是跨模块支撑能力。Managed OpenViking Service 是核心记忆链路之外的可选部署模块。
+每次 OpenViking 调用还携带一个 `OperationScope`，其中保存本次调用的 principal、workspace 和 session。
+Composition Root 在启动时读取配置，Observer 写入运行事件。需要本地 OpenViking 时，再启用 Managed OpenViking Service。
 
 ## 模块协作契约
 
 模块通过少量数据值协作：
 
-| 契约 | 生产者 | 消费者 | 责任 |
+| 数据 | 由谁产生 | 谁使用 | 包含什么 |
 | --- | --- | --- | --- |
 | `OperationScope` | Pi Adapter 与授权身份来源 | OpenViking Client | 绑定一次调用所需的 principal、workspace 和 session 范围 |
 | `AcceptedDelivery` | OpenViking Client | Fact Synchronizer | 确认一条 Pi entry 已保存，并给出以后找到它所需的信息 |
 | `CueSet` | Cue Provider | Pi Adapter 与下一次生成 | 保存有界线索，以及本次已经用到的最后一条 Pi entry |
 
-Pi Adapter 把 Pi 已接受的原始 `SessionEntry` 作为只读、不透明的来源值交给 Fact Synchronizer，Fact Synchronizer
-直接消费这些值，并公开哪些 entries 已经保存。每次压缩开始前，Pi Adapter 把当前路径中的上一份 `CueSet`，以及
-该 `CueSet` 之后已经保存的新 entries 交给 Cue Provider。以上契约只承载调用所需事实，OpenViking 公开结果保持
-其服务端语义。
+Pi Adapter 把 Pi 已接受的每条原始 `SessionEntry` 原样交给 Fact Synchronizer。Fact Synchronizer 通过
+OpenViking Client 保存这些 entries，并只在 OpenViking 接受后报告保存成功。每次 compaction 开始前，Pi Adapter
+把当前路径中的上一份 `CueSet`，以及它之后已保存的新 entries 交给 Cue Provider。模块之间只传递表中的三个值；
+OpenViking Client 不改写服务端返回结果的含义。
 
 ## 核心运行模块
 
@@ -113,18 +116,18 @@ Pi 扩展入口与唯一 Pi 边界适配模块。它连接 Pi 生命周期、来
 
 - 支持持久 session 和 in-memory session；
 - 从 Pi 公开接口读取其已接受的原始 `SessionEntry`，不解释或重建 tree、branch 与 leaf；
-- 消费 Pi 的 compaction 前后边界，并使用 Pi 构造的当前 context entries 呈现对应 `CueSet`；
+- 接收 Pi 在 compaction 前后发出的 callback，并使用 Pi 构造的当前 context entries 呈现对应 `CueSet`；
 - 将已生成的 `CueSet` 保存为不参与 conversation 的 Pi custom entry；
 - 只在普通 provider context 中临时呈现 `CueSet`，使其不进入后续 compaction；
 - 向任务模型提供 OpenViking search 和 read 工具；
 - 将 OpenViking 文本和图片结果映射为 Pi 支持的 tool result content；
-- session 重开、tree 导航和扩展重载均直接消费 Pi 当前给出的 session 与 context；
+- session 重开、tree 导航和扩展重载后，原样使用 Pi 当前给出的 session 与 context；
 - Pi lifecycle 与 context callback 只执行有界本地工作；`session_before_compact` 启动 cue 任务后立即返回；
   `session_compact` 只提交已经生成的结果，并取消仍未完成的 cue 任务；
 - callback 异常沿 Pi 原生扩展错误路径报告，未产生有效结果时保持 Pi 原始输入不变；
 - extension runtime 结束后取消本实例创建的后台操作，过期操作不再提交状态。
 
-**战术执行**
+**运行步骤**
 
 - 注册 Pi 生命周期、compaction、context hook、命令和工具；
 - 将 Pi 已接受的来源 entries 交给 Fact Synchronizer，并排除扩展自身的 `CueSet` custom entry；
@@ -135,7 +138,7 @@ Pi 扩展入口与唯一 Pi 边界适配模块。它连接 Pi 生命周期、来
 - 从 Pi 当前 context entries 取得有效 `CueSet`，临时加入本次 provider context；
 - 将 search/read 工具参数与 Pi session identity、授权 principal 组合为 `OperationScope`；
 - 将 OpenViking Client 结果映射为 Pi 工具结果；
-- 在查询状态时组合各模块当前公开结果。
+- 状态查询读取各模块当前状态，并把结果合并后返回。
 
 **职责边界**
 
@@ -157,7 +160,7 @@ Pi 已接受的来源 entries 到 OpenViking Client 的可靠历史交付模块�
 
 **业务需求**
 
-- 消费 Pi Adapter 从公开接口取得的全部来源 entries；
+- 接收 Pi Adapter 从公开接口取得的全部来源 entries；
 - 一个 Pi entry 作为一个不透明来源事实提交，原始 parent 关系随 payload 保留；
 - 扩展自身的 `CueSet` custom entry 不属于来源事实；
 - OpenViking 明确接受后记录 `AcceptedDelivery`，并告诉调用者哪条 Pi entry 已保存、以后如何找到它；
@@ -166,7 +169,7 @@ Pi 已接受的来源 entries 到 OpenViking Client 的可靠历史交付模块�
 - 交付在 Pi callback 之外执行，每次尝试均可取消、有时间上限，且 shutdown 不等待交付完成；
 - 增量机制只表达可重建的交付进度。
 
-**战术执行**
+**运行步骤**
 
 - 比较 Pi 来源 entries 与已接受交付状态；
 - 按 Pi entry 的来源依赖顺序选择待交付 entries；
@@ -181,7 +184,7 @@ Pi 已接受的来源 entries 到 OpenViking Client 的可靠历史交付模块�
 - Pi entry 的语义、tree 关系和有效性由 Pi 决定；
 - 内容存储、索引和去重由 OpenViking 决定；
 - 本模块保持 entry payload 完整，不派生 turn、step、role 或第二套事件标准；
-- Cue Provider 独立消费交付完成结果。
+- Cue Provider 使用本模块报告的已保存 entries。
 
 ### 3. Cue Provider
 
@@ -210,11 +213,11 @@ Pi 已接受的来源 entries 到 OpenViking Client 的可靠历史交付模块�
 - `session_compact` 到达时只接收已经生成的结果，并取消仍未完成的 cue 任务；未生成线索的 entries 留给下一次；
 - 每条线索只写事件时间或区间、用于识别事件的短句，以及以后找到完整事实所需的信息；
 - 新 `CueSet` 同时保存线索和本次已经用到的最后一条 Pi entry；
-- 线索数量和总字符数使用固定保守上限；出现需要运行时调整的明确消费者后，再把对应上限加入配置；
+- 线索数量和总字符数使用固定保守上限；实际运行需要调整某个上限时，再把该上限加入配置；
 - session 重开、tree 导航和扩展重载后，Pi 当前路径上的 `CueSet` 继续生效；
 - 生成失败、超时、取消或路径已经变化时不保存新 `CueSet`，Pi 原生 context 与主任务继续。
 
-**战术执行**
+**运行步骤**
 
 ```text
 session_before_compact
@@ -249,7 +252,7 @@ Pi session tree 保存整个 `CueSet`：简短线索供模型使用，“已经�
 
 **核心目标**
 
-> 以稳定、可诊断、可取消的窄接口消费 OpenViking ingestion、search 和 read 能力。
+> 只通过 ingestion、search 和 read 访问 OpenViking；每次调用都可取消，并返回可诊断的结果。
 
 **业务需求**
 
@@ -262,7 +265,7 @@ Pi session tree 保存整个 `CueSet`：简短线索供模型使用，“已经�
 - 凭证只在授权进程内存和请求环境中传递；
 - OpenViking 不可用时调用者获得有界失败结果。
 
-**战术执行**
+**运行步骤**
 
 - 映射 OpenViking 公开 API 或 MCP 参数；
 - 处理连接、超时与取消；
@@ -275,7 +278,7 @@ Pi session tree 保存整个 `CueSet`：简短线索供模型使用，“已经�
 - 存储、索引、搜索排名、分页和权限判断归 OpenViking；
 - 交付进度归 Fact Synchronizer；
 - Pi tool result 映射归 Pi Adapter；
-- 客户端能力面由当前 ingestion、search 和 read 消费者驱动。
+- 本模块只实现 Fact Synchronizer 与 Pi Adapter 当前需要的 ingestion、search 和 read 调用。
 
 ## 支撑能力
 
@@ -311,31 +314,33 @@ OpenViking 服务端继续拥有认证和权限判断；扩展负责确保请求
 
 ### Observation
 
-各核心流程产生统一结构化事件，由无业务决策能力的 observer 完成关联、脱敏和 sink 输出。
+每个核心流程都会产生结构化事件。Observer 只做三件事：为事件添加关联字段、移除敏感内容、把记录写入 sink
+（记录输出目标）。每条记录包含 session、operation、阶段、结果和耗时，不包含用户正文、图片 base64、凭证或
+未脱敏 URI。
 
-必要关联字段覆盖 session、operation、阶段、结果和耗时。用户正文、图片 base64、凭证和未脱敏 URI 保持在 observation 边界之外。
+Observer 接收事件时必须在固定时间内返回且不能抛出异常，写入 sink 也不能延长产品 callback。如果 sink 写入失败
+或记录缺少必需字段，当前运行实例的 Observer 进入 degraded；之后收到事件时直接返回，不再写入。
 
-Observer 的接收操作有界且不抛错，sink 输出不延长产品 callback；sink 或 schema 失败只使本次 observer 保持
-degraded，后续接收直接返回。
-
-状态查询在请求时组合各模块当前公开结果和最近失败事件。Observer 保存运行证据，不建立第二套业务状态，也不参与重试和决策。
+状态查询读取各模块的当前状态和最近失败。Observer 只写运行证据，不决定重试，也不保存另一份业务状态。
 
 ### 运行边界
 
-以下规则同时约束 Composition Root、Pi Adapter 和所有外部操作。它们规定现有模块如何安全运行，不产生独立产品
-结果，因此不建立单独模块：
+Composition Root 控制 factory 装配和 active/inert 切换；Pi Adapter 处理 Pi callback 与 event，并决定何时保存
+`CueSet` 或临时加入 context；每个创建工具调用或后台外部操作的模块，负责该操作的 timeout、取消和最终结果。
+这些代码遵守以下规则：
 
-- factory 只执行同步纯构造；注册的 callback 在装配期间保持 inert，全部依赖与注册成功后由一次状态转换进入 active；
-  装配失败的运行实例保持 inert，Pi 可以继续启动；
+- factory 同步创建全部依赖并注册 callback。装配期间 callback 保持 inert；全部步骤成功后一次性切换为 active，
+  任一步骤失败则保持 inert，Pi 仍可启动；
 - Pi callback 沿用 Pi 原生的异常报告与隔离，只执行有界本地工作，并且不等待后台外部任务完成；
 - 工具与后台外部操作各自携带调用超时和 runtime cancellation signal；后台任务脱离 Pi 调度后由创建它的模块接收
   最终结果，shutdown 与 reload 发出取消但不等待完成；
-- 操作先在局部值完成计算，不原地修改 Pi event；随后验证当前 runtime 与 Pi 路径并提交一个不可变结果。失败、超时、
-  取消和过期结果不推进交付进度，不追加 `CueSet`，也不改变 Pi context；
+- 外部操作先把结果保存在局部变量中。写入交付进度、`CueSet` 或 Pi context 前，再确认本次 runtime 尚未结束，
+  而且 Pi 当前路径仍与操作启动时相同；两项都成立才提交一次。失败、超时、取消和过期结果均不写入。
 
 ### Managed OpenViking Service
 
-Managed OpenViking Service 是可选部署模块，向需要本地托管的用户提供可由 OpenViking Client 使用的 endpoint。外部 OpenViking endpoint 使用同一核心记忆架构。
+Managed OpenViking Service 为本地托管用户启动 OpenViking，并把 endpoint 交给 OpenViking Client。使用外部
+endpoint 时跳过本模块，其余记忆链路不变。
 
 **核心目标**
 
@@ -366,8 +371,8 @@ Managed OpenViking Service 是可选部署模块，向需要本地托管的用�
 | 托管进程与 ownership state | Managed OpenViking Service | 本地服务生命周期 |
 | observation records | Observer sink | 诊断与验证保留周期 |
 
-Composition Root 只在 Pi Adapter 入口装配依赖，并拥有运行实例的 activation 与 cancellation；全部装配成功后一次性
-启用，失败时已注册 callback 保持 inert。状态命令按需组合以上所有者的公开结果。
+Composition Root 只在 Pi Adapter 入口创建并连接依赖，同时保存本次运行的 activation 与 cancellation。全部装配
+成功后，它一次性启用所有 callback；失败时，已经注册的 callback 仍保持 inert。状态命令读取上表各所有者的当前状态。
 
 ## 核心业务链路
 
@@ -384,7 +389,7 @@ Pi lifecycle
 
 ### Compaction 时更新线索
 
-完整时序由「3. Cue Provider」的“战术执行”维护。模块之间只交接三个结果：
+完整时序见「3. Cue Provider」的“运行步骤”。模块之间只交接三个结果：
 
 ```text
 Fact Synchronizer：哪些新 entries 已保存
@@ -417,17 +422,16 @@ all paths                → Pi native context, compaction, agent loop and shutd
 
 1. Pi Adapter 是所有 Pi 生命周期、来源 entry、compaction、context 和工具接入的唯一边界；
 2. OpenViking Client 是核心运行链路访问 OpenViking 的唯一出站端口；
-3. Fact Synchronizer 与 Cue Provider 只通过公开结果协作；
+3. Fact Synchronizer 报告 OpenViking 已保存的 entries，Cue Provider 只使用这份报告；
 4. `OperationScope` 在每次操作时从 Pi 权威身份和授权 principal 构造；
 5. Observer 单向接收事件；
 6. Managed OpenViking Service 只向装配阶段提供 endpoint 与部署状态；
-7. 模块之间通过窄数据契约协作，并各自拥有一个变化原因。
+7. 模块之间只传递「模块协作契约」表中的值；每个模块只为自己“职责边界”中的工作修改代码。
 
 ## 源码组织
 
-模块划分决定源码划分。每个模块在 `src/` 下拥有一个目录，目录名表达该模块的职责；按关系而非职责命名的
-目录——`shared`、`utils`、`common`——不满足这一条。`contracts/` 是封闭列表，扩充它需要先修改
-「模块协作契约」。
+模块划分决定源码划分。每个模块在 `src/` 下拥有以其职责命名的目录。`contracts/` 只保存「模块协作契约」表中的
+数据值；新增契约值时先更新该表。
 
 ```text
 src/
@@ -461,32 +465,33 @@ src/
 | observation sink 变化 | Observer |
 | 本地 OpenViking 工具链变化 | Managed OpenViking Service |
 
-模块内部可以通过纯函数和局部数据结构演进。相同战略目标下的内部步骤保持在所属模块内。
+如果变化不改变模块在本文中的目标，只修改该模块内部的函数和局部数据结构。
 
 ### 稳定战略边界
 
-Pi 宿主、OpenViking 历史能力和 Memory Cues 语义共同定义本项目身份。替换宿主、引入通用多存储后端、接管 Pi compaction 或建立本地检索系统会改变项目战略目标，需要重新设计系统边界。
+本项目只负责用 Memory Cues 连接 Pi 会话与 OpenViking 历史。替换 Pi、同时支持多种存储后端、由扩展接管 Pi
+compaction，或在扩展内建立检索系统，都会改变产品目标；开始这类工作前必须由用户重新决定系统边界。
 
 ### 新模块准入
 
 新增模块同时满足：
 
-1. 具有独立消费者；
-2. 具有独立战略目标；
-3. 现有模块无法完整承担其职责；
-4. 具有可独立验证的公开结果。
+1. 当前已有代码需要调用它；
+2. 它对一项可明确说出的结果负责，而且该结果会因自身需求变化；
+3. 现有模块都无法在不扩大自身职责的情况下完成这项工作；
+4. 测试可以单独检查它产生的结果。
 
-第二种实现方式本身不要求预先建立策略接口。出现真实替换需求后，从现有模块的窄边界提取对应策略。
+同一项职责实际需要第二种实现时，再从现有模块已经使用的输入和结果中提取共同接口。
 
 ### 接口稳定性
 
-扩展性来自稳定责任和窄数据契约，而不是通用插件框架：
+下列内容发生变化时，只修改箭头右侧的位置：
 
-- Pi Adapter 隔离 Pi lifecycle、entry、compaction 和 context API 变化；
-- `OperationScope` 隔离身份与调用参数；
-- `AcceptedDelivery` 隔离 OpenViking 接受语义；
-- `CueSet` 隔离 cue 生成与 Pi context 呈现；
-- OpenViking transport 保持在 Client 内部。
+- Pi lifecycle、entry、compaction 或 context API → Pi Adapter；
+- session、workspace、principal 或调用参数 → `OperationScope` 的构造位置；
+- OpenViking 如何确认 ingestion 已接受 → `AcceptedDelivery`；
+- cue 的生成格式或向 Pi context 的呈现方式 → `CueSet`；
+- OpenViking 请求和响应格式 → OpenViking Client。
 
 ## 全局系统保证
 
@@ -502,7 +507,7 @@ Pi 宿主、OpenViking 历史能力和 Memory Cues 语义共同定义本项目�
 - Pi session tree 保存 `CueSet` custom entry，并决定 tree 导航后当前有效的 cues；
 - Memory Cues 只在普通 provider context 中临时呈现，不进入后续 compaction；
 - 模型工具只提供当前目标所需的 search 和 read；
-- 文本、图片和未知 Pi payload 保持 Pi 已接受语义；
+- 文本、图片和未知 Pi payload 按 Pi 已接受的原值传递；
 - 每次 OpenViking 操作使用由 Pi 与授权 principal 形成的不可变 scope；
 - Pi callback 各自有明确完成边界，外部操作具有调用超时与取消边界；失败不改变 Pi 原生 context、compaction
   与主任务；
@@ -511,7 +516,7 @@ Pi 宿主、OpenViking 历史能力和 Memory Cues 语义共同定义本项目�
 
 ## 验证责任
 
-验证围绕产品链路和边界结果组织：
+测试分别检查以下主流程，以及各模块交给下一模块的结果：
 
 - Pi 契约验证原始来源 entries、compaction 事件、CueSet custom entry 与临时 context 投影遵守 Pi 的公开语义，
   并验证 factory、callback 异常和 callback 完成时序的真实宿主边界；

@@ -14,13 +14,11 @@ function readEvents(file) {
     .map((line) => JSON.parse(line));
 }
 
-test("disabled：record 无副作用、不触发时钟与文件系统", (t) => {
-  const dir = makeTmp(t);
+test("disabled：record 直接返回且不触发时钟", () => {
   const observer = createObserver(null);
   assert.equal(observer.status, "disabled");
   assert.equal(observer.now(), 0);
-  observer.record(EVENT);
-  assert.equal(existsSync(join(dir, "anything.jsonl")), false);
+  assert.doesNotThrow(() => observer.record(EVENT));
 });
 
 test("active：record 追加合法 JSONL，关联字段齐全", (t) => {

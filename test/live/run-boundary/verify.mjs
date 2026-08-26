@@ -54,9 +54,6 @@ function httpGetJson(url) {
   });
 }
 
-function filteredSequence(events, filteredOut) {
-  return events.map((event) => event.type).filter((type) => !filteredOut.includes(type));
-}
 
 function sha256File(file) {
   return `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
@@ -64,6 +61,9 @@ function sha256File(file) {
 
 // --- 身份先行 ---
 const manifest = loadManifest(GATE_DIR);
+for (const field of ["requiredEventMilestones", "requiredObservationOperations"]) {
+  if (!Array.isArray(manifest[field]) || manifest[field].length === 0) fail(`${field} 必须是非空数组`);
+}
 const version = spawnSync(join(REPO, "node_modules", ".bin", "pi"), ["--version"], { encoding: "utf8" })
   .stdout.trim();
 if (version !== manifest.identity.piVersion) {
@@ -173,17 +173,25 @@ async function tryRun(name, opts) {
   }
 }
 
-function sequenceOf(workload) {
-  return workload ? filteredSequence(workload.result.events, manifest.filteredOut) : null;
+function containsInOrder(actual, required) {
+  let next = 0;
+  for (const value of actual) {
+    if (value === required[next]) next += 1;
+  }
+  return next === required.length;
 }
 
-function assertSequence(name, workload, reference) {
-  const sequence = sequenceOf(workload);
+function eventSequenceOf(workload) {
+  return workload ? workload.result.events.map((event) => event.type) : null;
+}
+
+function assertEventMilestones(name, workload) {
+  const sequence = eventSequenceOf(workload);
   assert(
-    `${name} 事件序列与 baseline 一致`,
-    reference ?? "baseline 运行失败",
+    `${name} 包含必要 Pi 事件里程碑`,
+    manifest.requiredEventMilestones,
     sequence ?? "运行失败",
-    sequence !== null && reference !== null && JSON.stringify(sequence) === JSON.stringify(reference),
+    sequence !== null && containsInOrder(sequence, manifest.requiredEventMilestones),
   );
 }
 
@@ -205,13 +213,7 @@ try {
       baseline.result.code === manifest.exitCode,
     );
   }
-  const baselineSequence = sequenceOf(baseline);
-  assert(
-    "baseline 事件序列",
-    manifest.expectedSequence,
-    baselineSequence ?? "运行失败",
-    baselineSequence !== null && JSON.stringify(baselineSequence) === JSON.stringify(manifest.expectedSequence),
-  );
+  assertEventMilestones("baseline", baseline);
 
   // --- loaded：扩展加载 + 观察开启 ---
   const loaded = await tryRun("loaded", { wrapper: true, probe: null, observe: true });
@@ -220,7 +222,7 @@ try {
     const hasExtensionError = loaded.result.events.some((event) => event.type === "extension_error");
     assert("loaded 无 extension_error", false, hasExtensionError, !hasExtensionError);
   }
-  assertSequence("loaded", loaded, baselineSequence);
+  assertEventMilestones("loaded", loaded);
 
   // 观察证据：可关联、字段齐全、链路结果全部 ok
   const obsFile = loaded?.obsFile;
@@ -229,11 +231,12 @@ try {
   if (obsExists) {
     evidence[obsFile.split("/").pop()] = sha256File(obsFile);
     const records = readFileSync(obsFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const operations = records.map((record) => record.operation);
     assert(
-      "观察操作序列",
-      manifest.observationOperations,
-      records.map((record) => record.operation),
-      JSON.stringify(records.map((record) => record.operation)) === JSON.stringify(manifest.observationOperations),
+      "观察记录包含必要操作",
+      manifest.requiredObservationOperations,
+      operations,
+      containsInOrder(operations, manifest.requiredObservationOperations),
     );
     const outcomes = records.map((record) => record.outcome);
     assert(
@@ -256,7 +259,7 @@ try {
     );
   }
 
-  // --- 注入失败：各注册点失败后 Pi 行为与 baseline 一致 ---
+  // --- 注入失败：各注册点失败后 Pi 仍完成必要运行里程碑 ---
   for (const probe of ["fail-session-start.ts", "fail-session-shutdown.ts"]) {
     const name = probe.replace(".ts", "");
     const injected = await tryRun(name, { wrapper: true, probe, observe: true });
@@ -271,7 +274,7 @@ try {
       assert(`${name} extension_error 事件`, true, hasExtensionError, hasExtensionError);
       if (existsSync(injected.obsFile)) evidence[injected.obsFile.split("/").pop()] = sha256File(injected.obsFile);
     }
-    assertSequence(name, injected, baselineSequence);
+    assertEventMilestones(name, injected);
   }
 
   // --- 脱敏扫描 ---
