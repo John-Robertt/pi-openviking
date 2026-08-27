@@ -120,6 +120,7 @@ Pi 扩展入口与唯一 Pi 边界适配模块。它连接 Pi 生命周期、来
 - 将已生成的 `CueSet` 保存为不参与 conversation 的 Pi custom entry；
 - 只在普通 provider context 中临时呈现 `CueSet`，使其不进入后续 compaction；
 - 向任务模型提供 OpenViking search 和 read 工具；
+- 在 Pi 底部状态栏标识 OpenViking 服务状态：`openviking ✓` 表示服务正常，`✗` 表示无法连接；
 - 将 OpenViking 文本和图片结果映射为 Pi 支持的 tool result content；
 - session 重开、tree 导航和扩展重载后，原样使用 Pi 当前给出的 session 与 context；
 - Pi lifecycle 与 context callback 只执行有界本地工作；`session_before_compact` 启动 cue 任务后立即返回；
@@ -129,7 +130,7 @@ Pi 扩展入口与唯一 Pi 边界适配模块。它连接 Pi 生命周期、来
 
 **运行步骤**
 
-- 注册 Pi 生命周期、compaction、context hook、命令和工具；
+- 注册 Pi 生命周期、compaction、context hook、状态栏标识和模型工具；
 - 将 Pi 已接受的来源 entries 交给 Fact Synchronizer，并排除扩展自身的 `CueSet` custom entry；
 - 在 `session_before_compact` 中找到当前路径的上一份 `CueSet`，收集它之后已经保存到 OpenViking 的新 entries，
   启动受 runtime cancellation 约束的 cue 任务后立即返回；
@@ -138,7 +139,7 @@ Pi 扩展入口与唯一 Pi 边界适配模块。它连接 Pi 生命周期、来
 - 从 Pi 当前 context entries 取得有效 `CueSet`，临时加入本次 provider context；
 - 将 search/read 工具参数与 Pi session identity、授权 principal 组合为 `OperationScope`；
 - 将 OpenViking Client 结果映射为 Pi 工具结果；
-- 状态查询读取各模块当前状态，并把结果合并后返回。
+- 状态栏标识读取各模块当前状态，合并推导后呈现；
 
 **职责边界**
 
@@ -324,7 +325,7 @@ OpenViking 服务端继续拥有认证和权限判断；扩展负责确保请求
 Observer 接收事件时必须在固定时间内返回且不能抛出异常，写入 sink 也不能延长产品 callback。如果 sink 写入失败
 或记录缺少必需字段，当前运行实例的 Observer 进入 degraded；之后收到事件时直接返回，不再写入。
 
-状态查询读取各模块的当前状态和最近失败。Observer 只写运行证据，不决定重试，也不保存另一份业务状态。
+状态栏标识读取各模块的当前状态和最近失败。Observer 只写运行证据，不决定重试，也不保存另一份业务状态。
 
 ### 运行边界
 
@@ -375,7 +376,7 @@ endpoint 时跳过本模块，其余记忆链路不变。
 | observation records | Observer sink | 诊断与验证保留周期 |
 
 Composition Root 只在 Pi Adapter 入口创建并连接依赖，同时保存本次运行的 activation 与 cancellation。全部装配
-成功后，它一次性启用所有 callback；失败时，已经注册的 callback 仍保持 inert。状态命令读取上表各所有者的当前状态。
+成功后，它一次性启用所有 callback；失败时，已经注册的 callback 仍保持 inert。状态栏标识读取上表各所有者的当前状态。
 
 ## 核心业务链路
 

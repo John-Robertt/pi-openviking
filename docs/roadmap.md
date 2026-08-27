@@ -42,7 +42,7 @@ provider payload 临时呈现当前有效 `CueSet`（含覆盖时间与采样说
 | --- | --- | --- |
 | 运行边界与观察 | 扩展运行实例原子启用，Pi callback 与诊断 sink 不阻塞主任务，每次运行留下可关联证据 | Observation、Configuration & Credentials、Composition Root |
 | Pi 原生记忆接入 | 来源 entries 和 Memory Cues 都随 Pi 当前 session tree 保存和切换 | Pi Adapter（entries、compaction、context） |
-| OpenViking 出站端口 | ingest、search 和 read 都经过 OpenViking Client，每次调用携带不可变 `OperationScope` | OpenViking Client、`OperationScope` |
+| OpenViking 出站端口 | ingest、search 和 read 都经过 OpenViking Client，每次调用携带不可变 `OperationScope`；状态栏标识反映服务可达性 | OpenViking Client、`OperationScope`、Pi Adapter（状态栏标识） |
 | 会话事实同步 | 每个 Pi 已接受事实最终被 OpenViking 接受且可重放 | Fact Synchronizer |
 | Compaction 记忆线索 | compaction 期间用上一份线索和新保存的事实生成下一份线索 | Cue Provider、Pi Adapter（compaction 时序、custom entry 与 context） |
 | 历史细节恢复 | 模型可取回精确历史细节，且参数无法越权 | Pi Adapter（模型工具） |
@@ -103,7 +103,9 @@ provider payload 临时呈现当前有效 `CueSet`（含覆盖时间与采样说
 - **边界调查先行**：在真实 OpenViking 实例上确定 ingestion、search 和 read 使用的公开能力，确认 ingestion 结果
   如何表示“已经保存”以及以后如何找到同一事实，并确定各调用的幂等条件；
 - 完成 `docs/design.md`「4. OpenViking Client」与「OperationScope」的责任；有界重试只用于调查已证明幂等的
-  调用。
+  调用；
+- 完成 Pi Adapter 的底部状态栏标识：`openviking ✓` 表示服务正常，`✗` 表示无法连接，状态由 OpenViking Client
+  的连通性结果推导。
 
 **验收**
 
@@ -115,7 +117,10 @@ provider payload 临时呈现当前有效 `CueSet`（含覆盖时间与采样说
   返回，越界请求被拒绝；
 - 服务不可用、超时与取消各自返回有界失败结果并保留可区分的 cause，调用方不阻塞；
 - 凭证不出现在观察记录、错误消息、状态输出与任何 artifact 中；
-- 请求构造完成后其 scope 不可变。
+- 请求构造完成后其 scope 不可变；
+- 真实 Pi 中状态栏标识随服务可达性更新：endpoint 可达时呈现 `openviking ✓`，不可达时呈现 `✗`；状态推导与
+  更新只做有界本地工作，其发生由观察记录证明（视觉呈现归 Pi）；
+- 凭证不出现在状态栏标识文本中。
 
 ### 会话事实同步
 
