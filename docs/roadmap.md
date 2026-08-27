@@ -20,8 +20,10 @@ provider payload 临时呈现当前有效 `CueSet`（含覆盖时间与采样说
 文本；fork 导航与 session 重开后投影与当前路径一致；callback 失败沿 Pi 原生错误路径报告且不阻断 compaction。
 各项判定固定在 `test/live/pi-memory/workloads.json`。
 
-本阶段按交付约定先完成边界调查：在真实 OpenViking 实例上确定 ingestion、search 和 read 的公开能力、接受语义
-与幂等条件，再实现 OpenViking Client 与 `OperationScope`。调查完成后 `v1/` 整体移除。
+本阶段先调查真实边界：在真实 OpenViking 实例上确认 ingestion、search 和 read 使用哪些公开接口、返回什么；
+确认重复调用哪些接口不会产生第二份数据；确认 OpenViking Client 用什么公开接口主动检查 endpoint，以及一次检查成功
+最多能让 `openviking ✓` 保持多久。调查完成后，再实现 OpenViking Client、`OperationScope` 与
+`OpenVikingStatus`，并整体移除 `v1/`。
 
 每个阶段以它交付的结果命名，并完成 `docs/design.md` 中一个模块的全部或部分职责。依赖的阶段通过验收后，下一阶段
 才开始。模块目标、业务需求和职责边界只在 `docs/design.md` 中修改；下表的「系统保证」只列出本阶段必须交付的
@@ -31,7 +33,7 @@ provider payload 临时呈现当前有效 `CueSet`（含覆盖时间与采样说
 
 1. 「运行边界与观察」先保证扩展失败不会拖住 Pi，并为后续阶段留下诊断证据；
 2. 「Pi 原生记忆接入」读取 Pi 已接受的 entries，并复用 Pi 的 session tree、compaction 和 context；
-3. 「OpenViking 出站端口」用真实调用确定 ingestion、search 和 read 的接口行为；
+3. 「OpenViking 出站端口」用真实调用确认 ingestion、search、read 和 endpoint 连通性检查的实际行为；
 4. 「会话事实同步」把 Pi entries 可靠地交给 OpenViking；
 5. 「Compaction 记忆线索」只使用已经保存的事实生成 `CueSet`；
 6. 「历史细节恢复」在已有线索之后提供模型真正需要的 search/read 工具。
@@ -42,7 +44,7 @@ provider payload 临时呈现当前有效 `CueSet`（含覆盖时间与采样说
 | --- | --- | --- |
 | 运行边界与观察 | 扩展运行实例原子启用，Pi callback 与诊断 sink 不阻塞主任务，每次运行留下可关联证据 | Observation、Configuration & Credentials、Composition Root |
 | Pi 原生记忆接入 | 来源 entries 和 Memory Cues 都随 Pi 当前 session tree 保存和切换 | Pi Adapter（entries、compaction、context） |
-| OpenViking 出站端口 | ingest、search 和 read 都经过 OpenViking Client，每次调用携带不可变 `OperationScope`；状态栏标识反映服务可达性 | OpenViking Client、`OperationScope`、Pi Adapter（状态栏标识） |
+| OpenViking 出站端口 | ingest、search 和 read 都经过 OpenViking Client，每次调用携带不可变 `OperationScope`；只有最近一次主动检查成功且仍在有效时间内，状态栏才显示 `openviking ✓` | OpenViking Client、`OperationScope`、`OpenVikingStatus`、Pi Adapter（状态栏文字） |
 | 会话事实同步 | 每个 Pi 已接受事实最终被 OpenViking 接受且可重放 | Fact Synchronizer |
 | Compaction 记忆线索 | compaction 期间用上一份线索和新保存的事实生成下一份线索 | Cue Provider、Pi Adapter（compaction 时序、custom entry 与 context） |
 | 历史细节恢复 | 模型可取回精确历史细节，且参数无法越权 | Pi Adapter（模型工具） |
@@ -95,32 +97,47 @@ provider payload 临时呈现当前有效 `CueSet`（含覆盖时间与采样说
 
 ### OpenViking 出站端口
 
-**系统保证**：ingest、search 和 read 都通过 OpenViking Client 调用。每次调用都可取消并返回可诊断结果；调用
-开始后，本次 `OperationScope` 中的 principal、workspace 和 session 不再改变。
+**系统保证**：ingest、search 和 read 都通过 OpenViking Client 调用。每次调用都能取消、都有最长等待时间，并返回
+调用方能够判断的成功、失败或取消结果。请求发出后，本次 `OperationScope` 中的 principal、workspace 和 session
+不再改变。OpenViking Client 按固定间隔主动检查 endpoint；只有最近一次检查成功且仍在有效时间内，状态栏才显示
+`openviking ✓`。
 
 **交付**
 
-- **边界调查先行**：在真实 OpenViking 实例上确定 ingestion、search 和 read 使用的公开能力，确认 ingestion 结果
-  如何表示“已经保存”以及以后如何找到同一事实，并确定各调用的幂等条件；
-- 完成 `docs/design.md`「4. OpenViking Client」与「OperationScope」的责任；有界重试只用于调查已证明幂等的
-  调用；
-- 完成 Pi Adapter 的底部状态栏标识：`openviking ✓` 表示服务正常，`✗` 表示无法连接，状态由 OpenViking Client
-  的连通性结果推导。
+- **先调查真实边界**：在真实 OpenViking 实例上确认 ingestion、search、read 和 endpoint 连通性检查分别使用哪些
+  公开接口、接受哪些参数、返回什么；确认 ingestion 怎样表示“已经保存”、以后怎样找到同一事实，以及哪些重复调用
+  不会产生第二份数据；记录连通性检查成功、失败和恢复的实际耗时。根据这些实测结果确定检查间隔、每次检查最多
+  等多久、一次成功能维持多久，以及失败或成功失效后最晚多久显示 `openviking ✗`；
+- 完成 `docs/design.md`「4. OpenViking Client」「OperationScope」与 `OpenVikingStatus` 的责任；只有真实调查已经
+  证明重复调用不会产生额外结果时，OpenViking Client 才能在固定次数内重试；
+- 本阶段 live gate manifest 保存连通性检查成功、失败和恢复的实测基线数据，并固定据此确定的检查间隔、
+  单次最长等待时间、成功有效时间和 `✗` 更新时限；
+- 完成 Pi Adapter 的底部状态栏文字：最近一次主动检查成功且仍在有效时间内时显示 `openviking ✓`；检查失败、
+  超时或上一次成功已经失效时显示 `openviking ✗`；首次检查完成前和本次扩展运行结束后清除该文字。
 
 **验收**
 
-- ingestion、search 与 read 的接受语义和幂等条件由真实实例的运行记录确定；
+- 真实实例的运行记录说明 ingestion、search、read 和 endpoint 连通性检查实际接受什么、返回什么，并说明哪些
+  业务请求可以安全重试；
+- OpenViking Client 按 manifest 固定的间隔发起连通性检查，每次等待不超过 manifest 上限；observation 能按同一
+  operation 找到每次检查及其引起的状态变化；
 - 同一来源事实按调查确定的机制重复 ingest 得到明确接受结果，不产生第二个逻辑对象；
 - ingestion 成功时返回以后找到同一事实所需的信息；Fact Synchronizer 公开该信息，OpenViking 继续按请求 scope
   限制访问；
 - search 返回结果保留服务端排名与服务端提供的 title/abstract 等价字段；read 按 canonical URI 与分页边界
   返回，越界请求被拒绝；
 - 服务不可用、超时与取消各自返回有界失败结果并保留可区分的 cause，调用方不阻塞；
-- 凭证不出现在观察记录、错误消息、状态输出与任何 artifact 中；
+- 凭证不出现在观察记录、错误消息与任何 artifact 中；
 - 请求构造完成后其 scope 不可变；
-- 真实 Pi 中状态栏标识随服务可达性更新：endpoint 可达时呈现 `openviking ✓`，不可达时呈现 `✗`；状态推导与
-  更新只做有界本地工作，其发生由观察记录证明（视觉呈现归 Pi）；
-- 凭证不出现在状态栏标识文本中。
+- 真实 Pi 中，只有最近一次主动连通性检查成功，而且距这次成功还没有超过 manifest 固定的成功有效时间，状态栏才
+  显示 `openviking ✓`；ingestion、search 或 read 成功不能延长这段时间；
+- 检查失败、检查超时或上一次成功失效后，状态栏在 manifest 固定的最长时间内改为 `openviking ✗`；首次检查
+  完成前不能显示 `openviking ✓`；
+- 连通性检查在 Pi callback 之外运行，callback 不等待；根据检查结果决定状态和更新状态栏都只做有上限的本地工作；
+- shutdown 与 reload 会取消检查并清除 status key 对应的文字；新运行实例重新检查，旧实例的文字和晚到结果都不能
+  留下；
+- 状态栏文字不包含凭证；真实 Pi 事件证明文字确实设置和清除，observation 证明对应检查与状态变化（文字怎样画在
+  界面上由 Pi 决定）。
 
 ### 会话事实同步
 
@@ -226,7 +243,14 @@ provider payload 临时呈现当前有效 `CueSet`（含覆盖时间与采样说
 
 ## 下一实施入口
 
-「OpenViking 出站端口」阶段的入口是边界调查：在真实 OpenViking 实例（`docs/development.md` 的隔离服务）上运行
-最小探针，确定 ingestion 的接受语义（如何表示“已经保存”、以后如何找到同一事实）、幂等条件，以及 search/read
-的参数与响应形状；调查记录按它影响的内容归位（实现断言、manifest 阈值或 design.md）。随后按「阶段执行闭环」
-建立本阶段 manifest 并实现 OpenViking Client 与 `OperationScope`，验收判定见上文「OpenViking 出站端口」一节。
+「OpenViking 出站端口」阶段先调查真实边界。在 `docs/development.md` 的隔离 OpenViking 服务上运行一组最小测试程序；
+每个程序只检查一个问题。这组程序回答：
+
+1. ingestion 怎样表示“已经保存”、怎样再次找到同一事实、怎样安全重试；
+2. search/read 接受哪些参数、返回哪些字段；
+3. OpenViking Client 用哪个公开接口检查 endpoint，检查成功、失败和恢复各要多久。
+
+根据实测结果
+确定检查间隔、单次最长等待时间、成功有效时间和 `✗` 更新时限。把接口断言写进实现或测试，把实测数据和
+时限写进 manifest；只有改变模块责任时才修改 `docs/design.md`。随后按「阶段执行闭环」实现 OpenViking Client、
+`OperationScope`、`OpenVikingStatus` 和 Pi Adapter 状态栏文字；验收判定见上文「OpenViking 出站端口」。

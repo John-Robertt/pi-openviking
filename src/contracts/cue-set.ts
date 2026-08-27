@@ -1,5 +1,5 @@
 /**
- * CueSet：docs/design.md「模块协作契约」的三个数据值之一，由 Cue Provider 产生，
+ * CueSet：docs/design.md「模块协作契约」的四个数据值之一，由 Cue Provider 产生，
  * Pi Adapter 保存与投影，下一次生成读取。Pi session tree 以 custom entry 持有它。
  */
 export interface CueSet {

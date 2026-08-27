@@ -26,7 +26,7 @@ export type ObserverStatus = "disabled" | "active" | "degraded";
 
 export interface Observer {
   readonly status: ObserverStatus;
-  /** 降级原因（首个失败），供状态查询组合；未降级时为 undefined。 */
+  /** 降级原因（首个失败），供诊断和验证使用；未降级时为 undefined。 */
   readonly failure: string | undefined;
   /** active 时返回时钟值，disabled 时返回 0 且不触发时钟调用。 */
   now(): number;
