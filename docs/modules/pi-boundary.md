@@ -236,7 +236,18 @@ Pi Boundary 不修改 Pi 的 session、branch、compaction 或工具调度策略
 
 ## Observation 事件
 
-Pi Boundary 通过 Observation 公共接口发送脱敏的运行结果。它只提供系统设计允许记录的运行实例、记忆范围、操作、耗时和结果分类，不发送用户正文、图片数据、外部服务凭证或 `RecallHandle`。
+Pi Boundary 通过 [Observation](./observation.md) 的公共接口，把每项完成的操作发送成一条脱敏事件。事件恰好包含运行实例、范围快照引用、操作、耗时和结果分类。
+
+发送前，Pi Boundary 把当前 `MemoryScope` 转换成 [Observation 事件契约](./observation.md#事件内容)定义的范围快照引用。这个引用保留完整快照的身份，只向 Observation 提供用于比较的内部代号。
+
+Pi Boundary 知道操作怎样结束，也知道结果在交付时是否仍然有效，因此按下表选择分类：
+
+| 操作 | 结果分类 |
+| --- | --- |
+| 线索准备 | 正常完成为成功；抛错、期限、取消、新任务替代和交付前失效分别为失败、超时、取消、被替代和失效 |
+| 线索展示 | 合法 CueSet 已注入为成功；没有线索为空结果；结构不合法、超预算或读取与格式化抛错分别为无效结果、超过预算和失败 |
+| 完整事实找回 | 完整 `found` 已转换为成功；`notFound`、`rejected` 和 `unavailable` 分别为未找到、拒绝和不可用；返回值不合法、超预算或调用抛错分别为无效结果、超过预算和失败；期限、取消和交付前失效使用对应分类 |
+| Pi compaction 失败 | `session_compact_failed` 为失败 |
 
 事件结构、分类表示、保存方式和写入失败后的状态由 Observation 负责。Observation 调用失败不改变已经确定的记忆结果，也不阻塞 Pi 流程。
 
@@ -286,6 +297,8 @@ Pi Boundary 不把这些运行状态作为事实存入 session tree。需要跨 
 使用受控 Cue Provider、Retriever、Observation 和时间能力，至少证明：
 
 - MemoryScope 只能由 Pi Boundary 建立，工具参数不能改变 session、可见 entry 或预算；
+- `MemoryScope` 转换结果符合 [Observation 的范围快照引用契约](./observation.md#事件内容)，事件不暴露原始 ID；
+- 线索准备、线索展示、完整事实找回和 Pi compaction 失败按本文规定产生 Observation 操作与结果分类；
 - 同一 branch 追加 entry 后，旧叶节点仍为祖先，有效准备结果可以交付；
 - 成功 branch 导航后范围标识改变，旧任务被取消，晚到结果被拒绝；
 - 切走再切回相同路径时，切换前任务仍被拒绝；

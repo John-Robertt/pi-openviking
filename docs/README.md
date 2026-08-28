@@ -13,6 +13,7 @@
 ## 运行模块设计
 
 - [Pi Boundary](./modules/pi-boundary.md)：规定怎样从 Pi 当前状态建立记忆范围、挂接生命周期与工具，只把当前有效结果交回 Pi，并在记忆失败时保持 Pi 原有流程。
+- [Observation](./modules/observation.md)：规定脱敏事件包含哪些字段、怎样关联运行与记忆范围，以及写入停止时怎样保持记忆能力和 Pi 原生流程。
 
 ## 结构模块设计
 
