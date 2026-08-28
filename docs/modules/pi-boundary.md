@@ -19,6 +19,7 @@ Pi Boundary 是 Pi 与记忆模块之间的运行边界，也是唯一解释 Pi 
 | 结果 | 使用者得到什么 |
 | --- | --- |
 | 当前记忆范围 | Cue Provider 和 Retriever 得到由 Pi 当前状态确定、模型不能修改的 `MemoryScope` |
+| 事实读取入口 | Cue Provider 和 Retriever 通过 `ScopedFacts` 读取当前范围内的来源事实，不接触 Pi SDK |
 | 线索准备调度 | Cue Provider 在 Pi 空闲后的后台任务中准备当前范围的线索，不阻塞 Pi 回调 |
 | 临时线索上下文 | 普通模型请求得到预算内的当前 `CueSet`，session 不保存这条临时消息 |
 | 完整事实工具 | 模型只提交 `RecallHandle`，Retriever 在当前范围内给出完整事实或明确的非成功结果 |
@@ -103,6 +104,29 @@ Cue Provider 和 Retriever 使用 `session ID + entry ID` 判断线索或事实�
 
 同一持久化 session reopen 后保留 session ID 和 entry；扩展运行实例会建立新的范围标识并重新准备线索。新建、fork、clone 或切换到另一个 session 后使用新 session ID；复制到新 session 的旧 handle 在重新生成兼容 handle 前不可用。
 
+## 事实读取入口
+
+`ScopedFacts` 是 Pi Boundary 为一次模块调用建立的来源事实读取入口。它与 `MemoryScope` 同时建立，读取范围等于该 `MemoryScope` 的可见 entry 集合。[系统设计](../design.md)要求每条事实带有在当前范围内稳定的标识，Pi Boundary 使用 Pi 的 entry ID 作为这个标识。
+
+### 来源事实
+
+当前路径中记录会话实际发生内容的 entry 是来源事实：用户与模型的消息、工具调用及其结果。
+
+Pi 的 compaction entry 和 branch summary entry 是对事实的摘要，扩展写入的 custom entry 是扩展自己的产出。`ScopedFacts` 只交付来源事实。
+
+### 读取方式
+
+| 方式 | 交付什么 |
+| --- | --- |
+| 顺序读取 | 按当前路径顺序返回预算内的一段来源事实，并指明下次继续的 entry ID |
+| 按标识读取 | 返回指定 entry ID 对应的单条来源事实 |
+
+标识指向不可见 entry、非来源事实或不存在的 entry 时返回未找到。
+
+Pi Boundary 把 Pi 的 entry 转换成项目自己的内容块后交付。
+
+`ScopedFacts` 只提供读取能力，范围在建立时固定。使用它的模块通过它读取当前范围内的事实；写入 session、改变范围和访问其他 session 都不在这个入口的能力范围内。
+
 ## 异步调用有效性
 
 范围回答“哪些事实可以访问”，调用有效性回答“某个异步结果现在还能不能交付”。两者必须分别检查。
@@ -126,7 +150,7 @@ Pi Boundary 在每次启动线索准备或事实找回时保存一份调用快�
 
 叶节点只要求仍是当前路径祖先，不要求等于当前叶节点。因此同一 branch 后续追加不会使准备结果失效。范围标识在每次成功 branch 导航后更换，因此用户切走后又切回原路径时，切换前尚未完成的结果仍然无效。
 
-Pi Boundary 在交付前总是重新检查调用快照。`AbortSignal` 可能在下游已经完成工作后才生效，因此取消信号不能代替这次检查。`CueProvider.current(newScope)` 只返回新范围的结果；Cue Provider 自行决定怎样满足这项保证。
+Pi Boundary 在交付前总是重新检查调用快照。`AbortSignal` 可能在下游已经完成工作后才生效，因此取消信号不能代替这次检查。范围隔离由 [Cue Provider 的范围隔离规定](./cue-provider.md#范围隔离)保证。
 
 ## 生命周期挂载
 
@@ -159,7 +183,7 @@ reload 时，旧实例先收到 `session_shutdown(reason="reload")`，资源随�
 
 ```text
 取得当前 Pi 状态
-  → 建立 MemoryScope 和调用快照
+  → 建立 MemoryScope、ScopedFacts 和调用快照
   → 合并实例取消、任务取消和期限
   → 在 Pi 回调返回后调用 CueProvider.prepare
   → 完成时检查调用仍有效
@@ -198,9 +222,9 @@ recall_memory({ handle })
 
 ```text
 接收 handle
-  → 建立当前 MemoryScope 和调用快照
+  → 建立当前 MemoryScope、ScopedFacts 和调用快照
   → 合并 Pi 工具 AbortSignal、实例取消、任务取消和期限
-  → 调用 Retriever.recall(scope, handle, budget, signal)
+  → 调用 Retriever.recall(scope, facts, handle, budget, signal)
   → 检查调用仍有效及结果符合预算
   → 转换成 Pi 工具结果
 ```
@@ -256,7 +280,7 @@ Pi Boundary 知道操作怎样结束，也知道结果在交付时是否仍然�
 ### Pi Boundary 负责
 
 - 解释 Pi 当前 session tree 和生命周期；
-- 建立 `MemoryScope`；
+- 建立 `MemoryScope` 和 `ScopedFacts`；
 - 维护运行实例、范围代次、后台任务、期限、取消和晚到结果检查；
 - 调度 Cue Provider 并把当前 CueSet 安全加入普通模型请求；
 - 注册并执行 `recall_memory`；
@@ -297,6 +321,8 @@ Pi Boundary 不把这些运行状态作为事实存入 session tree。需要跨 
 使用受控 Cue Provider、Retriever、Observation 和时间能力，至少证明：
 
 - MemoryScope 只能由 Pi Boundary 建立，工具参数不能改变 session、可见 entry 或预算；
+- 顺序读取只按当前路径顺序交付可见 entry 集合内的来源事实，结果不含 Pi SDK 类型；
+- 按标识读取对不可见 entry、摘要 entry、扩展写入的 entry 和不存在的标识都返回未找到；
 - `MemoryScope` 转换结果符合 [Observation 的范围快照引用契约](./observation.md#事件内容)，事件不暴露原始 ID；
 - 线索准备、线索展示、完整事实找回和 Pi compaction 失败按本文规定产生 Observation 操作与结果分类；
 - 同一 branch 追加 entry 后，旧叶节点仍为祖先，有效准备结果可以交付；
@@ -328,6 +354,7 @@ Pi Boundary 不把这些运行状态作为事实存入 session tree。需要跨 
 - `context` 注入对 provider 可见、不会写入 session，并覆盖工具完成后的后续普通模型请求；
 - compaction 摘要请求不接收普通 Memory Cues 注入；
 - `getBranch()` 在同一 branch 追加、compaction、导航和 reopen 后具有本文规定的祖先语义；
+- Pi 实际产生的 compaction entry 和 branch summary entry，以及扩展写入的 custom entry，都不作为来源事实通过 `ScopedFacts` 交付；
 - branch summary entry 进入新路径，而 `fromId` 指向的旧路径 entry 不会因此进入当前祖先路径；
 - fork 产生新 session ID，即使复制了原 entry ID 也不能沿用旧 session handle；
 - 工具 `execute` 收到 Pi 当前调用的取消信号；

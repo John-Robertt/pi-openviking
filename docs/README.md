@@ -1,23 +1,24 @@
 # 项目文档
 
-本文是项目文档入口。每个链接说明对应文档交付什么，具体内容由链接指向的文档负责。
+本文是项目文档入口。每个链接给出对应文档负责的范围，具体内容由链接指向的文档说明。
 
 ## 当前开发
 
-- [当前开发计划](./development-plan.md)：说明当前交付目标、剩余差距、阶段顺序和下一行动入口。
+- [当前开发计划](./development-plan.md)：当前版本的目标、差距与下一行动入口
 
 ## 系统设计
 
-- [Pi 长期记忆扩展架构总纲](./design.md)：规定产品结果、运行模块、公共数据契约、运行链路和依赖方向。
+- [Pi 长期记忆扩展架构总纲](./design.md)：产品结果、模块划分、公共契约与依赖方向
 
 ## 运行模块设计
 
-- [Pi Boundary](./modules/pi-boundary.md)：规定怎样从 Pi 当前状态建立记忆范围、挂接生命周期与工具，只把当前有效结果交回 Pi，并在记忆失败时保持 Pi 原有流程。
-- [Observation](./modules/observation.md)：规定脱敏事件包含哪些字段、怎样关联运行与记忆范围，以及写入停止时怎样保持记忆能力和 Pi 原生流程。
+- [Pi Boundary](./modules/pi-boundary.md)：Pi 与记忆模块之间的运行边界
+- [Cue Provider](./modules/cue-provider.md)：当前记忆范围内历史线索的提供者
+- [Observation](./modules/observation.md)：运行事件的脱敏记录出口
 
 ## 结构模块设计
 
-- [Documentation](./modules/documentation.md)：规定项目文档的位置、职责、唯一来源和维护条件。
-- [Project Structure](./modules/project-structure.md)：规定代码、测试、配置、文档和本地产物的位置与源码导入边界。
-- [Verification](./modules/verification.md)：规定验证层次、稳定命令、结果分类和变更完成条件。
-- [Development Planning](./modules/development-planning.md)：规定当前开发计划怎样建立、推进、更新和结束。
+- [Documentation](./modules/documentation.md)：文档类型、位置与事实的唯一来源
+- [Project Structure](./modules/project-structure.md)：代码、测试、配置与产物的位置和导入边界
+- [Verification](./modules/verification.md)：验证层次、稳定命令与完成条件
+- [Development Planning](./modules/development-planning.md)：当前开发计划的建立、推进与结束

@@ -18,7 +18,7 @@
 
 ## 剩余差距
 
-- 模块设计：建立 Cue Provider、Retriever 和 Assembly 各自能够独立指导实现的设计。
+- 模块设计：建立 Retriever 和 Assembly 各自能够独立指导实现的设计。
 - 源码：建立公共契约、运行模块和装配行为；`src/index.ts` 当前只提供 Pi 扩展函数入口。
 - 验证：建立 `test/`、完整的 `npm test` 和真实 Pi 验证入口；当前 `npm test` 只运行类型检查。
 - 运行结果：交付线索准备、上下文展示、完整事实找回、范围切换、关闭处理和失败隔离。
@@ -27,7 +27,7 @@
 
 | 阶段 | 前置条件 | 交付结果 | 进入下一阶段的条件 |
 | --- | --- | --- | --- |
-| 完成功能与支撑模块设计 | 系统设计、[Pi Boundary](./modules/pi-boundary.md)、[Observation](./modules/observation.md)、Documentation、Project Structure、Verification 和 Development Planning 已确定 | 依次完成 Cue Provider、Retriever 和 Assembly 的独立设计 | 每份设计回答 Documentation 规定的问题，模块交接和依赖方向与系统设计一致 |
+| 完成功能与支撑模块设计 | 系统设计、[Pi Boundary](./modules/pi-boundary.md)、[Cue Provider](./modules/cue-provider.md)、[Observation](./modules/observation.md)、Documentation、Project Structure、Verification 和 Development Planning 已确定 | 依次完成 Retriever 和 Assembly 的独立设计 | 每份设计回答 Documentation 规定的问题，模块交接和依赖方向与系统设计一致 |
 | 建立公共契约与模块入口 | 全部模块设计完成 | 公共数据类型、各源码模块公共入口和对应验证结构 | 静态检查通过，公共入口只暴露调用方需要的结果 |
 | 交付模块行为 | 公共契约和入口稳定 | Observation、Cue Provider、Retriever 和 Pi Boundary 分别交付设计规定的正常与失败结果 | 模块行为检查通过，模块之间只通过公共入口依赖 |
 | 完成装配与跨模块链路 | 各模块行为能够独立验证 | Assembly 组合兼容实现，线索展示与事实找回链路完整 | 跨模块集成检查通过，失败不影响 Pi 原生流程 |
@@ -35,9 +35,9 @@
 
 ## 当前阶段与下一行动
 
-当前阶段是“完成功能与支撑模块设计”。剩余顺序是 Cue Provider、Retriever、Assembly。每份设计直接使用系统设计和当前模块边界，只说明本模块交付什么、接收什么和负责什么。
+当前阶段是“完成功能与支撑模块设计”。剩余顺序是 Retriever、Assembly。每份设计直接使用系统设计和当前模块边界，只说明本模块交付什么、接收什么和负责什么。
 
-下一行动是建立 `docs/modules/cue-provider.md`。这份设计回答五个问题：`prepare` 怎样为当前 `MemoryScope` 准备线索；`current` 怎样同步返回预算内的已有结果；每条线索怎样携带 Retriever 可以解释的 `RecallHandle`；准备失败时怎样保留仍有效的线索；哪些检查能够证明这些结果。边界来自系统设计和 [Pi Boundary](./modules/pi-boundary.md)。
+下一行动是建立 `docs/modules/retriever.md`。这份设计回答五个问题：`recall` 怎样在当前 `MemoryScope` 内解释 `RecallHandle`；怎样与 [Cue Provider](./modules/cue-provider.md) 产生的凭据保持兼容；`found`、`notFound`、`rejected` 和 `unavailable` 分别在什么条件下产生；完整事实怎样在结果预算内交付而不截断；哪些检查能够证明这些结果。边界来自系统设计、[Pi Boundary](./modules/pi-boundary.md) 和 [Cue Provider](./modules/cue-provider.md)。
 
 ## 计划完成条件
 

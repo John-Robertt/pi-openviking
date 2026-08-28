@@ -53,7 +53,7 @@ Pi 管理 session 生命周期、当前上下文和模型工具入口。本扩�
 
 ## 模块交接契约
 
-公共契约只描述模块交付什么。模块通过四种业务数据值交接内容，通过预算和取消信号控制一次调用。
+公共契约只描述模块交付什么。模块通过下列数据和入口交接内容，通过预算和取消信号控制一次调用。
 
 ### MemoryScope
 
@@ -62,6 +62,16 @@ Pi 管理 session 生命周期、当前上下文和模型工具入口。本扩�
 用户切换 branch 后，Pi Boundary 创建新的 `MemoryScope`。旧 branch 中尚未完成的结果不能进入新 branch。
 
 `MemoryScope` 只由 Pi Boundary 确定。模型参数不能创建、替换或扩大它。
+
+### ScopedFacts
+
+`ScopedFacts` 是 Pi Boundary 交给 Cue Provider 和 Retriever 的事实读取入口。Cue Provider 用它读取生成线索所需的会话内容，Retriever 用它读取线索指向的完整事实，两者都不需要接触 Pi SDK。
+
+它交付当前 `MemoryScope` 内的来源事实。来源事实指会话中已经产生的对话和工具结果，不包括 Pi 生成的摘要，也不包括扩展自己写入的内容。每条事实带有在当前 `MemoryScope` 内稳定的标识，并用项目自己的内容块表示。
+
+它提供两种读取方式：按会话顺序分段读取，每次返回预算内的一段并指明下次从哪里继续；按标识读取单条事实。两种方式都接受取消信号，返回结果都落在调用预算内。
+
+`ScopedFacts` 是可选输入。使用它的模块可以全部使用、部分使用，也可以使用自己的来源。
 
 ### CueSet
 
@@ -108,7 +118,7 @@ Retriever 返回四种结果：
 
 Pi Boundary 负责：
 
-- 从当前 session、branch 和运行实例建立 `MemoryScope`；
+- 从当前 session、branch 和运行实例建立 `MemoryScope`，并为每次模块调用建立同范围的 `ScopedFacts`；
 - 在 Pi 生命周期允许准备线索时启动 `Cue Provider.prepare`；
 - 在普通模型请求中读取 `Cue Provider.current`，把可用的 `CueSet` 加入上下文；
 - 注册根据 `RecallHandle` 找回事实的模型工具；
@@ -130,8 +140,8 @@ Pi Boundary 管理 Pi 生命周期和结果呈现，Cue Provider 管理线索内
 **公共接口**：
 
 ```text
-prepare(scope, budget, signal) → Promise<void>
-current(scope, budget)         → CueSet | empty
+prepare(scope, facts, budget, signal) → Promise<void>
+current(scope, budget)                → CueSet | empty
 ```
 
 `prepare` 为当前 `MemoryScope` 准备线索。它在 Pi 回调（callback）之外运行，并接受取消信号。线索来源和准备方法属于 Cue Provider 内部实现。
@@ -159,7 +169,7 @@ Pi Boundary 决定何时准备和展示线索，Retriever 根据线索找回完�
 **公共接口**：
 
 ```text
-recall(scope, handle, budget, signal) → Promise<RecallResult>
+recall(scope, facts, handle, budget, signal) → Promise<RecallResult>
 ```
 
 Retriever 解释 `RecallHandle`，在 `MemoryScope` 内查找事实，并返回 `found`、`notFound`、`rejected` 或 `unavailable`。
@@ -253,7 +263,7 @@ Observation 写入失败后，本次运行不再写入后续事件。线索准�
 2. Cue Provider 与 Retriever 通过 `RecallHandle` 配合，各自维护内部状态；
 3. 外部服务、数据库、模型和 SDK 位于使用它们的实现内部；
 4. Observation 只接收事件；
-5. 模块之间只用 `MemoryScope`、`CueSet`、`RecallHandle` 和 `RetrievedContent` 交接业务内容。
+5. 模块之间只用 `MemoryScope`、`ScopedFacts`、`CueSet`、`RecallHandle` 和 `RetrievedContent` 交接业务内容。
 
 ## 全局系统保证
 
