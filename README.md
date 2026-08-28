@@ -25,7 +25,7 @@ npx pi -e ./src/index.ts
 
 ## 架构
 
-[`docs/design.md`](./docs/design.md) 是系统目标、模块职责、数据契约和依赖方向的权威来源。
+项目文档和当前开发入口见 [`docs/README.md`](./docs/README.md)。
 
 ## 许可证
 
