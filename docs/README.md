@@ -10,6 +10,10 @@
 
 - [Pi 长期记忆扩展架构总纲](./design.md)：规定产品结果、运行模块、公共数据契约、运行链路和依赖方向。
 
+## 运行模块设计
+
+- [Pi Boundary](./modules/pi-boundary.md)：规定怎样从 Pi 当前状态建立记忆范围、挂接生命周期与工具，只把当前有效结果交回 Pi，并在记忆失败时保持 Pi 原有流程。
+
 ## 结构模块设计
 
 - [Documentation](./modules/documentation.md)：规定项目文档的位置、职责、唯一来源和维护条件。

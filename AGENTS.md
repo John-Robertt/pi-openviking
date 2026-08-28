@@ -23,7 +23,7 @@ Pi lifecycle、context、session 和工具行为以当前 Pi 官方文档、公�
 - 每次改动只处理当前目标直接涉及的文件和职责；
 - 变更的验证范围、检查命令、结果分类和完成条件遵循 [`Verification` 模块架构](./docs/modules/verification.md)；
 - 代码、配置和测试只描述当前实现；
-- 架构职责或公共契约变化时更新 `docs/design.md`；
+- 更新 `docs/design.md` 前，先按 [`Documentation` 的系统设计更新门槛](./docs/modules/documentation.md#系统设计更新门槛)判断；没有调用方需要改变时，只更新负责该机制的模块设计或实现；
 - 代码、配置、测试和运行产物的落点与依赖边界遵循 [`Project Structure` 模块架构](./docs/modules/project-structure.md)；
 - 文档设计、创建、更新和删除遵循 [`Documentation` 模块架构](./docs/modules/documentation.md)。
 - 分阶段开发遵循 [`Development Planning` 模块架构](./docs/modules/development-planning.md)；存在 `docs/development-plan.md` 时，先从中确认当前目标、剩余差距和下一行动入口。
