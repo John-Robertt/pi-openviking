@@ -21,8 +21,8 @@ Pi lifecycle、context、session 和工具行为以当前 Pi 官方文档、公�
 ## 改动与验证
 
 - 每次改动只处理当前目标直接涉及的文件和职责；
-- 行为由测试表达，外部边界由真实 Pi 运行验证；
+- 变更的验证范围、检查命令、结果分类和完成条件遵循 [`Verification` 模块架构](./docs/modules/verification.md)；
 - 代码、配置和测试只描述当前实现；
 - 架构职责或公共契约变化时更新 `docs/design.md`；
-- 单次运行的日志和产物留在被忽略的运行目录，不提交；
+- 代码、配置、测试和运行产物的落点与依赖边界遵循 [`Project Structure` 模块架构](./docs/modules/project-structure.md)；
 - 文档设计、创建、更新和删除遵循 [`Documentation` 模块架构](./docs/modules/documentation.md)。
