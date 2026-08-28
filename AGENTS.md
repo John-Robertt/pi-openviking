@@ -25,4 +25,4 @@ Pi lifecycle、context、session 和工具行为以当前 Pi 官方文档、公�
 - 代码、配置和测试只描述当前实现；
 - 架构职责或公共契约变化时更新 `docs/design.md`；
 - 单次运行的日志和产物留在被忽略的运行目录，不提交；
-- 新增长期文档前，先确认它有当前读者、独立职责和失效检查。
+- 文档设计、创建、更新和删除遵循 [`Documentation` 模块架构](./docs/modules/documentation.md)。
