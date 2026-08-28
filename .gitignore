@@ -1,6 +1,4 @@
 node_modules/
 *.tgz
 .dev/
-v1/test/.artifacts/
 .codegraph/
-test/.artifacts/

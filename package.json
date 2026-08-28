@@ -1,7 +1,7 @@
 {
   "name": "pi-openviking",
   "version": "0.5.0",
-  "description": "Pi extension that surfaces long-term memory cues after compaction and recovers detail from OpenViking.",
+  "description": "Pi extension that provides scoped memory cues and full-fact recall across compaction and branch changes.",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -9,16 +9,16 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "dev": "node scripts/dev.mjs",
-    "test": "npm run typecheck && node --test 'test/unit/*.test.mjs' 'test/repo/*.test.mjs'",
-    "typecheck": "tsc -p tsconfig.json",
-    "verify:run-boundary:live": "node test/live/run-boundary/verify.mjs",
-    "verify:pi-memory:live": "node test/live/pi-memory/verify.mjs"
+    "test": "npm run typecheck",
+    "typecheck": "tsc -p tsconfig.json"
   },
   "pi": {
     "extensions": [
       "./src/index.ts"
     ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.2",

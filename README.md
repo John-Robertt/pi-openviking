@@ -1,20 +1,32 @@
-# Pi OpenViking 扩展
+# pi-openviking
 
-面向 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
-[OpenViking](https://github.com/volcengine/OpenViking) 扩展。
+面向 [Pi Coding Agent](https://github.com/earendil-works/pi) 的长期记忆扩展。
 
-系统目标：让任务模型在 Pi 长期会话中经过 compaction 和 branch 变化后，仍能意识到与当前任务相关的历史记忆
-存在，并在需要精确细节时通过 OpenViking 找回。
+Pi 压缩旧上下文或切换 branch 后，扩展向任务模型提供一小份历史线索；模型可以根据线索取回对应的完整事实。
 
-## 文档
+## 当前状态
 
-- [`docs/design.md`](./docs/design.md)：目标架构与稳定边界的总纲；
-- [`docs/roadmap.md`](./docs/roadmap.md)：阶段路径、实施状态与下一实施入口；
-- [`docs/development.md`](./docs/development.md)：开发环境、开发循环与清理；
-- [`docs/verification.md`](./docs/verification.md)：证据类型、测试组织与 gate 契约；
-- [`docs/documentation.md`](./docs/documentation.md)：文档规划与格式规范；
-- [`AGENTS.md`](./AGENTS.md)：编码代理的仓库工作指引。
+仓库提供新架构的最小 Pi 扩展入口。架构由 [`docs/design.md`](./docs/design.md) 定义，具体记忆能力按该设计逐步实现。
+
+## 开发
+
+需要 Node.js 22.19.0 或更高版本。
+
+```bash
+npm ci
+npm test
+```
+
+在真实 Pi 中加载当前扩展入口：
+
+```bash
+npx pi -e ./src/index.ts
+```
+
+## 架构
+
+[`docs/design.md`](./docs/design.md) 是系统目标、模块职责、数据契约和依赖方向的权威来源。
 
 ## 许可证
 
-Apache-2.0，见 [`LICENSE`](./LICENSE)。OpenViking 服务端使用其自身许可证。
+Apache-2.0，见 [`LICENSE`](./LICENSE)。
