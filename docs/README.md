@@ -13,7 +13,6 @@
 ## 运行模块设计
 
 - [Pi Boundary](./modules/pi-boundary.md)：Pi 与记忆模块之间的运行边界
-- [Cue Provider](./modules/cue-provider.md)：当前记忆范围内历史线索的提供者
 - [Observation](./modules/observation.md)：运行事件的脱敏记录出口
 
 ## 结构模块设计

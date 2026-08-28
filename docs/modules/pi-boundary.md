@@ -150,7 +150,7 @@ Pi Boundary 在每次启动线索准备或事实找回时保存一份调用快�
 
 叶节点只要求仍是当前路径祖先，不要求等于当前叶节点。因此同一 branch 后续追加不会使准备结果失效。范围标识在每次成功 branch 导航后更换，因此用户切走后又切回原路径时，切换前尚未完成的结果仍然无效。
 
-Pi Boundary 在交付前总是重新检查调用快照。`AbortSignal` 可能在下游已经完成工作后才生效，因此取消信号不能代替这次检查。范围隔离由 [Cue Provider 的范围隔离规定](./cue-provider.md#范围隔离)保证。
+Pi Boundary 在交付前总是重新检查调用快照。`AbortSignal` 可能在下游已经完成工作后才生效，因此取消信号不能代替这次检查。另一半保证来自 Cue Provider：它只返回属于当前 `MemoryScope` 的结果，这项范围限定由[系统设计的 MemoryScope 契约](../design.md#memoryscope)规定。
 
 ## 生命周期挂载
 
