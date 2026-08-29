@@ -1,4 +1,4 @@
-# pi-openviking
+# pi-echo
 
 面向 [Pi Coding Agent](https://github.com/earendil-works/pi) 的长期记忆扩展。
 

@@ -1,5 +1,5 @@
 {
-  "name": "pi-openviking",
+  "name": "pi-echo",
   "version": "0.5.0",
   "description": "Pi extension that provides scoped memory cues and full-fact recall across compaction and branch changes.",
   "license": "Apache-2.0",
