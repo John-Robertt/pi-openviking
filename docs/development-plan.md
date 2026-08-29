@@ -29,17 +29,16 @@
 
 ## 剩余差距
 
-- **Pi Boundary**：[设计](./modules/pi-boundary.md)已经写到机制层面，覆盖范围建立、调用有效性、生命周期挂载、上下文注入、工具结果转换和失败隔离。需要交付 `src/contracts/` 中它建立与转换的公共数据、`src/pi-boundary/index.ts` 和 `test/modules/pi-boundary/`，并用真实 Pi 运行确认设计列出的 Pi 行为。
+- **Pi Boundary**：已交付。`src/contracts/` 公共数据契约、`src/pi-boundary/index.ts`、`test/modules/pi-boundary/`（模块行为检查）与 `test/pi/`（真实 Pi 检查，`npm run test:pi`）全部通过；真实运行结果与设计一致，设计未改动。
 - **Cue Provider**：需要交付 `docs/modules/cue-provider.md`、`src/cue-provider/index.ts` 和 `test/modules/cue-provider/`。设计要写明线索的来源、生成算法、保存形式、缓存、准备进度、预算不足时的取舍和 `RecallHandle` 的编码。
 - **Retriever**：需要交付 `docs/modules/retriever.md`、`src/retriever/index.ts` 和 `test/modules/retriever/`。
 - **Assembly**：需要交付 `docs/modules/assembly.md` 和 `src/assembly/index.ts`，并把 `src/index.ts` 接到装配结果上；`src/index.ts` 当前是一个空的 Pi 扩展入口函数。
-- **验证**：`npm test` 当前运行类型检查和 `test/` 下的模块行为检查。还需要建立三项：[Documentation](./modules/documentation.md#验证与演进) 要求的文档入口、覆盖与链接检查，[Project Structure](./modules/project-structure.md#验证与演进) 要求的文件位置与导入边界检查，以及真实 Pi 检查命令 `npm run test:pi`。前两项不依赖任何运行模块，可以独立于模块阶段进行。
+- **验证**：`npm test` 运行类型检查与 `test/modules/` 下的模块行为检查；`npm run test:pi` 运行真实 Pi 检查。还需要建立两项：[Documentation](./modules/documentation.md#验证与演进) 要求的文档入口、覆盖与链接检查，以及 [Project Structure](./modules/project-structure.md#验证与演进) 要求的文件位置与导入边界检查。两项都不依赖运行模块，可以独立于模块阶段进行。
 
 ## 剩余阶段
 
 | 阶段 | 前置条件 | 交付结果 | 进入下一阶段的条件 |
 | --- | --- | --- | --- |
-| Pi Boundary | Observation 公共入口和事件契约可用 | `src/contracts/` 中 Pi Boundary 建立与转换的公共数据；`src/pi-boundary/index.ts`；`test/modules/pi-boundary/`；`test/pi/` 与 `npm run test:pi` | [Pi Boundary 的模块行为检查和真实 Pi 检查](./modules/pi-boundary.md#验证要求)全部 `passed`，真实运行结果与设计一致 |
 | Cue Provider | Pi Boundary 交付 `ScopedFacts` 和公共数据契约 | `docs/modules/cue-provider.md`；`src/cue-provider/index.ts`；`test/modules/cue-provider/` | Cue Provider 的模块行为检查全部 `passed`，影响交付结果和失败行为的机制都写在设计中 |
 | Retriever | Cue Provider 确定 `RecallHandle` 的编码与事实来源 | `docs/modules/retriever.md`；`src/retriever/index.ts`；`test/modules/retriever/` | Retriever 的模块行为检查全部 `passed`，`found`、`notFound`、`rejected`、`unavailable` 各有产生条件和检查 |
 | Assembly | 四个模块的公共入口稳定 | `docs/modules/assembly.md`；`src/assembly/index.ts`；`src/index.ts` 接线；`test/integration/` | [Pi Boundary 的跨模块检查](./modules/pi-boundary.md#跨模块检查)与真实 Pi 端到端全部 `passed`，扩展在真实 Pi 中完成线索展示与事实找回 |
@@ -48,9 +47,9 @@ Pi Boundary 阶段用 [Verification 规定的受控替身](./modules/verificatio
 
 ## 当前阶段与下一行动
 
-当前阶段是 **Pi Boundary**。Observation 已经交付公共入口和事件契约，`npm test` 覆盖类型检查和 `test/` 下的模块行为检查，Pi Boundary 的前置条件因此齐备。
+当前阶段是 **Cue Provider**。Pi Boundary 已经交付 `MemoryScope`、`ScopedFacts`、`CueSet`、`RecallHandle`、`RetrievedContent` 的公共数据契约和 `CueProvider`、`Retriever` 公共接口，Cue Provider 的前置条件齐备。
 
-下一行动是先建立 `test/pi/` 和 `npm run test:pi`，用真实 Pi 确认[设计列出的 Pi 行为](./modules/pi-boundary.md#真实-pi-检查)。其中 `getBranch()` 的祖先语义、`context` 注入的可见范围，以及 compaction entry、branch summary entry 和扩展写入的 custom entry 是否作为来源事实交付，直接决定 `MemoryScope` 与 `ScopedFacts` 的实现结构，因此先确认再实现。确认结果与设计一致时按设计交付 `src/contracts/` 和 `src/pi-boundary/index.ts`；不一致时先更新设计。
+下一行动是编写 `docs/modules/cue-provider.md`：写明线索的来源、生成算法、保存形式、缓存、准备进度、预算不足时的取舍和 `RecallHandle` 的编码，达到 [Documentation 的模块设计要求](./modules/documentation.md#模块设计要求)；然后按设计交付 `src/cue-provider/index.ts` 与 `test/modules/cue-provider/`。
 
 ## 计划完成条件
 
