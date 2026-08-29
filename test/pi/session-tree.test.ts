@@ -83,7 +83,7 @@ test("compaction、branch summary 与扩展写入的 custom entry 不作为来�
   h.respondText("压缩摘要-备用");
   h.respondText("压缩摘要-备用2");
   await h.session().compact();
-  h.piApi.current?.appendEntry("openviking-test-state", { marker: true });
+  h.piApi.current?.appendEntry("extension-test-state", { marker: true });
 
   // 触发一次新的准备,读取它收到的 facts。
   const prepareBefore = h.current.cueProvider.prepareCalls.length;

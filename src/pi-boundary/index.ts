@@ -51,7 +51,7 @@ export interface PiBoundaryDependencies {
 const MAX_HANDLE_LENGTH = 512;
 
 /** 注入上下文的临时线索消息标识。 */
-const CUE_MESSAGE_TYPE = "openviking-memory-cues";
+const CUE_MESSAGE_TYPE = "memory-cues";
 
 /** recall 参数 schema:模型只能提交一个凭据;长度与空值在执行内再校验并归类。 */
 const RECALL_PARAMETERS = Type.Object(

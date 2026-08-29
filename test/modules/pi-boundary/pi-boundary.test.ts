@@ -72,7 +72,7 @@ function branchSummaryEntry(fromId: string): any {
   return entry("branch_summary", { summary: "分支摘要", fromId });
 }
 function customEntry(): any {
-  return entry("custom", { customType: "openviking", data: {} });
+  return entry("custom", { customType: "extension-state", data: {} });
 }
 
 /** 可变的假 session 状态;ctx 读取总是反映当前值。 */
